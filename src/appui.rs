@@ -27,7 +27,7 @@ use tokio::{
 use tracing::{info, warn};
 
 use crate::{
-    PlayerError, PlayerResult,
+    PlayerResult,
     ai_sub_title::{AISubTitle, UsedModel},
     decode::{MainStream, TinyDecoder},
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
@@ -235,19 +235,16 @@ impl AppUi {
         ctx.set_fonts(fonts);
     }
     pub fn new() -> PlayerResult<Self> {
-        let play_time =
-            time::Time::from_hms(0, 0, 0).map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let play_time = time::Time::from_hms(0, 0, 0)?;
 
         let async_rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .build()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            .build()?;
         let rt = async_rt.handle().clone();
         let f_dialog = egui_file::FileDialog::open_file();
         let (color_image, dyn_img) = {
             if let ImageSource::Bytes { bytes, .. } = DEFAULT_BG_IMG {
-                let dynimg = image::load_from_memory(&bytes)
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                let dynimg = image::load_from_memory(&bytes)?;
                 Ok((
                     ColorImage::from_rgba_unmultiplied(
                         [dynimg.width() as usize, dynimg.height() as usize],
@@ -256,7 +253,7 @@ impl AppUi {
                     dynimg,
                 ))
             } else {
-                Err(PlayerError::Internal("img create err".to_string()))
+                Err(anyhow::Error::msg("img create err"))
             }
         }?;
 
@@ -281,8 +278,7 @@ impl AppUi {
             .audio_sink(audio_player.sink())
             .main_stream_current_timestamp(main_stream_current_timestamp.clone())
             .runtime_handle(rt)
-            .build()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
 
         Ok(Self {
@@ -832,7 +828,7 @@ impl AppUi {
             let mut tiny_decoder = self.async_rt.block_on(decoder.write());
             if self.ui_flags.pause_flag.0.send(true).is_err() {
                 warn!("change pause flag err");
-                return Err(PlayerError::Internal("change pause flag err".to_string()));
+                return Err(anyhow::Error::msg("change pause flag err"));
             }
             if self
                 .async_rt
@@ -840,7 +836,7 @@ impl AppUi {
                 .is_err()
             {
                 warn!("reset file path error!");
-                return Err(PlayerError::Internal("change pause flag err".to_string()));
+                return Err(anyhow::Error::msg("change pause flag err"));
             }
         }
         let au_pl = &mut self.audio_player;

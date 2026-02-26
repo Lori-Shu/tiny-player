@@ -6,8 +6,6 @@
 #![deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
-    error::Error,
-    fmt::Display,
     path::PathBuf,
     sync::{Arc, LazyLock},
 };
@@ -29,30 +27,17 @@ mod present_data_manage;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");
 static CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
-    if let Ok(path) = std::env::current_exe() {
-        Ok(path)
-    } else {
-        Err(PlayerError::Internal("exe path get err".to_string()))
-    }
+    let path = std::env::current_exe()?;
+    Ok(path)
 });
-#[derive(Debug, Clone)]
-pub enum PlayerError {
-    Internal(String),
-}
-impl Display for PlayerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Internal(s) => write!(f, "error: {}", s)?,
-        }
 
-        Ok(())
-    }
-}
-impl Error for PlayerError {}
-pub type PlayerResult<T> = std::result::Result<T, PlayerError>;
+pub type PlayerResult<T> = anyhow::Result<T>;
 
 /// main fun init log, init main ui type Appui
 fn main() {
+    unsafe {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     let targets_filter = tracing_subscriber::filter::Targets::default()
         .with_default(Level::WARN)
         .with_target("tiny_player", Level::INFO);

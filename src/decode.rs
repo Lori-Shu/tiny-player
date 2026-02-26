@@ -31,7 +31,7 @@ use tokio::{
 };
 use tracing::{Instrument, Level, info, span, warn};
 
-use crate::{CURRENT_EXE_PATH, PlayerError, PlayerResult};
+use crate::{CURRENT_EXE_PATH, PlayerResult};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -106,7 +106,7 @@ impl TinyDecoder {
     /// init Decoder and new Struct
     /// `runtime_handle` is the handle of the tokio runtime in async_context
     pub fn new(runtime_handle: Handle) -> PlayerResult<Self> {
-        ffmpeg_the_third::init().map_err(|e| PlayerError::Internal(e.to_string()))?;
+        ffmpeg_the_third::init()?;
         Ok(Self {
             video_stream_index: usize::MAX,
             audio_stream_index: usize::MAX,
@@ -178,8 +178,7 @@ impl TinyDecoder {
             self.stop_demux_and_decode().await;
             self.reset_tiny_decoder_states().await;
         }
-        let format_input = ffmpeg_the_third::format::input(path)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let format_input = ffmpeg_the_third::format::input(path)?;
         info!("input construct finished");
         let mut cover_stream = None;
         let mut video_stream = None;
@@ -252,8 +251,7 @@ impl TinyDecoder {
                 (video_decoder.width(), video_decoder.height()),
                 Pixel::YUV420P,
                 Pixel::RGBA,
-            )
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            )?;
             self.converter_ctx = Some(ManualProtectedConverter(converter));
 
             info!("video decode format{:#?}", video_decoder.format());
@@ -263,13 +261,9 @@ impl TinyDecoder {
         }
         if let Some(audio_stream) = &audio_stream {
             let audio_decoder_ctx =
-                ffmpeg_the_third::codec::Context::from_parameters(audio_stream.parameters())
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                ffmpeg_the_third::codec::Context::from_parameters(audio_stream.parameters())?;
 
-            let mut audio_decoder = audio_decoder_ctx
-                .decoder()
-                .audio()
-                .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            let mut audio_decoder = audio_decoder_ctx.decoder().audio()?;
             unsafe {
                 if audio_decoder.ch_layout().channels() == 2 {
                     audio_decoder.set_ch_layout(ChannelLayout::STEREO);
@@ -940,13 +934,9 @@ impl TinyDecoder {
         &mut self,
         stream: &Stream<'_>,
     ) -> PlayerResult<ffmpeg_the_third::decoder::Video> {
-        let codec_ctx = ffmpeg_the_third::codec::Context::from_parameters(stream.parameters())
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let codec_ctx = ffmpeg_the_third::codec::Context::from_parameters(stream.parameters())?;
 
-        let mut decoder = codec_ctx
-            .decoder()
-            .video()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let mut decoder = codec_ctx.decoder().video()?;
         unsafe {
             if let Some(codec) = &decoder.codec() {
                 let hw_config = avcodec_get_hw_config(codec.as_ptr(), 0);
@@ -974,9 +964,7 @@ impl TinyDecoder {
                     Ok(decoder)
                 }
             } else {
-                Err(PlayerError::Internal(
-                    "err when config hardware acc".to_string(),
-                ))
+                Err(anyhow::Error::msg("err when config hardware acc"))
             }
         }
     }
@@ -993,13 +981,11 @@ impl Drop for TinyDecoder {
         let decode_task_handle = self.decode_task_handle.take();
         self.runtime_handle.spawn(async move {
             demux_task_handle
-                .ok_or(PlayerError::Internal("join demux thread err".to_string()))?
-                .await
-                .map_err(|_e| PlayerError::Internal("join demux thread err".to_string()))?;
+                .ok_or(anyhow::Error::msg("join demux thread err"))?
+                .await?;
             decode_task_handle
-                .ok_or(PlayerError::Internal("join decode thread err".to_string()))?
-                .await
-                .map_err(|_e| PlayerError::Internal("join decode thread err".to_string()))?;
+                .ok_or(anyhow::Error::msg("join decode thread err"))?
+                .await?;
             info!("demux and decode thread exit gracefully");
             PlayerResult::Ok(())
         });

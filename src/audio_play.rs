@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rodio::Sink;
 
-use crate::{PlayerError, PlayerResult};
+use crate::PlayerResult;
 
 pub struct AudioPlayer {
     sink: Arc<rodio::Sink>,
@@ -11,8 +11,7 @@ pub struct AudioPlayer {
 }
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
-        let stream = rodio::OutputStreamBuilder::open_default_stream()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let stream = rodio::OutputStreamBuilder::open_default_stream()?;
         let sink = Arc::new(rodio::Sink::connect_new(stream.mixer()));
 
         Ok(Self {

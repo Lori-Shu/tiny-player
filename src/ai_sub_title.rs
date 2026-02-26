@@ -1,5 +1,6 @@
 use std::{fs::File, ptr::null_mut, sync::Arc};
 
+use anyhow::Error;
 use candle_core::IndexOp;
 use candle_nn::ops::softmax;
 use candle_transformers::{
@@ -24,7 +25,7 @@ use tokenizers::{Tokenizer, tokenizer};
 use tokio::sync::mpsc::Sender;
 use tracing::{info, warn};
 
-use crate::{CURRENT_EXE_PATH, PlayerError, PlayerResult, decode::ManualProtectedResampler};
+use crate::{CURRENT_EXE_PATH, PlayerResult, decode::ManualProtectedResampler};
 const MEL_FILTERS: &[u8] = include_bytes!("../resources/melfilters.bytes");
 #[derive(PartialEq, Clone)]
 pub enum UsedModel {
@@ -53,29 +54,23 @@ pub struct AISubTitle {
 }
 impl AISubTitle {
     pub fn new(subtitle_sender: Sender<String>) -> PlayerResult<Self> {
-        let current_exe_path = CURRENT_EXE_PATH.as_ref().map_err(|e| e.clone())?;
+        let current_exe_path = CURRENT_EXE_PATH.as_ref().map_err(Error::msg)?;
         if let Some(folder_path) = current_exe_path.parent() {
             let model_path = folder_path.join("model/base_q8_0.gguf");
             let config_path = folder_path.join("model/config.json");
             let tokenizer_path = folder_path.join("model/tokenizer.json");
             if let Some(model_path_str) = model_path.to_str() {
-                let device = Device::cuda_if_available(0)
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
-                let var_builder = VarBuilder::from_gguf(model_path_str, &device)
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                let device = Device::cuda_if_available(0)?;
+                let var_builder = VarBuilder::from_gguf(model_path_str, &device)?;
 
-                let config = serde_json::from_reader::<_, Config>(
-                    File::open(config_path).map_err(|e| PlayerError::Internal(e.to_string()))?,
-                )
-                .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                let config = serde_json::from_reader::<_, Config>(File::open(config_path)?)?;
                 let whisper_recognizer =
                     candle_transformers::models::whisper::quantized_model::Whisper::load(
                         &var_builder,
                         config.clone(),
-                    )
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
-                let tokenizer = tokenizer::Tokenizer::from_file(tokenizer_path)
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                    )?;
+                let tokenizer =
+                    tokenizer::Tokenizer::from_file(tokenizer_path).map_err(anyhow::Error::msg)?;
 
                 unsafe {
                     let mut swr_ctx = null_mut();
@@ -100,36 +95,29 @@ impl AISubTitle {
                     let mel_filters = bytemuck::cast_slice::<_, f32>(MEL_FILTERS).to_vec();
                     let sot_id = tokenizer
                         .token_to_id(candle_transformers::models::whisper::SOT_TOKEN)
-                        .ok_or(PlayerError::Internal("sot token to id err".to_string()))?;
+                        .ok_or(Error::msg("SOT_TOKEN token2id is none!!!"))?;
 
                     let transcribe_id = tokenizer
                         .token_to_id(candle_transformers::models::whisper::TRANSCRIBE_TOKEN)
-                        .ok_or(PlayerError::Internal(
-                            "TRANSCRIBE_TOKEN to id err".to_string(),
-                        ))?;
+                        .ok_or(anyhow::Error::msg("TRANSCRIBE_TOKEN to id err"))?;
 
                     let no_timestamp_id = tokenizer
                         .token_to_id(candle_transformers::models::whisper::NO_TIMESTAMPS_TOKEN)
-                        .ok_or(PlayerError::Internal(
-                            "NO_TIMESTAMPS_TOKEN to id err".to_string(),
-                        ))?;
+                        .ok_or(anyhow::Error::msg("NO_TIMESTAMPS_TOKEN to id err"))?;
                     let eot_id = tokenizer
                         .token_to_id(candle_transformers::models::whisper::EOT_TOKEN)
-                        .ok_or(PlayerError::Internal("EOT_TOKEN to id err".to_string()))?;
+                        .ok_or(anyhow::Error::msg("EOT_TOKEN to id err"))?;
                     let no_speech_token = whisper::NO_SPEECH_TOKENS
                         .iter()
                         .find_map(|token| tokenizer.token_to_id(token));
                     let no_speech_id = match no_speech_token {
                         None => {
-                            return Err(PlayerError::Internal(
-                                "unable to find any non-speech token".to_string(),
-                            ));
+                            return Err(anyhow::Error::msg("unable to find any non-speech token"));
                         }
                         Some(n) => n,
                     };
                     let candle_streaming_mel_processor = CandleStreamingMelProcessor::new(
-                        Tensor::new(mel_filters, &device)
-                            .map_err(|e| PlayerError::Internal(e.to_string()))?,
+                        Tensor::new(mel_filters, &device)?,
                         &device,
                     )?;
                     return Ok(Self {
@@ -155,9 +143,7 @@ impl AISubTitle {
             }
         }
 
-        Err(PlayerError::Internal(
-            "AISubTitle construct err".to_string(),
-        ))
+        Err(anyhow::Error::msg("AISubTitle construct err"))
     }
 
     pub async fn push_frame_data(
@@ -393,11 +379,7 @@ impl CandleStreamingMelProcessor {
         let fft_handler = planner.plan_fft_forward(n_fft);
 
         // 确保 mel_filters 形状正确并搬运到目标设备
-        let mel_filters = mel_filters
-            .reshape((80, 201))
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
-            .to_device(device)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let mel_filters = mel_filters.reshape((80, 201))?.to_device(device)?;
 
         Ok(Self {
             device: device.clone(),
@@ -453,67 +435,39 @@ impl CandleStreamingMelProcessor {
         }
 
         // 2. 批量计算功率谱
-        let power_spec = self
-            .frames_to_power_spec(&frames)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let power_spec = self.frames_to_power_spec(&frames)?;
 
         // 3. 矩阵乘法转 Mel: [frames, 201] * [201, 80] -> [frames, 80]
-        let mel = power_spec
-            .matmul(
-                &self
-                    .mel_filters
-                    .t()
-                    .map_err(|e| PlayerError::Internal(e.to_string()))?,
-            )
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let mel = power_spec.matmul(&self.mel_filters.t()?)?;
 
         // 4. Log-Mel 变换与归一化 (核心修正点)
         // Whisper 标准: log10(mel) -> 映射到 [-1, 1]
         let shape = mel.shape().clone();
 
         // 1. 将 Tensor 转回 Rust 的 Vec<f32> 进行高精度 log10 处理
-        let mel_vec = mel
-            .flatten_all()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
-            .to_vec1::<f32>()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let mel_vec = mel.flatten_all()?.to_vec1::<f32>()?;
 
         // 2. 使用 Rust 标准库 f32::log10 处理
         // 我们同时在这里处理 clamp，防止 log10(-inf)
         let log_mel_vec: Vec<f32> = mel_vec.into_iter().map(|v| v.max(1e-10).log10()).collect();
 
         // 3. 转回 Tensor
-        let log10_mel = Tensor::from_vec(log_mel_vec, shape, &self.device)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let log10_mel = Tensor::from_vec(log_mel_vec, shape, &self.device)?;
 
         // 1. 获取当前批次的最大值
-        let max_val = log10_mel
-            .max_all()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
-            .to_scalar::<f32>()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let max_val = log10_mel.max_all()?.to_scalar::<f32>()?;
 
         // 2. 创建一个标量 Tensor 作为阈值 (注意必须在同一个 device 上)
-        let threshold = Tensor::from_vec(vec![max_val - 8.0], (1, 1), &self.device)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
-            .broadcast_as(log10_mel.shape())
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let threshold = Tensor::from_vec(vec![max_val - 8.0], (1, 1), &self.device)?
+            .broadcast_as(log10_mel.shape())?;
 
         // 3. 使用 broadcast_maximum (或简写 maximum)
-        let log_mel = log10_mel
-            .maximum(&threshold)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
-            .affine(1.0 / 4.0, 1.0)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let log_mel = log10_mel.maximum(&threshold)?.affine(1.0 / 4.0, 1.0)?;
 
         // 5. 逐帧推入缓冲区
         // 修正：从 log_mel 中提取每一帧时，保持 Tensor 引用
         for i in 0..num_frames {
-            let frame = log_mel
-                .narrow(0, i, 1)
-                .map_err(|e| PlayerError::Internal(e.to_string()))?
-                .squeeze(0)
-                .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            let frame = log_mel.narrow(0, i, 1)?.squeeze(0)?;
             self.mel_buffer.push(frame);
         }
 
@@ -533,27 +487,23 @@ impl CandleStreamingMelProcessor {
 
         // 重点：Whisper Encoder 期望的形状是 [Batch, 80, Time]
         let final_mel = Tensor::stack(&self.mel_buffer, 0)
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
+            ?
             .t() // [80, Time]
-            .map_err(|e| PlayerError::Internal(e.to_string()))?
+            ?
             .unsqueeze(0) // [1, 80, Time]
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+            ?;
         self.mel_buffer.clear();
-        let (_, _, current_frames) = final_mel
-            .dims3()
-            .map_err(|e| PlayerError::Internal(e.to_string()))?;
+        let (_, _, current_frames) = final_mel.dims3()?;
         let final_mel = if current_frames < 3000 {
             let pad_size = 3000 - current_frames;
             let pad = Tensor::zeros((1, 80, pad_size), final_mel.dtype(), final_mel.device())
-                .map_err(|e| PlayerError::Internal(e.to_string()))?
+                ?
                 .affine(1.0, -1.0) // 0.0 * 1.0 + (-1.0) = -1.0
-                .map_err(|e| PlayerError::Internal(e.to_string()))?;
+                ?;
 
-            Tensor::cat(&[final_mel, pad], 2).map_err(|e| PlayerError::Internal(e.to_string()))?
+            Tensor::cat(&[final_mel, pad], 2)?
         } else {
-            final_mel
-                .narrow(2, 0, 3000)
-                .map_err(|e| PlayerError::Internal(e.to_string()))?
+            final_mel.narrow(2, 0, 3000)?
         };
         Ok(Some(final_mel))
     }
