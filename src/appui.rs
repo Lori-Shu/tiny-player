@@ -636,6 +636,13 @@ impl AppUi {
                         if self.subtitle_text.len() > 50 {
                             self.subtitle_text.remove(0);
                         }
+                        if let Ok(used_model) = self.used_model.try_read() {
+                            if let UsedModel::Empty = &*used_model
+                                && !self.subtitle_text.is_empty()
+                            {
+                                self.subtitle_text.clear();
+                            }
+                        }
                         let subtitle_text_button = egui::Button::new(
                             RichText::new(self.subtitle_text.clone())
                                 .size(50.0)
@@ -749,25 +756,47 @@ impl AppUi {
 
                         video_urls_scroll.show(ui, |ui| {
                             let video_des = self.video_des.clone();
-                            if let Ok(mut videos) = video_des.try_write() {
-                                for i in &mut *videos {
-                                    ui.vertical_centered_justified(|ui| {
-                                        let image = Image::new(&i.texture_handle)
+                            if let Ok(videos) = video_des.try_write() {
+                                ui.columns(2, |columns| {
+                                    for (i, des) in videos.iter().enumerate() {
+                                        let image = Image::new(&des.texture_handle)
                                             .max_size(Vec2::new(200.0, 180.0));
 
-                                        ui.add(image);
                                         let player_text_button =
-                                            PlayerTextButton::new(i.name.clone(), 20.0, true);
-                                        if ui.add(player_text_button).clicked() {
-                                            if self
-                                                .change_format_input(&PathBuf::from(&i.path), now)
-                                                .is_ok()
-                                            {
-                                                info!("change_format_input success");
-                                            }
+                                            PlayerTextButton::new(des.name.clone(), 20.0, true);
+                                        if i % 2 == 0 {
+                                            columns[0].vertical(|ui| {
+                                                ui.add(image);
+                                                if ui.add(player_text_button).clicked() {
+                                                    if self
+                                                        .change_format_input(
+                                                            &PathBuf::from(&des.path),
+                                                            now,
+                                                        )
+                                                        .is_ok()
+                                                    {
+                                                        info!("change_format_input success");
+                                                    }
+                                                }
+                                            });
+                                        } else {
+                                            columns[1].vertical(|ui| {
+                                                ui.add(image);
+                                                if ui.add(player_text_button).clicked() {
+                                                    if self
+                                                        .change_format_input(
+                                                            &PathBuf::from(&des.path),
+                                                            now,
+                                                        )
+                                                        .is_ok()
+                                                    {
+                                                        info!("change_format_input success");
+                                                    }
+                                                }
+                                            });
                                         }
-                                    });
-                                }
+                                    }
+                                });
                             }
                         });
                         if let Some(dialog) = &mut self.scan_folder_dialog {

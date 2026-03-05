@@ -1,8 +1,8 @@
 [package]
-name = "tiny_player"
-version = "0.0.15"
+name = "tiny-player"
+version = "0.0.16"
 edition = "2024"
-description = "a tiny video player"
+description = "a tiny media player"
 authors = ["Lori-Shu"]
 
 [dependencies]

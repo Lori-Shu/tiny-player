@@ -251,8 +251,7 @@ impl AISubTitle {
                         }
                     }
                     if let Ok(text) = self.tokenizer.decode(&tokens, true) {
-                        if let Err(e) = self.subtitle_sender.blocking_send(text.trim().to_string())
-                        {
+                        if let Err(e) = self.subtitle_sender.send(text.trim().to_string()).await {
                             warn!("send subtitle err {}", e.to_string());
                         }
                     }
