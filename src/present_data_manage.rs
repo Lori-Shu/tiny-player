@@ -1,19 +1,20 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, Condvar},
     time::{Duration, Instant},
 };
 
 use derive_builder::Builder;
-use ffmpeg_the_third::frame::Video;
+use ffmpeg_the_third::frame::{Audio, Video};
 use rodio::Sink;
 use tokio::{
     runtime::Handle,
-    sync::{Notify, RwLock},
+    sync::{Notify, RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
 };
+use tracing::warn;
 
 use crate::{
-    ai_sub_title::{AISubTitle, UsedModel},
+    ai_sub_title2::UsedModel,
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
 };
@@ -51,9 +52,14 @@ impl PresentDataManager {
                             let used_model = data_manage_context.used_model.read().await;
                             let used_model_ref = &*used_model;
                             if UsedModel::Empty != *used_model_ref {
-                                let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
                                 let used_model = used_model_ref.clone();
-                                ai_subtitle.push_frame_data(audio_frame, used_model).await;
+                                if let Err(e) = data_manage_context
+                                    .frame_sender
+                                    .send((audio_frame, used_model))
+                                {
+                                    warn!("send audio frame to subtitle thread failed!!!{}", e);
+                                }
+                                data_manage_context.transcribe_thread_condvar.notify_one();
                             }
                         }
                     }
@@ -175,10 +181,11 @@ impl PresentDataManager {
 }
 #[derive(Builder)]
 pub struct DataManageContext {
+    frame_sender: UnboundedSender<(Audio, UsedModel)>,
+    transcribe_thread_condvar: Arc<Condvar>,
     data_thread_notify: Arc<Notify>,
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     used_model: Arc<RwLock<UsedModel>>,
-    ai_subtitle: Arc<RwLock<AISubTitle>>,
     current_video_frame: Arc<RwLock<Video>>,
     audio_sink: Arc<Sink>,
     main_stream_current_timestamp: Arc<RwLock<i64>>,

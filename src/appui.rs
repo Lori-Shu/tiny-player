@@ -28,7 +28,7 @@ use tracing::{info, warn};
 
 use crate::{
     PlayerResult,
-    ai_sub_title::{AISubTitle, UsedModel},
+    ai_sub_title2::{AISubTitle2, UsedModel},
     decode::{MainStream, TinyDecoder},
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
 };
@@ -107,7 +107,6 @@ pub struct AppUi {
     opened_file: Option<std::path::PathBuf>,
     open_file_dialog: Option<egui_file::FileDialog>,
     scan_folder_dialog: Option<egui_file::FileDialog>,
-    _subtitle: Arc<RwLock<AISubTitle>>,
     subtitle_text: String,
     subtitle_text_receiver: mpsc::Receiver<String>,
     video_des: Arc<RwLock<Vec<VideoDes>>>,
@@ -260,8 +259,19 @@ impl AppUi {
         let tiny_decoder = crate::decode::TinyDecoder::new(rt.clone())?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         let used_model = Arc::new(RwLock::new(UsedModel::Empty));
-        let subtitle_channel = mpsc::channel(10);
-        let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
+        let subtitle_text_channel = mpsc::channel(10);
+        let subtitle_frame_channel = mpsc::unbounded_channel();
+        let subtitle_cond = Arc::new(std::sync::Condvar::new());
+        let cond = subtitle_cond.clone();
+        std::thread::spawn(move || {
+            match AISubTitle2::new(subtitle_text_channel.0, subtitle_frame_channel.1, cond) {
+                Ok(mut subtitle) => subtitle.run_transcribe_loop(),
+                Err(e) => {
+                    warn!("subtitle new err!!!{}", e);
+                }
+            }
+        });
+
         let audio_player = crate::audio_play::AudioPlayer::new()?;
         let empty_frame = Video::empty();
         let current_video_frame = Arc::new(RwLock::new(empty_frame));
@@ -270,10 +280,11 @@ impl AppUi {
 
         let data_thread_notify = Arc::new(Notify::new());
         let data_manage_context = DataManageContextBuilder::default()
+            .frame_sender(subtitle_frame_channel.0)
+            .transcribe_thread_condvar(subtitle_cond)
             .data_thread_notify(data_thread_notify.clone())
             .tiny_decoder(tiny_decoder.clone())
             .used_model(used_model.clone())
-            .ai_subtitle(subtitle.clone())
             .current_video_frame(current_video_frame.clone())
             .audio_sink(audio_player.sink())
             .main_stream_current_timestamp(main_stream_current_timestamp.clone())
@@ -282,7 +293,7 @@ impl AppUi {
         let present_data_manager = PresentDataManager::new(data_manage_context);
 
         Ok(Self {
-            subtitle_text_receiver: subtitle_channel.1,
+            subtitle_text_receiver: subtitle_text_channel.1,
             video_texture_handle: None,
             tiny_decoder,
             audio_player,
@@ -314,7 +325,6 @@ impl AppUi {
             open_file_dialog: Some(f_dialog),
             scan_folder_dialog: Some(egui_file::FileDialog::select_folder()),
             bg_dyn_img: dyn_img,
-            _subtitle: subtitle,
             subtitle_text: String::new(),
             video_des: Arc::new(RwLock::new(vec![])),
             audio_volumn: 1.0,
