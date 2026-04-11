@@ -12,21 +12,26 @@ use std::{
 
 use eframe::{
     egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew},
-    wgpu::{Backends, InstanceDescriptor},
+    wgpu::{
+        BackendOptions, Backends, DeviceDescriptor, Features, InstanceDescriptor, InstanceFlags,
+        MemoryBudgetThresholds, PowerPreference,
+    },
 };
 use egui::{IconData, ImageSource, Vec2, include_image};
 
 use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod ai_sub_title;
+// mod ai_sub_title;
 mod appui;
 mod audio_play;
 mod decode;
+mod gpu_post_process;
 mod present_data_manage;
+// mod translate;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");
-static CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
+static _CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
     let path = std::env::current_exe()?;
     Ok(path)
 });
@@ -53,45 +58,56 @@ fn main() {
     let span = tracing::span!(Level::INFO, "main");
     let _main_entered = span.enter();
     info!("enter main span");
-    if let Ok(tiny_app_ui) = appui::AppUi::new() {
-        let mut options = eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            wgpu_options: WgpuConfiguration {
-                wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
-                    instance_descriptor: InstanceDescriptor {
-                        backends: Backends::VULKAN,
-                        ..Default::default()
-                    },
+
+    let mut options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: WgpuConfiguration {
+            wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
+                instance_descriptor: InstanceDescriptor {
+                    backends: Backends::VULKAN,
+                    flags: InstanceFlags::default(),
+                    memory_budget_thresholds: MemoryBudgetThresholds::default(),
+                    backend_options: BackendOptions::default(),
+                    display: None,
+                },
+                display_handle: None,
+                power_preference: PowerPreference::default(),
+                native_adapter_selector: None,
+                device_descriptor: Arc::new(|_adapter| DeviceDescriptor {
+                    required_features: Features::default() | Features::TEXTURE_FORMAT_16BIT_NORM,
                     ..Default::default()
                 }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON {
-            if let Ok(img) = image::load_from_memory(&bytes) {
-                options.viewport.icon = Some(Arc::new(IconData {
-                    width: img.width(),
-                    height: img.height(),
-                    rgba: img.as_bytes().to_vec(),
-                }));
-            }
-        }
-        options.centered = true;
-        options.viewport.inner_size = Some(Vec2::new(900.0, 700.0));
-
-        if let Err(e) = eframe::run_native(
-            "tiny player",
-            options,
-            Box::new(|cc| {
-                egui_extras::install_image_loaders(&cc.egui_ctx);
-                tiny_app_ui.replace_fonts(&cc.egui_ctx);
-                Ok(Box::new(tiny_app_ui))
             }),
-        ) {
-            warn!("eframe start error {}", e.to_string());
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON {
+        if let Ok(img) = image::load_from_memory(&bytes) {
+            options.viewport.icon = Some(Arc::new(IconData {
+                width: img.width(),
+                height: img.height(),
+                rgba: img.as_bytes().to_vec(),
+            }));
         }
-    } else if let Err(e) = appui::AppUi::new() {
-        warn!("appui construct err {}", e.to_string());
+    }
+    options.centered = true;
+    options.viewport.inner_size = Some(Vec2::new(900.0, 700.0));
+
+    if let Err(e) = eframe::run_native(
+        "tiny player",
+        options,
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            match appui::AppUi::new(cc) {
+                Ok(tiny_app_ui) => {
+                    tiny_app_ui.replace_fonts(&cc.egui_ctx);
+                    Ok(Box::new(tiny_app_ui))
+                }
+                Err(e) => Err(e.into()),
+            }
+        }),
+    ) {
+        warn!("eframe start error {}", e.to_string());
     }
 }
