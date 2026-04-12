@@ -3,7 +3,6 @@ use std::{
     ptr::{null, null_mut},
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
-    usize,
 };
 
 use derive_builder::Builder;
@@ -16,9 +15,8 @@ use ffmpeg_the_third::{
         av_image_copy_to_buffer, av_image_get_buffer_size, avcodec_get_hw_config,
         swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
     },
-    format::{Pixel, sample::Type, stream::Disposition},
+    format::{sample::Type, stream::Disposition},
     frame::{Audio, Video},
-    software::scaling,
 };
 
 use flume::{Receiver, Sender};
@@ -56,16 +54,9 @@ unsafe impl Sync for ManualProtectedAudioDecoder {}
 pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
-/// this wrapper type should be protected manually to
-/// keep memory safe in multi threads
-/// means need to wrap an Arc and a Lock to use it in multi threads
-#[allow(unused)]
-pub struct ManualProtectedConverter(pub scaling::Context);
-unsafe impl Send for ManualProtectedConverter {}
-unsafe impl Sync for ManualProtectedConverter {}
 
 /// indicate which stream in the input is chose as main stream
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum MainStream {
     Video,
     Audio,
@@ -88,7 +79,6 @@ pub struct TinyDecoder {
     format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
     video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
     audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
-    converter_ctx: Option<ManualProtectedConverter>,
     resampler_ctx: Option<ManualProtectedResampler>,
     video_frame_cache_queue: (
         Sender<ffmpeg_the_third::frame::Video>,
@@ -143,7 +133,6 @@ impl TinyDecoder {
             format_input: Arc::new(RwLock::new(None)),
             video_decoder: Arc::new(RwLock::new(None)),
             audio_decoder: Arc::new(RwLock::new(None)),
-            converter_ctx: None,
             resampler_ctx: None,
             video_frame_cache_queue: flume::bounded(16),
             audio_frame_cache_queue: flume::bounded(32),
@@ -173,7 +162,6 @@ impl TinyDecoder {
         self.main_stream = MainStream::Audio;
         *self.audio_decoder.write().await = None;
         self.audio_time_base = Rational::new(1, 1);
-        self.converter_ctx = None;
         self.cover_pic_data = Arc::new(RwLock::new(None));
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
@@ -283,12 +271,6 @@ impl TinyDecoder {
                 [video_decoder.width(), video_decoder.height()],
                 self.hardware_config_flag.clone(),
             );
-            let converter = ffmpeg_the_third::software::converter(
-                (video_decoder.width(), video_decoder.height()),
-                Pixel::YUV420P,
-                Pixel::RGBA,
-            )?;
-            self.converter_ctx = Some(ManualProtectedConverter(converter));
 
             info!("video decode format{:#?}", video_decoder.format());
             self.video_frame_rect = [video_decoder.width(), video_decoder.height()];
@@ -356,7 +338,7 @@ impl TinyDecoder {
                 let res = {
                     let mut input = demux_context.format_input.write().await;
                     if let Some(input) = &mut *input {
-                        let res = match input.0.packets().next() {
+                         match input.0.packets().next() {
                             Some(Ok((stream, packet))) => Ok((stream.index(), packet)),
                             Some(Err(ffmpeg_the_third::util::error::Error::Eof)) => {
                                 info!("demux process hit the end");
@@ -364,8 +346,7 @@ impl TinyDecoder {
                             }
                             None => Err(anyhow::Error::msg("None")),
                             _ => Err(anyhow::Error::msg("Other case")),
-                        };
-                        res
+                        }
                     } else {
                         Err(anyhow::Error::msg("Other case"))
                     }
@@ -818,40 +799,14 @@ impl TinyDecoder {
     /// set the new converter, only change the out put format, dont change the width and height which
     /// have been used in the ui thread
     pub async fn pull_one_video_play_frame(&mut self) -> Option<ffmpeg_the_third::frame::Video> {
-        if let Some(_converter_ctx) = &mut self.converter_ctx {
-            let mut return_val = None;
-
-            if self.video_frame_cache_queue.1.len() < 5 {
-                self.video_decode_thread_notify.notify_one();
-            }
-            if !self.video_frame_cache_queue.1.is_empty() {
-                if let Ok(raw_frame) = self.video_frame_cache_queue.1.recv_async().await {
-                    // unsafe {
-                    //     let frame = res.as_mut_ptr();
-                    //     (*frame).width = raw_frame.width() as i32;
-                    //     (*frame).height = raw_frame.height() as i32;
-                    //     (*frame).format = AVPixelFormat::AV_PIX_FMT_RGBA as i32;
-
-                    //     // align to 256 to meet the wgpu requirement
-                    //     let align = 256;
-                    //     if 0 > av_frame_get_buffer(frame, align) {
-                    //         warn!("av_frame_get_buffer error!");
-                    //     }
-                    // }
-                    // if converter_ctx.0.run(&raw_frame, &mut res).is_ok() {
-                    //     if let Some(pts) = raw_frame.pts() {
-                    //         res.set_pts(Some(pts));
-                    //     }
-
-                    //     return_val = Some(res);
-                    // }
-                    return_val = Some(raw_frame);
-                }
-            }
-
-            return return_val;
+        if self.video_frame_cache_queue.1.len() < 5 {
+            self.video_decode_thread_notify.notify_one();
         }
-        None
+        if !self.video_frame_cache_queue.1.is_empty() {
+            self.video_frame_cache_queue.1.recv_async().await.ok()
+        } else {
+            None
+        }
     }
     /// get v time base used to check time and compare to sync
     pub fn video_time_base(&self) -> &Rational {

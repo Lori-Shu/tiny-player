@@ -87,8 +87,8 @@ impl PresentDataManager {
                 let tiny_decoder = data_manage_context.tiny_decoder.read().await;
                 (
                     tiny_decoder.main_stream().clone(),
-                    tiny_decoder.audio_time_base().clone(),
-                    tiny_decoder.video_time_base().clone(),
+                    *tiny_decoder.audio_time_base(),
+                    *tiny_decoder.video_time_base(),
                 )
             };
             let frame_result = if PresentDataManager::should_video_catch_audio(
