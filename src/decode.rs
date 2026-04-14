@@ -290,7 +290,7 @@ impl TinyDecoder {
                 let r = swr_alloc_set_opts2(
                     &mut swr_ctx,
                     &AV_CHANNEL_LAYOUT_STEREO,
-                    ffmpeg_the_third::ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT,
+                    ffmpeg_the_third::ffi::AVSampleFormat::FLT,
                     48000,
                     audio_decoder.ch_layout().as_ptr(),
                     audio_decoder.format().into(),
@@ -338,7 +338,7 @@ impl TinyDecoder {
                 let res = {
                     let mut input = demux_context.format_input.write().await;
                     if let Some(input) = &mut *input {
-                         match input.0.packets().next() {
+                        match input.0.packets().next() {
                             Some(Ok((stream, packet))) => Ok((stream.index(), packet)),
                             Some(Err(ffmpeg_the_third::util::error::Error::Eof)) => {
                                 info!("demux process hit the end");
@@ -770,7 +770,7 @@ impl TinyDecoder {
     pub async fn _convert_frame_data_to_no_padding_layout(res: &mut Video) -> Box<[u8]> {
         unsafe {
             let buf_size = av_image_get_buffer_size(
-                AVPixelFormat::AV_PIX_FMT_RGBA,
+                AVPixelFormat::RGBA,
                 res.width() as i32,
                 res.height() as i32,
                 1,
@@ -995,7 +995,7 @@ impl TinyDecoder {
                         break std::ptr::null();
                     }
 
-                    if (*config).device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN {
+                    if (*config).device_type == AVHWDeviceType::VULKAN {
                         break config;
                     }
 
@@ -1037,10 +1037,10 @@ unsafe extern "C" fn get_format_callback(
     unsafe {
         let mut i = 0;
         loop {
-            if *fmt.add(i) != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *fmt.add(i) != AVPixelFormat::NONE {
                 let current_fmt = *fmt.add(i);
 
-                if current_fmt == AVPixelFormat::AV_PIX_FMT_VULKAN {
+                if current_fmt == AVPixelFormat::VULKAN {
                     return current_fmt;
                 }
             } else {

@@ -10,8 +10,8 @@ use std::{
 use eframe::{
     CreationContext, Frame,
     wgpu::{
-        Extent3d, Texture, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
-        TextureUsages, TextureViewDescriptor,
+        Extent3d, Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
+        TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
     },
 };
 use egui::{
@@ -82,11 +82,11 @@ impl Widget for PlayerTextButton {
 struct UiFlags {
     pause_flag: Arc<AtomicBool>,
     fullscreen_flag: bool,
-    control_ui_flag: bool,
     tip_window_flag: bool,
     playlist_window_flag: bool,
     show_subtitle_options_flag: bool,
     show_volumn_slider_flag: bool,
+    visible_flag: bool,
 }
 
 pub struct AppUi {
@@ -102,7 +102,6 @@ pub struct AppUi {
     play_time: time::Time,
     time_text: String,
     tip_window_msg: String,
-    last_show_control_ui_instant: Instant,
     app_start_instant: Instant,
     async_rt: Runtime,
     open_file_dialog: Option<egui_file::FileDialog>,
@@ -115,6 +114,7 @@ pub struct AppUi {
     audio_volumn: f32,
     data_thread_notify: Arc<Notify>,
     current_video_timestamp: Arc<AtomicI64>,
+    visible_num: f32,
 }
 impl eframe::App for AppUi {
     /// this function will automaticly be called every ui redraw
@@ -176,13 +176,11 @@ impl eframe::App for AppUi {
                 down part is ui painting and control
 
                  */
+                self.visiable_anime(ui);
+                self.ui_flags.visible_flag = false;
                 self.paint_video_image(ui);
                 self.paint_frame_info_text(ui, &now);
-                if self.ui_flags.control_ui_flag {
-                    ui.set_opacity(1.0);
-                } else {
-                    ui.set_opacity(0.0);
-                }
+
                 ui.horizontal(|ui| {
                     self.paint_tip_window(ui.ctx());
                     self.paint_file_btn(ui, frame, &now);
@@ -193,7 +191,7 @@ impl eframe::App for AppUi {
 
                 ui.add_space(ui.ctx().content_rect().height() / 2.0 - 200.0);
                 ui.horizontal(|ui| {
-                    self.paint_playpause_btn(ui, &now);
+                    self.paint_playpause_btn(ui);
                 });
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
@@ -201,9 +199,7 @@ impl eframe::App for AppUi {
                     self.paint_control_area(ui, &now);
                     // self.paint_subtitle(ui, ctx);
                 });
-                if (now - self.last_show_control_ui_instant).as_secs() > 3 {
-                    self.ui_flags.control_ui_flag = false;
-                }
+
                 self.detect_file_drag(ui, frame, &now);
                 ui.ctx().request_repaint_after(Duration::from_millis(16));
             });
@@ -312,18 +308,16 @@ impl AppUi {
             ui_flags: UiFlags {
                 pause_flag,
                 fullscreen_flag: false,
-                control_ui_flag: true,
                 tip_window_flag: false,
                 playlist_window_flag: false,
                 show_subtitle_options_flag: false,
                 show_volumn_slider_flag: false,
+                visible_flag: false,
             },
             // used_model,
             time_text: String::new(),
 
             tip_window_msg: String::new(),
-
-            last_show_control_ui_instant: Instant::now(),
             app_start_instant: Instant::now(),
             async_rt,
             open_file_dialog: Some(f_dialog),
@@ -335,6 +329,7 @@ impl AppUi {
             audio_volumn: 1.0,
             data_thread_notify,
             current_video_timestamp,
+            visible_num: 1.0,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -457,6 +452,25 @@ impl AppUi {
             eframe::wgpu::FilterMode::Linear,
         );
         info!("register texture success");
+        render_state.queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &video_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            main_color_image.as_raw(),
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((main_color_image.width() * 4) as u32),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: main_color_image.width() as u32,
+                height: main_color_image.height() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
         {
             let mut texture_with_id = self.video_texture.blocking_write();
             texture_with_id.texture = Some(video_texture);
@@ -471,13 +485,17 @@ impl AppUi {
             ui.ctx().content_rect().width() / 10.0,
             ui.ctx().content_rect().width() / 10.0,
         );
-        let file_image_button = egui::Button::new(VIDEO_FILE_IMG.atom_size(btn_rect)).frame(false);
+        let file_image_button = egui::Button::new(
+            Image::from(VIDEO_FILE_IMG)
+                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                .atom_size(btn_rect),
+        )
+        .frame(false);
 
         let file_img_btn_response = ui.add(file_image_button);
 
         if file_img_btn_response.hovered() {
-            self.ui_flags.control_ui_flag = true;
-            self.last_show_control_ui_instant = *now;
+            self.ui_flags.visible_flag = true;
         }
         if file_img_btn_response.clicked() {
             if let Some(dialog) = &mut self.open_file_dialog {
@@ -506,7 +524,7 @@ impl AppUi {
         }
     }
 
-    fn paint_playpause_btn(&mut self, ui: &mut Ui, now: &Instant) {
+    fn paint_playpause_btn(&mut self, ui: &mut Ui) {
         let decoder = self.tiny_decoder.clone();
         let tiny_decoder = self.async_rt.block_on(decoder.read());
         if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
@@ -523,14 +541,15 @@ impl AppUi {
                 ui.ctx().content_rect().width() / 10.0,
                 ui.ctx().content_rect().width() / 10.0,
             );
-            let btn_atom = play_or_pause_image_source.atom_size(btn_rect);
-            let play_or_pause_btn = egui::Button::new(btn_atom).frame(false);
+            let btn_img = Image::from(play_or_pause_image_source)
+                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                .atom_size(btn_rect);
+            let play_or_pause_btn = egui::Button::new(btn_img).frame(false);
 
             ui.add_space(ui.ctx().content_rect().width() / 2.0 - 100.0);
             let btn_response = ui.add_sized(Vec2::new(100.0, 100.0), play_or_pause_btn);
             if btn_response.hovered() {
-                self.ui_flags.control_ui_flag = true;
-                self.last_show_control_ui_instant = *now;
+                self.ui_flags.visible_flag = true;
             }
             if btn_response.clicked() || ui.ctx().input(|s| s.key_released(egui::Key::Space)) {
                 let pause_flag = &self.ui_flags.pause_flag;
@@ -556,65 +575,70 @@ impl AppUi {
             if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
                 let mut slider_color = THEME_COLOR.to_srgba_unmultiplied();
                 slider_color[3] = 100;
-
-                let progress_slider = egui::Slider::new(&mut ts, 0..=tiny_decoder.end_ts())
-                    .show_value(false)
-                    .text(WidgetText::RichText(Arc::new(
-                        RichText::new(self.time_text.clone()).size(20.0).color(
-                            Color32::from_rgba_unmultiplied(
-                                slider_color[0],
-                                slider_color[1],
-                                slider_color[2],
-                                slider_color[3],
+                ui.scope(|ui| {
+                    ui.set_opacity(255.0 * self.visible_num);
+                    let progress_slider = egui::Slider::new(&mut ts, 0..=tiny_decoder.end_ts())
+                        .show_value(false)
+                        .text(WidgetText::RichText(Arc::new(
+                            RichText::new(self.time_text.clone()).size(20.0).color(
+                                Color32::from_rgba_unmultiplied(
+                                    slider_color[0],
+                                    slider_color[1],
+                                    slider_color[2],
+                                    slider_color[3],
+                                ),
                             ),
-                        ),
-                    )));
+                        )));
 
-                let mut slider_width_style = egui::style::Style::default();
-                slider_width_style.spacing.slider_width = ui.ctx().content_rect().width() - 450.0;
-                slider_width_style.spacing.slider_rail_height = 10.0;
-                slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                slider_width_style.visuals.extreme_bg_color =
-                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                slider_width_style.visuals.selection.bg_fill =
-                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                slider_width_style.visuals.widgets.active.bg_fill =
-                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                slider_width_style.visuals.widgets.inactive.bg_fill =
-                    Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                ui.set_style(slider_width_style);
-                let slider_response = ui.add(progress_slider);
-                if slider_response.hovered() {
-                    self.ui_flags.control_ui_flag = true;
-                    self.last_show_control_ui_instant = Instant::now();
-                }
-                if slider_response.dragged() {
-                    warn!("slider dragged!");
-                    let audio_player = &mut self.audio_player;
-                    let tiny_decoder = self.tiny_decoder.clone();
-                    self.async_rt.spawn(async move {
-                        let tiny_decoder = tiny_decoder.read().await;
-                        tiny_decoder.seek_timestamp_to_decode(ts).await;
-                    });
-
-                    audio_player.source_queue_skip_to_end();
-                    if !self
-                        .ui_flags
-                        .pause_flag
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        audio_player.play();
+                    let mut slider_width_style = egui::style::Style::default();
+                    slider_width_style.spacing.slider_width =
+                        ui.ctx().content_rect().width() - 450.0;
+                    slider_width_style.spacing.slider_rail_height = 10.0;
+                    slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
+                    slider_width_style.visuals.extreme_bg_color =
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                    slider_width_style.visuals.selection.bg_fill =
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                    slider_width_style.visuals.widgets.active.bg_fill =
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                    slider_width_style.visuals.widgets.inactive.bg_fill =
+                        Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                    ui.set_style(slider_width_style);
+                    let slider_response = ui.add(progress_slider);
+                    if slider_response.hovered() {
+                        self.ui_flags.visible_flag = true;
                     }
-                    self.frame_show_instant = *now;
-                }
+                    if slider_response.changed() {
+                        warn!("slider dragged!");
+                        let audio_player = &mut self.audio_player;
+                        let tiny_decoder = self.tiny_decoder.clone();
+                        self.async_rt.spawn(async move {
+                            let tiny_decoder = tiny_decoder.read().await;
+                            tiny_decoder.seek_timestamp_to_decode(ts).await;
+                        });
+
+                        audio_player.source_queue_skip_to_end();
+                        if !self
+                            .ui_flags
+                            .pause_flag
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            audio_player.play();
+                        }
+                        self.frame_show_instant = *now;
+                    }
+                });
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let subtitle_btn =
-                        Button::new(SUBTITLE_IMG.atom_size(Vec2::new(50.0, 50.0))).frame(false);
+                    let subtitle_btn = Button::new(
+                        Image::from(SUBTITLE_IMG)
+                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                            .atom_size(Vec2::new(50.0, 50.0)),
+                    )
+                    .frame(false);
                     let btn_response = ui.add(subtitle_btn);
                     if btn_response.hovered() {
-                        self.ui_flags.control_ui_flag = true;
-                        self.last_show_control_ui_instant = *now;
+                        self.ui_flags.visible_flag = true;
                     }
                     if btn_response.clicked() {
                         self.ui_flags.show_subtitle_options_flag =
@@ -629,12 +653,15 @@ impl AppUi {
                     // }
                 });
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let volumn_img_btn =
-                        egui::Button::new(VOLUME_IMG.atom_size(Vec2::new(50.0, 50.0))).frame(false);
+                    let volumn_img_btn = egui::Button::new(
+                        Image::from(VOLUME_IMG)
+                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                            .atom_size(Vec2::new(50.0, 50.0)),
+                    )
+                    .frame(false);
                     let btn_response = ui.add(volumn_img_btn);
                     if btn_response.hovered() {
-                        self.ui_flags.control_ui_flag = true;
-                        self.last_show_control_ui_instant = *now;
+                        self.ui_flags.visible_flag = true;
                     }
                     if btn_response.clicked() {
                         self.ui_flags.show_volumn_slider_flag =
@@ -644,45 +671,50 @@ impl AppUi {
                         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                             ui.add_space(150.0);
                             let audio_player = &mut self.audio_player;
-                            let volumn_slider =
-                                egui::Slider::new(&mut self.audio_volumn, 0.0..=2.0)
-                                    .vertical()
-                                    .show_value(false);
-                            let mut slider_style = egui::style::Style::default();
-                            slider_style.spacing.slider_width = 150.0;
-                            slider_style.spacing.slider_rail_height = 10.0;
-                            slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                            slider_style.visuals.extreme_bg_color =
-                                Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                            slider_style.visuals.selection.bg_fill =
-                                Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                            slider_style.visuals.widgets.active.bg_fill =
-                                Color32::from_rgba_unmultiplied(0, 0, 100, 100);
-                            slider_style.visuals.widgets.inactive.bg_fill =
-                                Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                            ui.set_style(slider_style);
-                            let mut slider_response = ui.add(volumn_slider);
-                            slider_response = slider_response
-                                .on_hover_text((audio_player.current_volumn() * 100.0).to_string());
-                            if slider_response.hovered() {
-                                self.ui_flags.control_ui_flag = true;
-                                self.last_show_control_ui_instant = *now;
-                            }
-                            if slider_response.changed() {
-                                warn!("volumn slider dragged!");
-                                audio_player.change_volumn(self.audio_volumn);
-                            }
+                            ui.scope(|ui| {
+                                ui.set_opacity(255.0 * self.visible_num);
+                                let volumn_slider =
+                                    egui::Slider::new(&mut self.audio_volumn, 0.0..=2.0)
+                                        .vertical()
+                                        .show_value(false);
+                                let mut slider_style = egui::style::Style::default();
+                                slider_style.spacing.slider_width = 150.0;
+                                slider_style.spacing.slider_rail_height = 10.0;
+                                slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
+                                slider_style.visuals.extreme_bg_color =
+                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                                slider_style.visuals.selection.bg_fill =
+                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                                slider_style.visuals.widgets.active.bg_fill =
+                                    Color32::from_rgba_unmultiplied(0, 0, 100, 100);
+                                slider_style.visuals.widgets.inactive.bg_fill =
+                                    Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                                ui.set_style(slider_style);
+                                let mut slider_response = ui.add(volumn_slider);
+                                slider_response = slider_response.on_hover_text(
+                                    (audio_player.current_volumn() * 100.0).to_string(),
+                                );
+                                if slider_response.hovered() {
+                                    self.ui_flags.visible_flag = true;
+                                }
+                                if slider_response.changed() {
+                                    warn!("volumn slider dragged!");
+                                    audio_player.change_volumn(self.audio_volumn);
+                                }
+                            });
                         });
                     }
                 });
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let fullscreen_image_btn =
-                        egui::Button::new(FULLSCREEN_IMG.atom_size(Vec2::new(50.0, 50.0)))
-                            .frame(false);
+                    let fullscreen_image_btn = egui::Button::new(
+                        Image::from(FULLSCREEN_IMG)
+                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                            .atom_size(Vec2::new(50.0, 50.0)),
+                    )
+                    .frame(false);
                     let btn_response = ui.add(fullscreen_image_btn);
                     if btn_response.hovered() {
-                        self.ui_flags.control_ui_flag = true;
-                        self.last_show_control_ui_instant = *now;
+                        self.ui_flags.visible_flag = true;
                     }
                     if btn_response.clicked() {
                         self.ui_flags.fullscreen_flag = !self.ui_flags.fullscreen_flag;
@@ -1033,13 +1065,17 @@ impl AppUi {
         }
     }
     fn paint_playlist_button(&mut self, ui: &mut Ui, frame: &Frame, now: &Instant) {
-        let open_btn = Button::new(PLAY_LIST_IMG.atom_size(Vec2::new(50.0, 50.0))).frame(false);
+        let open_btn = Button::new(
+            Image::from(PLAY_LIST_IMG)
+                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                .atom_size(Vec2::new(50.0, 50.0)),
+        )
+        .frame(false);
 
         let btn_response = ui.add(open_btn);
 
         if btn_response.hovered() {
-            self.ui_flags.control_ui_flag = true;
-            self.last_show_control_ui_instant = *now;
+            self.ui_flags.visible_flag = true;
         }
         if btn_response.clicked() {
             self.ui_flags.playlist_window_flag = !self.ui_flags.playlist_window_flag;
@@ -1151,6 +1187,12 @@ impl AppUi {
                 }
             });
         }
+    }
+    fn visiable_anime(&mut self, ui: &mut Ui) {
+        let visible_id = ui.make_persistent_id("visiable_num");
+        self.visible_num =
+            ui.ctx()
+                .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
     }
 }
 
