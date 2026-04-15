@@ -301,7 +301,7 @@ impl ColorSpaceConverter {
     }
     fn get_bt2020_params() -> ColorSpaceUniform {
         let m = glam::Mat3::from_cols_array(&[
-            1.1644, 1.1644, 1.1644, 0.0, -0.1873, 2.1418, 1.6747, -0.6504, 0.0,
+            1.164, 1.164, 1.164, 0.0, -0.187, 2.142, 1.675, -0.650, 0.0,
         ]);
         let o = glam::Vec3::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0);
         ColorSpaceUniform::new(m, o)

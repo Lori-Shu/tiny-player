@@ -5,7 +5,7 @@ use std::{
 
 use derive_builder::Builder;
 use ffmpeg_the_third::Rational;
-use rodio::Sink;
+use rodio::Player;
 use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
@@ -50,11 +50,14 @@ impl PresentDataManager {
                         if let Some(audio_frame) = tiny_decoder.pull_one_audio_play_frame().await {
                             if let Some(pts) = audio_frame.pts() {
                                 audio_cur_ts = Some(pts);
-                                AudioPlayer::play_raw_data_from_audio_frame(
+                                if let Err(e) = AudioPlayer::play_raw_data_from_audio_frame(
                                     &data_manage_context.audio_sink,
                                     audio_frame.clone(),
                                 )
-                                .await;
+                                .await
+                                {
+                                    warn!("{}", e);
+                                }
                                 // let used_model = data_manage_context.used_model.read().await;
                                 // let used_model_ref = &*used_model;
                                 // if UsedModel::Empty != *used_model_ref {
@@ -216,7 +219,7 @@ pub struct DataManageContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     // used_model: Arc<RwLock<UsedModel>>,
     // ai_subtitle: Arc<RwLock<AISubTitle>>,
-    audio_sink: Arc<Sink>,
+    audio_sink: Arc<Player>,
     main_stream_current_timestamp: Arc<AtomicI64>,
     runtime_handle: Handle,
     current_video_timestamp: Arc<AtomicI64>,

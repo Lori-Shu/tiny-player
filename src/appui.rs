@@ -15,9 +15,9 @@ use eframe::{
     },
 };
 use egui::{
-    AtomExt, Button, Color32, ColorImage, Context, Image, ImageData, ImageSource, Layout, Pos2,
-    Rect, RichText, TextureHandle, TextureId, TextureOptions, Ui, Vec2, ViewportBuilder,
-    ViewportId, Widget, WidgetText, include_image,
+    AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Image, ImageData, ImageSource,
+    Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
+    ViewportBuilder, ViewportId, WidgetText, include_image,
 };
 
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
@@ -55,29 +55,7 @@ static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
         orange_color[3],
     )
 });
-struct PlayerTextButton {
-    text: String,
-    font_size: f32,
-    frame: bool,
-}
-impl PlayerTextButton {
-    pub fn new(text: impl Into<String>, font_size: f32, frame: bool) -> Self {
-        Self {
-            text: text.into(),
-            font_size,
-            frame,
-        }
-    }
-}
-impl Widget for PlayerTextButton {
-    fn ui(self, ui: &mut Ui) -> egui::Response {
-        let btn_text = RichText::new(&self.text)
-            .color(*THEME_COLOR)
-            .size(self.font_size);
-        let open_btn = egui::Button::new(btn_text).frame(self.frame);
-        ui.add(open_btn)
-    }
-}
+
 /// the main struct stores all the vars which are related to ui
 struct UiFlags {
     pause_flag: Arc<AtomicBool>,
@@ -87,6 +65,7 @@ struct UiFlags {
     show_subtitle_options_flag: bool,
     show_volumn_slider_flag: bool,
     visible_flag: bool,
+    media_source_flag: Arc<AtomicBool>,
 }
 
 pub struct AppUi {
@@ -143,7 +122,11 @@ impl eframe::App for AppUi {
                 }
                 {
                     if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-                        if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
+                        if self
+                            .ui_flags
+                            .media_source_flag
+                            .load(std::sync::atomic::Ordering::Acquire)
+                        {
                             if !self
                                 .ui_flags
                                 .pause_flag
@@ -267,8 +250,9 @@ impl AppUi {
                 Err(anyhow::Error::msg("img create err"))
             }
         }?;
-
-        let tiny_decoder = crate::decode::TinyDecoder::new(rt.clone(), cc)?;
+        let media_source_flag = Arc::new(AtomicBool::new(false));
+        let tiny_decoder =
+            crate::decode::TinyDecoder::new(rt.clone(), cc, media_source_flag.clone())?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
         // let subtitle_channel = mpsc::channel(10);
@@ -313,6 +297,7 @@ impl AppUi {
                 show_subtitle_options_flag: false,
                 show_volumn_slider_flag: false,
                 visible_flag: false,
+                media_source_flag,
             },
             // used_model,
             time_text: String::new(),
@@ -356,7 +341,11 @@ impl AppUi {
     }
     fn update_time_and_time_text(&mut self) {
         if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-            if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
+            if self
+                .ui_flags
+                .media_source_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 let play_ts = self
                     .main_stream_current_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
@@ -414,17 +403,17 @@ impl AppUi {
             main_color_image.width(),
             main_color_image.height()
         );
-        let id = {
-            let video_texture = self.video_texture.blocking_read();
-            video_texture.id
-        };
+        // let id = {
+        //     let video_texture = self.video_texture.blocking_read();
+        //     video_texture.id
+        // };
 
         let render_state = frame
             .wgpu_render_state()
             .ok_or(anyhow::Error::msg("wgpu render state is none"))?;
-        if let Some(id) = id {
-            render_state.renderer.write().free_texture(&id);
-        }
+        // if let Some(id) = id {
+        //     render_state.renderer.write().free_texture(&id);
+        // }
         let video_texture = render_state.device.create_texture(&TextureDescriptor {
             label: Some("Video"),
             size: Extent3d {
@@ -490,7 +479,17 @@ impl AppUi {
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                 .atom_size(btn_rect),
         )
-        .frame(false);
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            0,
+            0,
+            0,
+            (10.0 * self.visible_num) as u8,
+        ))
+        .stroke(Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+        ))
+        .corner_radius(CornerRadius::from(30));
 
         let file_img_btn_response = ui.add(file_image_button);
 
@@ -525,9 +524,11 @@ impl AppUi {
     }
 
     fn paint_playpause_btn(&mut self, ui: &mut Ui) {
-        let decoder = self.tiny_decoder.clone();
-        let tiny_decoder = self.async_rt.block_on(decoder.read());
-        if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
+        if self
+            .ui_flags
+            .media_source_flag
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             let play_or_pause_image_source = if self
                 .ui_flags
                 .pause_flag
@@ -544,10 +545,21 @@ impl AppUi {
             let btn_img = Image::from(play_or_pause_image_source)
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                 .atom_size(btn_rect);
-            let play_or_pause_btn = egui::Button::new(btn_img).frame(false);
+            let play_or_pause_btn = egui::Button::new(btn_img)
+                .fill(egui::Color32::from_rgba_unmultiplied(
+                    0,
+                    0,
+                    0,
+                    (10.0 * self.visible_num) as u8,
+                ))
+                .stroke(Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+                ))
+                .corner_radius(CornerRadius::from(30));
 
             ui.add_space(ui.ctx().content_rect().width() / 2.0 - 100.0);
-            let btn_response = ui.add_sized(Vec2::new(100.0, 100.0), play_or_pause_btn);
+            let btn_response = ui.add(play_or_pause_btn);
             if btn_response.hovered() {
                 self.ui_flags.visible_flag = true;
             }
@@ -567,17 +579,20 @@ impl AppUi {
 
     fn paint_control_area(&mut self, ui: &mut Ui, now: &Instant) {
         ui.horizontal(|ui| {
-            let decoder = self.tiny_decoder.clone();
-            let tiny_decoder = self.async_rt.block_on(decoder.read());
             let mut ts = self
                 .main_stream_current_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
-            if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
+            if self
+                .ui_flags
+                .media_source_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 let mut slider_color = THEME_COLOR.to_srgba_unmultiplied();
                 slider_color[3] = 100;
                 ui.scope(|ui| {
                     ui.set_opacity(255.0 * self.visible_num);
-                    let progress_slider = egui::Slider::new(&mut ts, 0..=tiny_decoder.end_ts())
+                    let end_ts = self.tiny_decoder.blocking_read().end_ts();
+                    let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
                         .show_value(false)
                         .text(WidgetText::RichText(Arc::new(
                             RichText::new(self.time_text.clone()).size(20.0).color(
@@ -635,7 +650,17 @@ impl AppUi {
                             .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                             .atom_size(Vec2::new(50.0, 50.0)),
                     )
-                    .frame(false);
+                    .fill(egui::Color32::from_rgba_unmultiplied(
+                        0,
+                        0,
+                        0,
+                        (10.0 * self.visible_num) as u8,
+                    ))
+                    .stroke(Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+                    ))
+                    .corner_radius(CornerRadius::from(30));
                     let btn_response = ui.add(subtitle_btn);
                     if btn_response.hovered() {
                         self.ui_flags.visible_flag = true;
@@ -658,7 +683,17 @@ impl AppUi {
                             .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                             .atom_size(Vec2::new(50.0, 50.0)),
                     )
-                    .frame(false);
+                    .fill(egui::Color32::from_rgba_unmultiplied(
+                        0,
+                        0,
+                        0,
+                        (10.0 * self.visible_num) as u8,
+                    ))
+                    .stroke(Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+                    ))
+                    .corner_radius(CornerRadius::from(30));
                     let btn_response = ui.add(volumn_img_btn);
                     if btn_response.hovered() {
                         self.ui_flags.visible_flag = true;
@@ -711,7 +746,17 @@ impl AppUi {
                             .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                             .atom_size(Vec2::new(50.0, 50.0)),
                     )
-                    .frame(false);
+                    .fill(egui::Color32::from_rgba_unmultiplied(
+                        0,
+                        0,
+                        0,
+                        (10.0 * self.visible_num) as u8,
+                    ))
+                    .stroke(Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+                    ))
+                    .corner_radius(CornerRadius::from(30));
                     let btn_response = ui.add(fullscreen_image_btn);
                     if btn_response.hovered() {
                         self.ui_flags.visible_flag = true;
@@ -860,14 +905,15 @@ impl AppUi {
                             if let Ok(videos) = video_des.try_write() {
                                 ui.columns(2, |columns| {
                                     for (i, des) in videos.iter().enumerate() {
-                                        let image = Image::new(&des.texture_handle)
-                                            .max_size(Vec2::new(200.0, 180.0));
+                                        let image_btn = Button::new(
+                                            Image::new(&des.texture_handle)
+                                                .atom_size(Vec2::new(1920.0 / 6.0, 1080.0 / 6.0)),
+                                        );
 
-                                        let player_text_button =
-                                            PlayerTextButton::new(des.name.clone(), 20.0, true);
+                                        let player_text_button = Button::new(des.name.clone());
                                         if i % 2 == 0 {
                                             columns[0].vertical(|ui| {
-                                                ui.add(image);
+                                                ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
                                                     if self
                                                         .change_format_input(
@@ -883,7 +929,7 @@ impl AppUi {
                                             });
                                         } else {
                                             columns[1].vertical(|ui| {
-                                                ui.add(image);
+                                                ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
                                                     if self
                                                         .change_format_input(
@@ -909,8 +955,7 @@ impl AppUi {
                             }
                             if dialog.selected() {
                                 {
-                                    let video_des_arc = self.video_des.clone();
-                                    let mut videos = self.async_rt.block_on(video_des_arc.write());
+                                    let mut videos = self.video_des.blocking_write();
                                     videos.clear();
                                 }
                                 if let Some(path) = dialog.path() {
@@ -938,10 +983,9 @@ impl AppUi {
         self.main_color_image = bg_color_img.clone();
     }
     fn reset_main_tex_to_cover_pic(&mut self) {
-        let decoder = self.tiny_decoder.clone();
-        let tiny_decoder = self.async_rt.block_on(decoder.read());
-        let pic_data = tiny_decoder.cover_pic_data();
-        let cover_data = self.async_rt.block_on(pic_data.read());
+        let tiny_decoder = self.tiny_decoder.blocking_read();
+        let cover_pic_data = tiny_decoder.cover_pic_data();
+        let cover_data = cover_pic_data.blocking_read();
         if let Some(data_vec) = &*cover_data {
             if let Ok(img) = image::load_from_memory(data_vec) {
                 let rgba8_img = img.to_rgba8();
@@ -961,18 +1005,16 @@ impl AppUi {
         now: &Instant,
     ) -> PlayerResult<()> {
         {
-            let decoder = self.tiny_decoder.clone();
-            let mut tiny_decoder = self.async_rt.block_on(decoder.write());
+            let mut tiny_decoder = self.tiny_decoder.blocking_write();
             self.ui_flags
                 .pause_flag
                 .store(true, std::sync::atomic::Ordering::Release);
-            if self
+            if let Err(e) = self
                 .async_rt
                 .block_on(tiny_decoder.set_file_path_and_init_par(path))
-                .is_err()
             {
-                warn!("reset file path error!");
-                return Err(anyhow::Error::msg("change pause flag err"));
+                warn!("reset file path error!{}", e);
+                return Err(e);
             }
         }
         let au_pl = &mut self.audio_player;
@@ -1070,7 +1112,17 @@ impl AppUi {
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
-        .frame(false);
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            0,
+            0,
+            0,
+            (10.0 * self.visible_num) as u8,
+        ))
+        .stroke(Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+        ))
+        .corner_radius(CornerRadius::from(30));
 
         let btn_response = ui.add(open_btn);
 

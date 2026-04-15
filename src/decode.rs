@@ -109,11 +109,16 @@ pub struct TinyDecoder {
     video_decode_thread_notify: Arc<Notify>,
     color_space_converter: ColorSpaceConverter,
     render_state: RenderState,
+    media_source_flag: Arc<AtomicBool>,
 }
 impl TinyDecoder {
     /// init Decoder and new Struct
     /// `runtime_handle` is the handle of the tokio runtime in async_context
-    pub fn new(runtime_handle: Handle, cc: &CreationContext) -> PlayerResult<Self> {
+    pub fn new(
+        runtime_handle: Handle,
+        cc: &CreationContext,
+        media_source_flag: Arc<AtomicBool>,
+    ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let render_state = cc
             .wgpu_render_state
@@ -151,6 +156,7 @@ impl TinyDecoder {
             video_decode_thread_notify: Arc::new(Notify::new()),
             color_space_converter: ColorSpaceConverter::new(cc)?,
             render_state,
+            media_source_flag,
         })
     }
     /// reset all fields to the initial state
@@ -184,6 +190,8 @@ impl TinyDecoder {
         self.video_packet_cache_queue.1.drain();
         self.audio_frame_cache_queue.1.drain();
         self.video_frame_cache_queue.1.drain();
+        self.media_source_flag
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     /// called when user selected a file path to play
     /// init all the details from the file selected
@@ -195,6 +203,8 @@ impl TinyDecoder {
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
         info!("input construct finished");
+        self.media_source_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let mut cover_stream = None;
         let mut video_stream = None;
         let mut audio_stream = None;
@@ -896,11 +906,6 @@ impl TinyDecoder {
     /// give an Arc of cover_pic_data out
     pub fn cover_pic_data(&self) -> Arc<RwLock<Option<Vec<u8>>>> {
         self.cover_pic_data.clone()
-    }
-    /// determin if the input is exist
-    pub async fn is_input_exist(&self) -> bool {
-        let input = self.format_input.read().await;
-        input.is_some()
     }
     /// read the mainstream
     pub fn main_stream(&self) -> &MainStream {
