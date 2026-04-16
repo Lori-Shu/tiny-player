@@ -203,7 +203,7 @@ impl TinyDecoder {
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
         info!("input construct finished");
-        
+
         let mut cover_stream = None;
         let mut video_stream = None;
         let mut audio_stream = None;
