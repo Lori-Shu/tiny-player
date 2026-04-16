@@ -27,4 +27,4 @@ core feature based on project
 rate, go to settings->system->power&battery, set power mode of "on battery" to 
 "best performance" or "balanced" so that windows allows cpu to run at a higher clock speed.
 # Screenshot
-![app screenshot](./project_show_img.png)
+![app screenshot](./screenshot.png)
