@@ -8,18 +8,17 @@ core feature based on project
 1. tiny-player is small
 2. tiny-player is fast, with pure rust language, modern ui 
    framework [egui](https://github.com/emilk/egui) and maybe the 
-   fastest decoder by [ffmpeg](https://github.com/FFmpeg/FFmpeg) 
+   fastest decoder supplied by [ffmpeg](https://github.com/FFmpeg/FFmpeg) 
    and even more, rendered by 
-   [wgpu](https://github.com/gfx-rs/wgpu) vulkan renderer
+   [wgpu](https://github.com/gfx-rs/wgpu) with vulkan backend
 3. tiny-player is opensource, you can modify code and build your 
    own app under LICENSE
-4. AI subtitle function is ready
 # Usage
 1. currently only support windows
-2. run the tiny-installer.exe
+2. run the tiny-player-setup.exe
 3. run the tiny-player.exe on desktop
 4. click the file button
-5. select a media file ,normally .mp4 or .mkv
+5. select a media file, normally .mp4 or .mkv
 6. click open 
 7. click the play button
 8. control the progress by the control widges

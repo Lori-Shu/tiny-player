@@ -203,8 +203,7 @@ impl TinyDecoder {
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
         info!("input construct finished");
-        self.media_source_flag
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        
         let mut cover_stream = None;
         let mut video_stream = None;
         let mut audio_stream = None;
@@ -327,6 +326,8 @@ impl TinyDecoder {
         }
         info!("par init finished!!!");
         self.start_process_input().await;
+        self.media_source_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
     /// the loop of demuxing video file
