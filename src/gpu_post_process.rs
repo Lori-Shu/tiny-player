@@ -22,7 +22,6 @@ use egui::Context;
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
-use tracing::info;
 
 use crate::{PlayerResult, appui::VideoTextureWithId};
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
