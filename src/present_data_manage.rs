@@ -1,17 +1,15 @@
 use std::{
-    sync::{Arc, atomic::AtomicI64},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64},
+    },
     time::{Duration, Instant},
 };
 
 use derive_builder::Builder;
 use ffmpeg_the_third::Rational;
 use rodio::Player;
-use tokio::{
-    runtime::Handle,
-    sync::{Notify, RwLock},
-    task::JoinHandle,
-    time::sleep,
-};
+use tokio::{runtime::Handle, sync::RwLock, task::JoinHandle, time::sleep};
 use tracing::warn;
 
 use crate::{
@@ -43,6 +41,10 @@ impl PresentDataManager {
             /*
             add audio frame data to the audio player
              */
+            if !data_manage_context
+                .pause_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+                && data_manage_context.audio_sink.len() < 10
             {
                 let mainstream = {
                     let mut tiny_decoder = data_manage_context.tiny_decoder.write().await;
@@ -79,8 +81,8 @@ impl PresentDataManager {
                     data_manage_context.current_video_timestamp.clone(),
                 )
                 .await;
-                data_manage_context.data_thread_notify.notified().await;
             }
+            sleep(Duration::from_millis(10)).await;
         }
     }
     async fn play_video_task(data_manage_context: DataManageContext) {
@@ -215,7 +217,6 @@ impl PresentDataManager {
 }
 #[derive(Builder, Clone)]
 pub struct DataManageContext {
-    data_thread_notify: Arc<Notify>,
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     // used_model: Arc<RwLock<UsedModel>>,
     // ai_subtitle: Arc<RwLock<AISubTitle>>,
@@ -224,4 +225,5 @@ pub struct DataManageContext {
     runtime_handle: Handle,
     current_video_timestamp: Arc<AtomicI64>,
     video_texture_with_id: Arc<RwLock<VideoTextureWithId>>,
+    pause_flag: Arc<AtomicBool>,
 }

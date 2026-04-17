@@ -4,7 +4,7 @@ use std::{
         Arc, LazyLock,
         atomic::{AtomicBool, AtomicI64},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use eframe::{
@@ -23,10 +23,7 @@ use egui::{
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
-use tokio::{
-    runtime::Runtime,
-    sync::{Notify, RwLock},
-};
+use tokio::{runtime::Runtime, sync::RwLock};
 use tracing::{info, warn};
 
 use crate::{
@@ -91,7 +88,6 @@ pub struct AppUi {
     video_des: Arc<RwLock<Vec<VideoDes>>>,
     // used_model: Arc<RwLock<UsedModel>>,
     audio_volumn: f32,
-    data_thread_notify: Arc<Notify>,
     current_video_timestamp: Arc<AtomicI64>,
     visible_num: f32,
 }
@@ -145,7 +141,6 @@ impl eframe::App for AppUi {
                                 {
                                     warn!("keep awake err");
                                 }
-                                self.notify_data_thread(&tiny_decoder);
                                 if self.check_play_is_at_endtail(&tiny_decoder) {
                                     self.ui_flags
                                         .pause_flag
@@ -184,7 +179,6 @@ impl eframe::App for AppUi {
                 });
 
                 self.detect_file_drag(ui, frame, &now);
-                ui.ctx().request_repaint_after(Duration::from_millis(16));
             });
         });
     }
@@ -261,13 +255,11 @@ impl AppUi {
         let main_stream_current_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let data_thread_notify = Arc::new(Notify::new());
         let video_texture = Arc::new(RwLock::new(VideoTextureWithId {
             texture: None,
             id: None,
         }));
         let data_manage_context = DataManageContextBuilder::default()
-            .data_thread_notify(data_thread_notify.clone())
             .tiny_decoder(tiny_decoder.clone())
             // .used_model(used_model.clone())
             // .ai_subtitle(subtitle.clone())
@@ -276,6 +268,7 @@ impl AppUi {
             .main_stream_current_timestamp(main_stream_current_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .runtime_handle(rt)
+            .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
 
@@ -312,7 +305,6 @@ impl AppUi {
             // subtitle_text: String::new(),
             video_des: Arc::new(RwLock::new(vec![])),
             audio_volumn: 1.0,
-            data_thread_notify,
             current_video_timestamp,
             visible_num: 1.0,
         })
@@ -384,9 +376,9 @@ impl AppUi {
             }
         }
     }
-    fn update_color_image(&mut self) {
+    fn _update_color_image(&mut self) {
         let tiny_decoder = self.tiny_decoder.blocking_read();
-        let frame_rect = tiny_decoder.video_frame_rect();
+        let frame_rect = tiny_decoder._video_frame_rect();
         if frame_rect[0] != 0 {
             let color_image = ColorImage::filled(
                 [frame_rect[0] as usize, frame_rect[1] as usize],
@@ -972,7 +964,7 @@ impl AppUi {
             });
         }
     }
-    fn reset_main_tex_to_bg(&mut self) {
+    fn reset_main_color_img_to_bg(&mut self) {
         let bg_color_img = ColorImage::from_rgba_unmultiplied(
             [
                 self.bg_dyn_img.width() as usize,
@@ -982,7 +974,7 @@ impl AppUi {
         );
         self.main_color_image = bg_color_img.clone();
     }
-    fn reset_main_tex_to_cover_pic(&mut self) {
+    fn reset_main_color_img_to_cover_pic(&mut self) {
         let tiny_decoder = self.tiny_decoder.blocking_read();
         let cover_pic_data = tiny_decoder.cover_pic_data();
         let cover_data = cover_pic_data.blocking_read();
@@ -1020,10 +1012,9 @@ impl AppUi {
         let au_pl = &mut self.audio_player;
         au_pl.source_queue_skip_to_end();
 
-        self.reset_main_tex_to_bg();
-        self.reset_main_tex_to_cover_pic();
+        self.reset_main_color_img_to_bg();
+        self.reset_main_color_img_to_cover_pic();
 
-        self.update_color_image();
         self.reset_video_texture(frame)?;
         info!("after reset video texture");
         self.main_stream_current_timestamp
@@ -1218,15 +1209,6 @@ impl AppUi {
         )
     }
 
-    fn notify_data_thread(&self, tiny_decoder: &TinyDecoder) {
-        if let MainStream::Video = tiny_decoder.main_stream() {
-            self.data_thread_notify.notify_one();
-        } else {
-            if self.audio_player.len() < 10 {
-                self.data_thread_notify.notify_one();
-            }
-        }
-    }
     fn paint_tip_window(&mut self, ctx: &Context) {
         if self.ui_flags.tip_window_flag {
             let tip_window = egui::Window::new("tip window");
