@@ -18,9 +18,11 @@ use eframe::{
         util::{BufferInitDescriptor, DeviceExt},
     },
 };
+use egui::Context;
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::{PlayerResult, appui::VideoTextureWithId};
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
@@ -585,6 +587,7 @@ impl ColorSpaceConverter {
     pub async fn render_video(
         &self,
         render_state: &RenderState,
+        egui_ctx: &Context,
         texture: Arc<RwLock<VideoTextureWithId>>,
         frame: Video,
         is_hw_acc: bool,
@@ -799,7 +802,7 @@ impl ColorSpaceConverter {
             render_state.queue.submit(std::iter::once(encoder.finish()));
             // warn!("after write texture and render");
         }
-
+        egui_ctx.request_repaint();
         Ok(())
     }
 }

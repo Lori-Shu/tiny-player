@@ -7,6 +7,7 @@ use std::{
 
 use derive_builder::Builder;
 use eframe::{CreationContext, egui_wgpu::RenderState};
+use egui::Context;
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream,
     ffi::{
@@ -109,6 +110,7 @@ pub struct TinyDecoder {
     video_decode_thread_notify: Arc<Notify>,
     color_space_converter: ColorSpaceConverter,
     render_state: RenderState,
+    egui_ctx: Context,
     media_source_flag: Arc<AtomicBool>,
 }
 impl TinyDecoder {
@@ -124,6 +126,7 @@ impl TinyDecoder {
             .wgpu_render_state
             .clone()
             .ok_or(anyhow::Error::msg("get render state err"))?;
+        let egui_ctx = cc.egui_ctx.clone();
         Ok(Self {
             video_stream_index: usize::MAX,
             audio_stream_index: usize::MAX,
@@ -157,6 +160,7 @@ impl TinyDecoder {
             color_space_converter: ColorSpaceConverter::new(cc)?,
             render_state,
             media_source_flag,
+            egui_ctx,
         })
     }
     /// reset all fields to the initial state
@@ -832,7 +836,7 @@ impl TinyDecoder {
         &self.end_time_formatted_string
     }
     /// video_frame_rect to config the main colorimage and texture size
-    pub fn video_frame_rect(&self) -> &[u32; 2] {
+    pub fn _video_frame_rect(&self) -> &[u32; 2] {
         &self.video_frame_rect
     }
     /// get the end audio timestamp used as the main time flow
@@ -963,18 +967,12 @@ impl TinyDecoder {
         texture: Arc<RwLock<VideoTextureWithId>>,
         frame: Video,
     ) -> PlayerResult<()> {
-        if self
+        let hw_acc = self
             .hardware_config_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.color_space_converter
-                .render_video(&self.render_state, texture, frame, true)
-                .await?;
-        } else {
-            self.color_space_converter
-                .render_video(&self.render_state, texture, frame, false)
-                .await?;
-        }
+            .load(std::sync::atomic::Ordering::Relaxed);
+        self.color_space_converter
+            .render_video(&self.render_state, &self.egui_ctx, texture, frame, hw_acc)
+            .await?;
         Ok(())
     }
 }
