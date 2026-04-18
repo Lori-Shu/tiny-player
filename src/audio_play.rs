@@ -5,7 +5,7 @@ use rodio::{
     cpal::{default_host, traits::HostTrait},
 };
 
-use crate::PlayerResult;
+use crate::{PlayerResult, present_data_manage::PLAY_SAMPLE_RATE};
 
 pub struct AudioPlayer {
     _device_sink: MixerDeviceSink,
@@ -15,8 +15,8 @@ pub struct AudioPlayer {
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
         let channel_count = NonZero::new(2).ok_or(anyhow::Error::msg("construct nonzero err"))?;
-        let sample_rate =
-            SampleRate::new(48000).ok_or(anyhow::Error::msg("construct SampleRate err"))?;
+        let sample_rate = SampleRate::new(PLAY_SAMPLE_RATE)
+            .ok_or(anyhow::Error::msg("construct SampleRate err"))?;
         let default_host = default_host();
         let device = default_host
             .default_output_device()

@@ -21,6 +21,7 @@ use egui::{
 };
 
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
+use flume::Receiver;
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
 use tokio::{runtime::Runtime, sync::RwLock};
@@ -29,6 +30,7 @@ use tracing::{info, warn};
 use crate::{
     PlayerResult,
     decode::{MainStream, TinyDecoder},
+    moonshine_asr::{Transcriber, UsedModel},
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
 };
 
@@ -82,11 +84,10 @@ pub struct AppUi {
     async_rt: Runtime,
     open_file_dialog: Option<egui_file::FileDialog>,
     scan_folder_dialog: Option<egui_file::FileDialog>,
-    // _subtitle: Arc<RwLock<AISubTitle>>,
-    // subtitle_text: String,
-    // subtitle_text_receiver: mpsc::Receiver<String>,
+    subtitle_text: String,
+    subtitle_text_receiver: Receiver<String>,
     video_des: Arc<RwLock<Vec<VideoDes>>>,
-    // used_model: Arc<RwLock<UsedModel>>,
+    used_model: Arc<RwLock<UsedModel>>,
     audio_volumn: f32,
     current_video_timestamp: Arc<AtomicI64>,
     visible_num: f32,
@@ -171,7 +172,7 @@ impl eframe::App for AppUi {
                 ui.horizontal(|ui| {
                     self.paint_playpause_btn(ui);
                 });
-
+                self.paint_subtitle(ui);
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     self.update_time_and_time_text();
                     self.paint_control_area(ui, &now);
@@ -248,9 +249,6 @@ impl AppUi {
         let tiny_decoder =
             crate::decode::TinyDecoder::new(rt.clone(), cc, media_source_flag.clone())?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
-        // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
-        // let subtitle_channel = mpsc::channel(10);
-        // let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
         let audio_player = crate::audio_play::AudioPlayer::new()?;
         let main_stream_current_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
@@ -259,10 +257,13 @@ impl AppUi {
             texture: None,
             id: None,
         }));
+        let used_model = Arc::new(RwLock::new(UsedModel::None));
+        let (subtitle_sender, subtitle_text_receiver) = flume::unbounded();
+        let transcriber = Transcriber::new(subtitle_sender)?;
         let data_manage_context = DataManageContextBuilder::default()
             .tiny_decoder(tiny_decoder.clone())
-            // .used_model(used_model.clone())
-            // .ai_subtitle(subtitle.clone())
+            .used_model(used_model.clone())
+            .transcriber(transcriber)
             .video_texture_with_id(video_texture.clone())
             .audio_sink(audio_player.sink())
             .main_stream_current_timestamp(main_stream_current_timestamp.clone())
@@ -271,9 +272,7 @@ impl AppUi {
             .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
-
         Ok(Self {
-            // subtitle_text_receiver: subtitle_channel.1,
             video_texture,
             tiny_decoder,
             audio_player,
@@ -292,7 +291,6 @@ impl AppUi {
                 visible_flag: false,
                 media_source_flag,
             },
-            // used_model,
             time_text: String::new(),
 
             tip_window_msg: String::new(),
@@ -301,12 +299,13 @@ impl AppUi {
             open_file_dialog: Some(f_dialog),
             scan_folder_dialog: Some(egui_file::FileDialog::select_folder()),
             bg_dyn_img: dyn_img,
-            // _subtitle: subtitle,
-            // subtitle_text: String::new(),
+            subtitle_text: String::new(),
             video_des: Arc::new(RwLock::new(vec![])),
             audio_volumn: 1.0,
             current_video_timestamp,
             visible_num: 1.0,
+            used_model,
+            subtitle_text_receiver,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -661,13 +660,12 @@ impl AppUi {
                         self.ui_flags.show_subtitle_options_flag =
                             !self.ui_flags.show_subtitle_options_flag;
                     }
-                    // let used_model = self.used_model.clone();
-                    // let mut used_model = self.async_rt.block_on(used_model.write());
-                    // if self.ui_flags.show_subtitle_options_flag {
-                    //     ui.radio_value(&mut *used_model, UsedModel::Empty, "closed");
-                    //     ui.radio_value(&mut *used_model, UsedModel::Chinese, "中文");
-                    //     ui.radio_value(&mut *used_model, UsedModel::English, "English");
-                    // }
+                    let mut used_model = self.used_model.blocking_write();
+                    if self.ui_flags.show_subtitle_options_flag {
+                        ui.radio_value(&mut *used_model, UsedModel::None, "none");
+                        ui.radio_value(&mut *used_model, UsedModel::Chinese, "中文");
+                        ui.radio_value(&mut *used_model, UsedModel::English, "English");
+                    }
                 });
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     let volumn_img_btn = egui::Button::new(
@@ -766,40 +764,29 @@ impl AppUi {
                 .store(ts, std::sync::atomic::Ordering::Release);
         });
     }
-    // fn paint_subtitle(&mut self, ui: &mut Ui, ctx: &Context) {
-    //     ui.horizontal(|ui| {
-    //         if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-    //             if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
-    //                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-    //                     if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
-    //                         self.subtitle_text.push_str(&generated_str);
-    //                     }
-    //                     if self.subtitle_text.len() > 50 {
-    //                         self.subtitle_text.remove(0);
-    //                     }
-    //                     if let Ok(used_model) = self.used_model.try_read() {
-    //                         if let UsedModel::Empty = &*used_model
-    //                             && !self.subtitle_text.is_empty()
-    //                         {
-    //                             self.subtitle_text.clear();
-    //                         }
-    //                     }
-    //                     let subtitle_text_button = egui::Button::new(
-    //                         RichText::new(self.subtitle_text.clone())
-    //                             .size(50.0)
-    //                             .color(*THEME_COLOR)
-    //                             .atom_size(Vec2::new(ctx.content_rect().width(), 10.0)),
-    //                     )
-    //                     .frame(false);
-    //                     let be_opacity = ui.opacity();
-    //                     ui.set_opacity(1.0);
-    //                     ui.add(subtitle_text_button);
-    //                     ui.set_opacity(be_opacity);
-    //                 });
-    //             }
-    //         }
-    //     });
-    // }
+    fn paint_subtitle(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if self
+                .ui_flags
+                .media_source_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+                    if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
+                        self.subtitle_text = generated_str;
+                    }
+                    let subtitle_text_button = egui::Button::new(
+                        RichText::new(self.subtitle_text.clone())
+                            .size(50.0)
+                            .color(*THEME_COLOR)
+                            .atom_size(Vec2::new(ui.content_rect().width(), 10.0)),
+                    )
+                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150));
+                    ui.add(subtitle_text_button);
+                });
+            }
+        });
+    }
 
     fn paint_frame_info_text(&self, ui: &mut Ui, now: &Instant) {
         ui.horizontal(|ui| {

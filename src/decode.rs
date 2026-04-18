@@ -30,7 +30,10 @@ use tokio::{
 };
 use tracing::{Instrument, Level, info, span, warn};
 
-use crate::{PlayerResult, appui::VideoTextureWithId, gpu_post_process::ColorSpaceConverter};
+use crate::{
+    PlayerResult, appui::VideoTextureWithId, gpu_post_process::ColorSpaceConverter,
+    present_data_manage::PLAY_SAMPLE_RATE,
+};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -304,7 +307,7 @@ impl TinyDecoder {
                     &mut swr_ctx,
                     &AV_CHANNEL_LAYOUT_STEREO,
                     ffmpeg_the_third::ffi::AVSampleFormat::FLT,
-                    48000,
+                    PLAY_SAMPLE_RATE as i32,
                     audio_decoder.ch_layout().as_ptr(),
                     audio_decoder.format().into(),
                     audio_decoder.rate() as i32,
@@ -750,7 +753,7 @@ impl TinyDecoder {
             let mut res = ffmpeg_the_third::frame::Audio::empty();
             res.set_format(ffmpeg_the_third::format::Sample::F32(Type::Packed));
             res.set_ch_layout(ChannelLayout::STEREO);
-            res.set_rate(48000);
+            res.set_rate(PLAY_SAMPLE_RATE);
 
             {
                 if self.audio_frame_cache_queue.1.len() < 10 {
@@ -768,7 +771,7 @@ impl TinyDecoder {
                             if r == 0 {
                                 if let Some(pts) = raw_frame.pts() {
                                     res.set_pts(Some(pts));
-                                    res.set_rate(48000);
+                                    res.set_rate(PLAY_SAMPLE_RATE);
                                     return Some(res);
                                 }
                             } else {

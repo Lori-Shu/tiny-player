@@ -27,11 +27,12 @@ mod appui;
 mod audio_play;
 mod decode;
 mod gpu_post_process;
+mod moonshine_asr;
 mod present_data_manage;
 // mod translate;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");
-static _CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
+static CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
     let path = std::env::current_exe()?;
     Ok(path)
 });

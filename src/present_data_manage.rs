@@ -16,8 +16,9 @@ use crate::{
     appui::VideoTextureWithId,
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
+    moonshine_asr::{Transcriber, UsedModel},
 };
-
+pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct PresentDataManager {
     _audio_thread_handle: JoinHandle<()>,
     _video_thread_handle: JoinHandle<()>,
@@ -60,13 +61,16 @@ impl PresentDataManager {
                                 {
                                     warn!("{}", e);
                                 }
-                                // let used_model = data_manage_context.used_model.read().await;
-                                // let used_model_ref = &*used_model;
-                                // if UsedModel::Empty != *used_model_ref {
-                                //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
-                                //     let used_model = used_model_ref.clone();
-                                //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
-                                // }
+                                let used_model = data_manage_context.used_model.read().await;
+                                if UsedModel::None != *used_model {
+                                    if let Err(e) = data_manage_context
+                                        .transcriber
+                                        .push_audio_frame(audio_frame, used_model.clone())
+                                        .await
+                                    {
+                                        warn!("{}", e);
+                                    }
+                                }
                             }
                         }
                     }
@@ -218,8 +222,8 @@ impl PresentDataManager {
 #[derive(Builder, Clone)]
 pub struct DataManageContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
-    // used_model: Arc<RwLock<UsedModel>>,
-    // ai_subtitle: Arc<RwLock<AISubTitle>>,
+    used_model: Arc<RwLock<UsedModel>>,
+    transcriber: Transcriber,
     audio_sink: Arc<Player>,
     main_stream_current_timestamp: Arc<AtomicI64>,
     runtime_handle: Handle,
