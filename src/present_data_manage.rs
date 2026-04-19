@@ -36,7 +36,7 @@ impl PresentDataManager {
             _video_thread_handle,
         }
     }
-    async fn play_audio_task(data_manage_context: DataManageContext) {
+    async fn play_audio_task(mut data_manage_context: DataManageContext) {
         let mut audio_cur_ts = None;
         loop {
             /*

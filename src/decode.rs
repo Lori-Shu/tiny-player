@@ -12,11 +12,11 @@ use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream,
     ffi::{
         AV_CHANNEL_LAYOUT_STEREO, AVCodecContext, AVHWDeviceType, AVPixelFormat,
-        AVSEEK_FLAG_BACKWARD, SwrContext, av_hwdevice_ctx_create, av_hwframe_transfer_data,
-        av_image_copy_to_buffer, av_image_get_buffer_size, avcodec_get_hw_config,
-        swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
+        AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
+        av_hwframe_transfer_data, av_image_copy_to_buffer, av_image_get_buffer_size,
+        avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
     },
-    format::{sample::Type, stream::Disposition},
+    format::{Sample, sample::Type, stream::Disposition},
     frame::{Audio, Video},
 };
 
@@ -55,6 +55,7 @@ unsafe impl Sync for ManualProtectedAudioDecoder {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
+#[derive(Debug, Clone)]
 pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
@@ -297,11 +298,59 @@ impl TinyDecoder {
             let audio_decoder_ctx =
                 ffmpeg_the_third::codec::Context::from_parameters(audio_stream.parameters())?;
 
-            let mut audio_decoder = audio_decoder_ctx.decoder().audio()?;
+            let audio_decoder = audio_decoder_ctx.decoder().audio()?;
             unsafe {
-                if audio_decoder.ch_layout().channels() == 2 {
-                    audio_decoder.set_ch_layout(ChannelLayout::STEREO);
-                }
+                let sample_format = audio_decoder.format();
+                let sample_format = match sample_format {
+                    Sample::None => AVSampleFormat::NONE,
+                    Sample::U8(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::U8
+                        } else {
+                            AVSampleFormat::U8P
+                        }
+                    }
+                    Sample::I16(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::S16
+                        } else {
+                            AVSampleFormat::S16P
+                        }
+                    }
+                    Sample::I32(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::S32
+                        } else {
+                            AVSampleFormat::S32P
+                        }
+                    }
+                    Sample::I64(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::S64
+                        } else {
+                            AVSampleFormat::S64P
+                        }
+                    }
+                    Sample::F32(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::FLT
+                        } else {
+                            AVSampleFormat::FLTP
+                        }
+                    }
+                    Sample::F64(t) => {
+                        if t == Type::Packed {
+                            AVSampleFormat::DBL
+                        } else {
+                            AVSampleFormat::DBLP
+                        }
+                    }
+                };
+                warn!(
+                    "sample format: {:?},channels: {}",
+                    sample_format,
+                    audio_decoder.ch_layout().channels()
+                );
                 let mut swr_ctx = null_mut();
                 let r = swr_alloc_set_opts2(
                     &mut swr_ctx,
@@ -309,7 +358,7 @@ impl TinyDecoder {
                     ffmpeg_the_third::ffi::AVSampleFormat::FLT,
                     PLAY_SAMPLE_RATE as i32,
                     audio_decoder.ch_layout().as_ptr(),
-                    audio_decoder.format().into(),
+                    sample_format,
                     audio_decoder.rate() as i32,
                     0,
                     null_mut(),

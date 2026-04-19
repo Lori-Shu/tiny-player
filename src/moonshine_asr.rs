@@ -1,12 +1,22 @@
 use std::{
-    ffi::{CStr, c_char, c_float, c_int, c_uint, c_ulonglong, c_void},
+    ffi::{CStr, CString, c_char, c_float, c_int, c_uint, c_ulonglong, c_void},
     ptr::{null, null_mut},
 };
 
-use ffmpeg_the_third::frame::Audio;
+use ffmpeg_the_third::{
+    ffi::{
+        AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO, AVSampleFormat, swr_alloc_set_opts2,
+        swr_convert_frame, swr_free, swr_init,
+    },
+    frame::Audio,
+};
 use flume::Sender;
+use tracing::warn;
 
-use crate::{CURRENT_EXE_PATH, PlayerResult, present_data_manage::PLAY_SAMPLE_RATE};
+use crate::{
+    CURRENT_EXE_PATH, PlayerResult, decode::ManualProtectedResampler,
+    present_data_manage::PLAY_SAMPLE_RATE,
+};
 
 const MOONSHINE_MODEL_ARCH_TINY_STREAMING: u32 = 2;
 const MOONSHINE_HEADER_VERSION: i32 = 20000;
@@ -95,30 +105,64 @@ struct TranscriptWord {
 }
 struct ManualSafeTranscript(*mut Transcript);
 unsafe impl Send for ManualSafeTranscript {}
+
+const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;
 #[derive(Debug, Clone)]
 pub struct Transcriber {
     transcriber_handle: i32,
     stream_handle: i32,
     subtitle_sender: Sender<String>,
+    audio_resampler: ManualProtectedResampler,
 }
 impl Transcriber {
     pub fn new(subtitle_sender: Sender<String>) -> PlayerResult<Self> {
         let exe_path = CURRENT_EXE_PATH
             .as_ref()
             .map_err(|_e| anyhow::Error::msg("exe_path_as_ref err"))?;
-        let model_dir = exe_path.join("model/moonshine_tiny_streaming");
-        let path_str = model_dir
+        let exe_dir = exe_path
+            .parent()
+            .ok_or(anyhow::Error::msg("get parent_dir err"))?;
+        let model_path = exe_dir.join("moonshine_tiny_streaming");
+        let path_str = model_path
             .to_str()
             .ok_or(anyhow::Error::msg("to str failed"))?;
+        let mut path_str = path_str.to_string();
+        path_str.push('/');
+        let path_c_ctring = CString::new(path_str)?;
         unsafe {
+            let mut swr_ctx = null_mut();
+            let r = swr_alloc_set_opts2(
+                &mut swr_ctx,
+                &AV_CHANNEL_LAYOUT_MONO,
+                ffmpeg_the_third::ffi::AVSampleFormat::FLT,
+                TRANSCRIBE_SAMPLE_RATE as i32,
+                &AV_CHANNEL_LAYOUT_STEREO,
+                ffmpeg_the_third::ffi::AVSampleFormat::FLT,
+                PLAY_SAMPLE_RATE as i32,
+                0,
+                null_mut(),
+            );
+            if r < 0 {
+                warn!("swr ctx create err");
+            }
+            let r = swr_init(swr_ctx);
+            if r < 0 {
+                warn!("swr init err");
+            }
             let transcriber_handle = moonshine_load_transcriber_from_files(
-                path_str.as_ptr() as *const c_char,
+                path_c_ctring.as_ptr(),
                 MOONSHINE_MODEL_ARCH_TINY_STREAMING,
                 null(),
                 0,
                 MOONSHINE_HEADER_VERSION,
             );
+            if transcriber_handle < 0 {
+                return Err(anyhow::Error::msg("transcriber_handle load err!"));
+            }
             let stream_handle = moonshine_create_stream(transcriber_handle, 0);
+            if stream_handle < 0 {
+                return Err(anyhow::Error::msg("create moonshine stream err!"));
+            }
             if moonshine_start_stream(transcriber_handle, stream_handle) != 0 {
                 return Err(anyhow::Error::msg("moonshine_start_stream err"));
             }
@@ -127,18 +171,38 @@ impl Transcriber {
                 transcriber_handle,
                 stream_handle,
                 subtitle_sender,
+                audio_resampler: ManualProtectedResampler(swr_ctx),
             })
         }
     }
-    pub async fn push_audio_frame(&self, frame: Audio, model: UsedModel) -> PlayerResult<()> {
+    pub async fn push_audio_frame(&mut self, frame: Audio, model: UsedModel) -> PlayerResult<()> {
         if model == UsedModel::English {}
+
         unsafe {
+            let mut to_recognize_frame = Audio::empty();
+            let avframe = &mut *to_recognize_frame.as_mut_ptr();
+            avframe.format = AVSampleFormat::FLT.0;
+            avframe.ch_layout = AV_CHANNEL_LAYOUT_MONO;
+            avframe.sample_rate = TRANSCRIBE_SAMPLE_RATE as i32;
+
+            let resampler = &mut self.audio_resampler;
+            let err_num =
+                swr_convert_frame(resampler.0, to_recognize_frame.as_mut_ptr(), frame.as_ptr());
+            if err_num < 0 {
+                warn!("audio frame convert err: {}", err_num);
+            }
             if moonshine_transcribe_add_audio_to_stream(
                 self.transcriber_handle,
                 self.stream_handle,
-                bytemuck::cast_slice::<_, f32>(frame.data(0)).as_ptr(),
-                frame.samples() as u64,
-                PLAY_SAMPLE_RATE as i32,
+                bytemuck::cast_slice::<_, f32>(
+                    &to_recognize_frame.data(0)[0..(to_recognize_frame.samples()
+                        * to_recognize_frame.ch_layout().channels() as usize
+                        * 4)],
+                )
+                .as_ptr(),
+                (to_recognize_frame.samples() * to_recognize_frame.ch_layout().channels() as usize)
+                    as u64,
+                TRANSCRIBE_SAMPLE_RATE as i32,
                 0,
             ) != 0
             {
@@ -174,6 +238,7 @@ impl Transcriber {
 impl Drop for Transcriber {
     fn drop(&mut self) {
         unsafe {
+            swr_free(&mut self.audio_resampler.0);
             moonshine_stop_stream(self.transcriber_handle, self.stream_handle);
             moonshine_free_stream(self.transcriber_handle, self.stream_handle);
             moonshine_free_transcriber(self.transcriber_handle);
