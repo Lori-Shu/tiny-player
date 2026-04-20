@@ -194,7 +194,6 @@ impl AppUi {
             "app_default_font".to_owned(),
             std::sync::Arc::new(egui::FontData::from_static(MAPLE_FONT)),
         );
-        // 彩色 Emoji 字体
         fonts.font_data.insert(
             "noto_emoji".to_owned(),
             Arc::new(egui::FontData::from_static(EMOJI_FONT)),
@@ -213,7 +212,6 @@ impl AppUi {
             .or_default()
             .insert(0, "app_default_font".to_owned());
 
-        // 设置 fallback 顺序
         fonts
             .families
             .entry(egui::FontFamily::Proportional)
@@ -806,13 +804,9 @@ impl AppUi {
             let app_sec = (*now - self.app_start_instant).as_secs();
             let mut orange_color = Color32::ORANGE.to_srgba_unmultiplied();
             orange_color[3] = 100;
-            if app_sec > 0 {
+            if let Some(fps) = ui.ctx().cumulative_frame_nr().checked_div(app_sec) {
                 let mut text_str = "fps：".to_string();
-                text_str.push_str(
-                    (ui.ctx().cumulative_frame_nr() / app_sec)
-                        .to_string()
-                        .as_str(),
-                );
+                text_str.push_str(fps.to_string().as_str());
 
                 let rich_text = egui::RichText::new(text_str)
                     .color(Color32::from_rgba_unmultiplied(
