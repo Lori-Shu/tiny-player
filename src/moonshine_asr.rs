@@ -4,14 +4,13 @@ use std::{
 };
 
 use ffmpeg_the_third::{
-    ffi::{
-        AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO, AVSampleFormat, swr_alloc_set_opts2,
+    ChannelLayout, ffi::{
+        AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO, swr_alloc_set_opts2,
         swr_convert_frame, swr_free, swr_init,
-    },
-    frame::Audio,
+    }, format::Sample, frame::Audio
 };
 use flume::Sender;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     CURRENT_EXE_PATH, PlayerResult, decode::ManualProtectedResampler,
@@ -177,17 +176,15 @@ impl Transcriber {
     }
     pub async fn push_audio_frame(&mut self, frame: Audio, model: UsedModel) -> PlayerResult<()> {
         if model == UsedModel::English {}
-
+        info!("audio frame channel{:?},format{:?},rate{}",frame.ch_layout(),frame.format(),frame.rate());
         unsafe {
             let mut to_recognize_frame = Audio::empty();
-            let avframe = &mut *to_recognize_frame.as_mut_ptr();
-            avframe.format = AVSampleFormat::FLT.0;
-            avframe.ch_layout = AV_CHANNEL_LAYOUT_MONO;
-            avframe.sample_rate = TRANSCRIBE_SAMPLE_RATE as i32;
+            to_recognize_frame.set_format(Sample::F32(ffmpeg_the_third::format::sample::Type::Packed));
+            to_recognize_frame.set_ch_layout(ChannelLayout::MONO);
+            to_recognize_frame.set_rate(TRANSCRIBE_SAMPLE_RATE);
 
-            let resampler = &mut self.audio_resampler;
             let err_num =
-                swr_convert_frame(resampler.0, to_recognize_frame.as_mut_ptr(), frame.as_ptr());
+                swr_convert_frame(self.audio_resampler.0, to_recognize_frame.as_mut_ptr(), frame.as_ptr());
             if err_num < 0 {
                 warn!("audio frame convert err: {}", err_num);
             }
@@ -223,6 +220,7 @@ impl Transcriber {
                 }
                 ManualSafeTranscript(out_transcript)
             };
+            info!("after ManualSafeTranscript");
             for line_idx in 0..(*out_transcript.0).line_count {
                 let transcript_line = &*(*out_transcript.0).lines.add(line_idx as usize);
                 if transcript_line.is_complete == 0 {
