@@ -980,15 +980,19 @@ impl AppUi {
         let path = path.to_path_buf();
         self.async_rt.spawn(async move {
             let mut tiny_decoder = tiny_decoder.write().await;
-            tiny_decoder.set_file_path_and_init_par(&path).await?;
+            if let Err(e) = tiny_decoder.set_file_path_and_init_par(&path).await {
+                warn!("{}", e);
+            }
             au_sink.clear();
             Self::reset_main_color_img_to_bg(bg_dyn_img, main_color_img.clone()).await;
             Self::reset_main_color_img_to_cover_pic(&tiny_decoder, main_color_img.clone()).await;
 
-            Self::reset_video_texture(main_color_img, texture_with_id, render_state).await?;
-            info!("after reset video texture");
-
-            PlayerResult::<()>::Ok(())
+            if let Err(e) =
+                Self::reset_video_texture(main_color_img, texture_with_id, render_state).await
+            {
+                warn!("{}", e);
+            }
+            info!("reset video texture success");
         });
 
         Ok(())
