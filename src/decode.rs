@@ -9,14 +9,14 @@ use derive_builder::Builder;
 use eframe::{CreationContext, egui_wgpu::RenderState};
 use egui::Context;
 use ffmpeg_the_third::{
-    ChannelLayout, Packet, Rational, Stream,
+    ChannelLayout, Packet, Rational, Stream, codec,
     ffi::{
         AV_CHANNEL_LAYOUT_STEREO, AVCodecContext, AVHWDeviceType, AVPixelFormat,
-        AVSEEK_FLAG_BACKWARD, SwrContext, av_hwdevice_ctx_create, av_hwframe_transfer_data,
-        av_image_copy_to_buffer, av_image_get_buffer_size, avcodec_get_hw_config,
-        swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
+        AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
+        av_hwframe_transfer_data, av_image_copy_to_buffer, av_image_get_buffer_size,
+        avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
     },
-    format::{sample::Type, stream::Disposition},
+    format::{Sample, sample::Type, stream::Disposition},
     frame::{Audio, Video},
 };
 
@@ -55,6 +55,10 @@ unsafe impl Sync for ManualProtectedAudioDecoder {}
 pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
+
+struct ManualProtectedStream<'stream_life_time>(pub Stream<'stream_life_time>);
+unsafe impl<'stream_life_time> Send for ManualProtectedStream<'stream_life_time> {}
+unsafe impl<'stream_life_time> Sync for ManualProtectedStream<'stream_life_time> {}
 
 /// indicate which stream in the input is chose as main stream
 #[derive(Debug, Clone)]
@@ -216,38 +220,38 @@ impl TinyDecoder {
             if stream_type == ffmpeg_the_third::util::media::Type::Video {
                 if item.disposition() == Disposition::ATTACHED_PIC {
                     info!("pic stream was found");
-                    cover_stream = Some(item);
+                    cover_stream = Some(ManualProtectedStream(item));
                 } else {
                     info!("video stream was found");
-                    video_stream = Some(item);
+                    video_stream = Some(ManualProtectedStream(item));
                 }
             } else if stream_type == ffmpeg_the_third::util::media::Type::Audio {
                 if audio_stream.is_none() {
                     info!("audio stream was found");
-                    audio_stream = Some(item);
+                    audio_stream = Some(ManualProtectedStream(item));
                 }
             } else if stream_type == ffmpeg_the_third::util::media::Type::Attachment {
                 info!("attachment stream was found");
-                cover_stream = Some(item);
+                cover_stream = Some(ManualProtectedStream(item));
             }
         }
         if audio_stream.is_none() && video_stream.is_none() {
             info!("no valid stream found");
         }
-        if let Some(stream) = &cover_stream {
+        if let Some(stream) = cover_stream {
             info!("cover stream found");
-            self.cover_stream_index = stream.index();
+            self.cover_stream_index = stream.0.index();
         }
 
         if let Some(stream) = &audio_stream {
-            self.audio_stream_index = stream.index();
-            self.audio_time_base = stream.time_base();
+            self.audio_stream_index = stream.0.index();
+            self.audio_time_base = stream.0.time_base();
             info!("audio time_base==={}", self.audio_time_base);
         }
 
         if let Some(stream) = &video_stream {
-            self.video_stream_index = stream.index();
-            self.video_time_base = stream.time_base();
+            self.video_stream_index = stream.0.index();
+            self.video_time_base = stream.0.time_base();
             info!("video time_base==={}", self.video_time_base);
             if audio_stream.is_none() {
                 self.main_stream = MainStream::Video;
@@ -272,33 +276,65 @@ impl TinyDecoder {
         self.end_timestamp = adur_ts;
         self.compute_and_set_end_time_str(adur_ts);
 
-        if let Some(video_stream) = &video_stream {
-            let video_decoder = self
-                .choose_decoder_with_hardware_prefer(video_stream)
-                .await?;
-
-            self.color_space_converter.set_params_for_space(
-                &self.render_state,
-                video_decoder.color_space(),
-                video_decoder.format(),
-                [video_decoder.width(), video_decoder.height()],
-                self.hardware_config_flag.clone(),
-            );
-
-            info!("video decode format{:#?}", video_decoder.format());
-            self.video_frame_rect = [video_decoder.width(), video_decoder.height()];
-            let mut v_decoder = self.video_decoder.write().await;
-            *v_decoder = Some(ManualProtectedVideoDecoder(video_decoder));
-        }
-        if let Some(audio_stream) = &audio_stream {
+        if let Some(audio_stream) = audio_stream {
             let audio_decoder_ctx =
-                ffmpeg_the_third::codec::Context::from_parameters(audio_stream.parameters())?;
+                ffmpeg_the_third::codec::Context::from_parameters(audio_stream.0.parameters())?;
 
             let mut audio_decoder = audio_decoder_ctx.decoder().audio()?;
-            unsafe {
-                if audio_decoder.ch_layout().channels() == 2 {
-                    audio_decoder.set_ch_layout(ChannelLayout::STEREO);
+            let audio_format = match audio_decoder.format() {
+                Sample::None => AVSampleFormat::NONE,
+
+                Sample::U8(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::U8
+                    } else {
+                        AVSampleFormat::U8P
+                    }
                 }
+                Sample::I16(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::S16
+                    } else {
+                        AVSampleFormat::S16P
+                    }
+                }
+                Sample::I32(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::S32
+                    } else {
+                        AVSampleFormat::S32P
+                    }
+                }
+                Sample::I64(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::S64
+                    } else {
+                        AVSampleFormat::S64P
+                    }
+                }
+                Sample::F32(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::FLT
+                    } else {
+                        AVSampleFormat::FLTP
+                    }
+                }
+                Sample::F64(t) => {
+                    if t == Type::Packed {
+                        AVSampleFormat::DBL
+                    } else {
+                        AVSampleFormat::DBLP
+                    }
+                }
+            };
+            if audio_decoder.ch_layout()
+                == ChannelLayout::unspecified(audio_decoder.ch_layout().channels())
+            {
+                audio_decoder.set_ch_layout(ChannelLayout::default_for_channels(
+                    audio_decoder.ch_layout().channels(),
+                ));
+            }
+            unsafe {
                 let mut swr_ctx = null_mut();
                 let r = swr_alloc_set_opts2(
                     &mut swr_ctx,
@@ -306,7 +342,7 @@ impl TinyDecoder {
                     ffmpeg_the_third::ffi::AVSampleFormat::FLT,
                     48000,
                     audio_decoder.ch_layout().as_ptr(),
-                    audio_decoder.format().into(),
+                    audio_format,
                     audio_decoder.rate() as i32,
                     0,
                     null_mut(),
@@ -320,10 +356,32 @@ impl TinyDecoder {
                 }
                 self.resampler_ctx = Some(ManualProtectedResampler(swr_ctx));
             }
-
-            let mut a_decoder = self.audio_decoder.write().await;
-            *a_decoder = Some(ManualProtectedAudioDecoder(audio_decoder));
+            {
+                let mut a_decoder = self.audio_decoder.write().await;
+                *a_decoder = Some(ManualProtectedAudioDecoder(audio_decoder));
+            }
         }
+        if let Some(video_stream) = video_stream {
+            let codec_ctx =
+                ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
+            let video_decoder = self.choose_decoder_with_hardware_prefer(codec_ctx).await?;
+
+            self.color_space_converter.set_params_for_space(
+                &self.render_state,
+                video_decoder.color_space(),
+                video_decoder.format(),
+                [video_decoder.width(), video_decoder.height()],
+                self.hardware_config_flag.clone(),
+            );
+
+            info!("video decode format{:#?}", video_decoder.format());
+            self.video_frame_rect = [video_decoder.width(), video_decoder.height()];
+            {
+                let mut v_decoder = self.video_decoder.write().await;
+                *v_decoder = Some(ManualProtectedVideoDecoder(video_decoder));
+            }
+        }
+
         {
             let mut input = self.format_input.write().await;
             *input = Some(ManualProtectedInput(format_input));
@@ -983,10 +1041,8 @@ impl TinyDecoder {
     /// fallback to softerware decoder if doesnt support
     async fn choose_decoder_with_hardware_prefer(
         &mut self,
-        stream: &Stream<'_>,
+        codec_ctx: codec::Context,
     ) -> PlayerResult<ffmpeg_the_third::decoder::Video> {
-        let codec_ctx = ffmpeg_the_third::codec::Context::from_parameters(stream.parameters())?;
-
         let mut decoder = codec_ctx.decoder().video()?;
         unsafe {
             if let Some(codec) = &decoder.codec() {

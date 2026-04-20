@@ -9,6 +9,7 @@ use std::{
 
 use eframe::{
     CreationContext, Frame,
+    egui_wgpu::RenderState,
     wgpu::{
         Extent3d, Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
         TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
@@ -71,9 +72,8 @@ pub struct AppUi {
     audio_player: crate::audio_play::AudioPlayer,
     _present_data_manager: PresentDataManager,
     main_stream_current_timestamp: Arc<AtomicI64>,
-    main_color_image: ColorImage,
-    bg_dyn_img: DynamicImage,
-    frame_show_instant: Instant,
+    main_color_image: Arc<RwLock<ColorImage>>,
+    bg_dyn_img: Arc<DynamicImage>,
     ui_flags: UiFlags,
     play_time: time::Time,
     time_text: String,
@@ -101,21 +101,6 @@ impl eframe::App for AppUi {
 
                  */
                 let now = Instant::now();
-                let texture_res = if let Ok(texture_with_id) = self.video_texture.try_read() {
-                    if texture_with_id.texture.is_none() {
-                        Ok(())
-                    } else {
-                        Err(anyhow::Error::msg("texture is created"))
-                    }
-                } else {
-                    Err(anyhow::Error::msg("try lock"))
-                };
-                if texture_res.is_ok() {
-                    if let Err(e) = self.reset_video_texture(frame) {
-                        warn!("{}", e);
-                    }
-                    self.frame_show_instant = now;
-                }
                 {
                     if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
                         if self
@@ -161,9 +146,9 @@ impl eframe::App for AppUi {
 
                 ui.horizontal(|ui| {
                     self.paint_tip_window(ui.ctx());
-                    self.paint_file_btn(ui, frame, &now);
+                    self.paint_file_btn(ui, frame);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        self.paint_playlist_button(ui, frame, &now);
+                        self.paint_playlist_button(ui, frame);
                     });
                 });
 
@@ -174,11 +159,11 @@ impl eframe::App for AppUi {
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     self.update_time_and_time_text();
-                    self.paint_control_area(ui, &now);
+                    self.paint_control_area(ui);
                     // self.paint_subtitle(ui, ctx);
                 });
 
-                self.detect_file_drag(ui, frame, &now);
+                self.detect_file_drag(ui, frame);
             });
         });
     }
@@ -242,6 +227,7 @@ impl AppUi {
                 Err(anyhow::Error::msg("img create err"))
             }
         }?;
+        let main_color_image = Arc::new(RwLock::new(color_image));
         let media_source_flag = Arc::new(AtomicBool::new(false));
         let tiny_decoder =
             crate::decode::TinyDecoder::new(rt.clone(), cc, media_source_flag.clone())?;
@@ -269,7 +255,14 @@ impl AppUi {
             .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
-
+        async_rt.block_on(Self::reset_video_texture(
+            main_color_image.clone(),
+            video_texture.clone(),
+            cc.wgpu_render_state
+                .as_ref()
+                .ok_or(anyhow::Error::msg("get render state err"))?
+                .clone(),
+        ))?;
         Ok(Self {
             // subtitle_text_receiver: subtitle_channel.1,
             video_texture,
@@ -278,8 +271,7 @@ impl AppUi {
             _present_data_manager: present_data_manager,
             main_stream_current_timestamp,
             play_time,
-            main_color_image: color_image,
-            frame_show_instant: Instant::now(),
+            main_color_image,
             ui_flags: UiFlags {
                 pause_flag,
                 fullscreen_flag: false,
@@ -298,7 +290,7 @@ impl AppUi {
             async_rt,
             open_file_dialog: Some(f_dialog),
             scan_folder_dialog: Some(egui_file::FileDialog::select_folder()),
-            bg_dyn_img: dyn_img,
+            bg_dyn_img: Arc::new(dyn_img),
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
             video_des: Arc::new(RwLock::new(vec![])),
@@ -374,33 +366,18 @@ impl AppUi {
             }
         }
     }
-    fn _update_color_image(&mut self) {
-        let tiny_decoder = self.tiny_decoder.blocking_read();
-        let frame_rect = tiny_decoder._video_frame_rect();
-        if frame_rect[0] != 0 {
-            let color_image = ColorImage::filled(
-                [frame_rect[0] as usize, frame_rect[1] as usize],
-                Color32::from_rgba_unmultiplied(0, 0, 0, 255),
-            );
 
-            self.main_color_image = color_image;
-        }
-    }
-    fn reset_video_texture(&mut self, frame: &Frame) -> PlayerResult<()> {
-        let main_color_image = &self.main_color_image;
-        info!(
-            "main image rect:{}x{}",
-            main_color_image.width(),
-            main_color_image.height()
-        );
+    async fn reset_video_texture(
+        main_color_image: Arc<RwLock<ColorImage>>,
+        texture_with_id: Arc<RwLock<VideoTextureWithId>>,
+        render_state: RenderState,
+    ) -> PlayerResult<()> {
+        let main_color_image = main_color_image.read().await;
         // let id = {
         //     let video_texture = self.video_texture.blocking_read();
         //     video_texture.id
         // };
 
-        let render_state = frame
-            .wgpu_render_state()
-            .ok_or(anyhow::Error::msg("wgpu render state is none"))?;
         // if let Some(id) = id {
         //     render_state.renderer.write().free_texture(&id);
         // }
@@ -451,7 +428,7 @@ impl AppUi {
             },
         );
         {
-            let mut texture_with_id = self.video_texture.blocking_write();
+            let mut texture_with_id = texture_with_id.write().await;
             texture_with_id.texture = Some(video_texture);
             texture_with_id.id = Some(texture_id);
         }
@@ -459,7 +436,7 @@ impl AppUi {
         Ok(())
     }
 
-    fn paint_file_btn(&mut self, ui: &mut Ui, frame: &Frame, now: &Instant) {
+    fn paint_file_btn(&mut self, ui: &mut Ui, frame: &Frame) {
         let btn_rect = Vec2::new(
             ui.ctx().content_rect().width() / 10.0,
             ui.ctx().content_rect().width() / 10.0,
@@ -502,7 +479,7 @@ impl AppUi {
             }
         }
         if let Some(p) = file_path {
-            if self.change_format_input(frame, &p, now).is_ok() {
+            if self.change_format_input(frame, &p).is_ok() {
                 if let Some(p_str) = p.to_str() {
                     warn!("accept file path{}", p_str);
                 }
@@ -567,7 +544,7 @@ impl AppUi {
         }
     }
 
-    fn paint_control_area(&mut self, ui: &mut Ui, now: &Instant) {
+    fn paint_control_area(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let mut ts = self
                 .main_stream_current_timestamp
@@ -630,7 +607,6 @@ impl AppUi {
                         {
                             audio_player.play();
                         }
-                        self.frame_show_instant = *now;
                     }
                 });
 
@@ -870,7 +846,7 @@ impl AppUi {
     }
 
     /// return true when the current video time > audio time,else return false
-    fn paint_playlist_window(&mut self, ui: &mut Ui, frame: &Frame, now: &Instant) {
+    fn paint_playlist_window(&mut self, ui: &mut Ui, frame: &Frame) {
         if self.ui_flags.playlist_window_flag {
             let viewport_id = ViewportId::from_hash_of("content_window");
             ui.ctx()
@@ -902,11 +878,7 @@ impl AppUi {
                                                 ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
                                                     if self
-                                                        .change_format_input(
-                                                            frame,
-                                                            &PathBuf::from(&des.path),
-                                                            now,
-                                                        )
+                                                        .change_format_input(frame, &des.path)
                                                         .is_ok()
                                                     {
                                                         info!("change_format_input success");
@@ -917,15 +889,14 @@ impl AppUi {
                                             columns[1].vertical(|ui| {
                                                 ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
-                                                    if self
-                                                        .change_format_input(
-                                                            frame,
-                                                            &PathBuf::from(&des.path),
-                                                            now,
-                                                        )
-                                                        .is_ok()
+                                                    match self.change_format_input(frame, &des.path)
                                                     {
-                                                        info!("change_format_input success");
+                                                        Ok(()) => {
+                                                            info!("change_format_input success");
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("{}", e);
+                                                        }
                                                     }
                                                 }
                                             });
@@ -958,20 +929,23 @@ impl AppUi {
             });
         }
     }
-    fn reset_main_color_img_to_bg(&mut self) {
+    async fn reset_main_color_img_to_bg(
+        bg_dyn_img: Arc<DynamicImage>,
+        main_color_image: Arc<RwLock<ColorImage>>,
+    ) {
         let bg_color_img = ColorImage::from_rgba_unmultiplied(
-            [
-                self.bg_dyn_img.width() as usize,
-                self.bg_dyn_img.height() as usize,
-            ],
-            self.bg_dyn_img.as_bytes(),
+            [bg_dyn_img.width() as usize, bg_dyn_img.height() as usize],
+            bg_dyn_img.as_bytes(),
         );
-        self.main_color_image = bg_color_img.clone();
+        let mut main_color_image = main_color_image.write().await;
+        *main_color_image = bg_color_img;
     }
-    fn reset_main_color_img_to_cover_pic(&mut self) {
-        let tiny_decoder = self.tiny_decoder.blocking_read();
+    async fn reset_main_color_img_to_cover_pic(
+        tiny_decoder: &TinyDecoder,
+        main_color_image: Arc<RwLock<ColorImage>>,
+    ) {
         let cover_pic_data = tiny_decoder.cover_pic_data();
-        let cover_data = cover_pic_data.blocking_read();
+        let cover_data = cover_pic_data.read().await;
         if let Some(data_vec) = &*cover_data {
             if let Ok(img) = image::load_from_memory(data_vec) {
                 let rgba8_img = img.to_rgba8();
@@ -980,42 +954,42 @@ impl AppUi {
                     &rgba8_img,
                 );
                 info!("set cover img!");
-                self.main_color_image = cover_color_img.clone();
+                let mut main_color_image = main_color_image.write().await;
+                *main_color_image = cover_color_img;
             }
         }
     }
-    fn change_format_input(
-        &mut self,
-        frame: &Frame,
-        path: &Path,
-        now: &Instant,
-    ) -> PlayerResult<()> {
-        {
-            let mut tiny_decoder = self.tiny_decoder.blocking_write();
-            self.ui_flags
-                .pause_flag
-                .store(true, std::sync::atomic::Ordering::Release);
-            if let Err(e) = self
-                .async_rt
-                .block_on(tiny_decoder.set_file_path_and_init_par(path))
-            {
-                warn!("reset file path error!{}", e);
-                return Err(e);
-            }
-        }
-        let au_pl = &mut self.audio_player;
-        au_pl.source_queue_skip_to_end();
-
-        self.reset_main_color_img_to_bg();
-        self.reset_main_color_img_to_cover_pic();
-
-        self.reset_video_texture(frame)?;
-        info!("after reset video texture");
+    fn change_format_input(&mut self, frame: &Frame, path: &Path) -> PlayerResult<()> {
+        self.ui_flags
+            .pause_flag
+            .store(true, std::sync::atomic::Ordering::Release);
         self.main_stream_current_timestamp
             .store(0, std::sync::atomic::Ordering::Release);
         self.current_video_timestamp
             .store(0, std::sync::atomic::Ordering::Release);
-        self.frame_show_instant = *now;
+        let tiny_decoder = self.tiny_decoder.clone();
+        let au_sink = self.audio_player.sink();
+        let main_color_img = self.main_color_image.clone();
+        let bg_dyn_img = self.bg_dyn_img.clone();
+        let texture_with_id = self.video_texture.clone();
+        let render_state = frame
+            .wgpu_render_state()
+            .ok_or(anyhow::Error::msg("get render state from egui::Frame err"))?
+            .clone();
+
+        let path = path.to_path_buf();
+        self.async_rt.spawn(async move {
+            let mut tiny_decoder = tiny_decoder.write().await;
+            tiny_decoder.set_file_path_and_init_par(&path).await?;
+            au_sink.clear();
+            Self::reset_main_color_img_to_bg(bg_dyn_img, main_color_img.clone()).await;
+            Self::reset_main_color_img_to_cover_pic(&tiny_decoder, main_color_img.clone()).await;
+
+            Self::reset_video_texture(main_color_img, texture_with_id, render_state).await?;
+            info!("after reset video texture");
+
+            PlayerResult::<()>::Ok(())
+        });
 
         Ok(())
     }
@@ -1067,7 +1041,7 @@ impl AppUi {
     //         }
     //     }
     // }
-    fn detect_file_drag(&mut self, ui: &mut Ui, frame: &Frame, now: &Instant) {
+    fn detect_file_drag(&mut self, ui: &mut Ui, frame: &Frame) {
         let mut detected = None;
         ui.input(|input| {
             let dropped_files = &input.raw.dropped_files;
@@ -1078,10 +1052,7 @@ impl AppUi {
             }
         });
         if let Some(path_buf) = detected {
-            if self
-                .change_format_input(frame, path_buf.as_path(), now)
-                .is_ok()
-            {
+            if self.change_format_input(frame, path_buf.as_path()).is_ok() {
                 if let Some(p_str) = path_buf.to_str() {
                     warn!("filepath{}", p_str);
                 }
@@ -1091,7 +1062,7 @@ impl AppUi {
             }
         }
     }
-    fn paint_playlist_button(&mut self, ui: &mut Ui, frame: &Frame, now: &Instant) {
+    fn paint_playlist_button(&mut self, ui: &mut Ui, frame: &Frame) {
         let open_btn = Button::new(
             Image::from(PLAY_LIST_IMG)
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
@@ -1118,7 +1089,7 @@ impl AppUi {
             self.ui_flags.playlist_window_flag = !self.ui_flags.playlist_window_flag;
         }
         if self.ui_flags.playlist_window_flag {
-            self.paint_playlist_window(ui, frame, now);
+            self.paint_playlist_window(ui, frame);
         }
     }
     async fn read_video_folder(ctx: Context, path: PathBuf, video_des: Arc<RwLock<Vec<VideoDes>>>) {
