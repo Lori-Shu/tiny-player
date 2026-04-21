@@ -67,7 +67,9 @@ struct UiFlags {
 }
 
 pub struct AppUi {
-    video_texture: Arc<RwLock<VideoTextureWithId>>,
+    video_texture_id: Arc<RwLock<TextureId>>,
+    video_texture: Arc<RwLock<Texture>>,
+    garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
     audio_player: crate::audio_play::AudioPlayer,
     _present_data_manager: PresentDataManager,
@@ -90,6 +92,7 @@ pub struct AppUi {
     audio_volumn: f32,
     current_video_timestamp: Arc<AtomicI64>,
     visible_num: f32,
+    wgpu_render_state: RenderState,
 }
 impl eframe::App for AppUi {
     /// this function will automaticly be called every ui redraw
@@ -135,6 +138,7 @@ impl eframe::App for AppUi {
                         }
                     }
                 }
+                self.clear_garbage_texture();
                 /*
                 down part is ui painting and control
 
@@ -239,15 +243,18 @@ impl AppUi {
         let main_stream_current_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let video_texture = Arc::new(RwLock::new(VideoTextureWithId {
-            texture: None,
-            id: None,
-        }));
+        let wgpu_render_state = cc
+            .wgpu_render_state
+            .as_ref()
+            .ok_or(anyhow::Error::msg("get render state err"))?
+            .clone();
+        let (video_texture_id, video_texture) =
+            Self::new_and_register_texture(main_color_image.clone(), wgpu_render_state.clone());
         let data_manage_context = DataManageContextBuilder::default()
             .tiny_decoder(tiny_decoder.clone())
             // .used_model(used_model.clone())
             // .ai_subtitle(subtitle.clone())
-            .video_texture_with_id(video_texture.clone())
+            .video_texture(video_texture.clone())
             .audio_sink(audio_player.sink())
             .main_stream_current_timestamp(main_stream_current_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
@@ -255,16 +262,11 @@ impl AppUi {
             .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
-        async_rt.block_on(Self::reset_video_texture(
-            main_color_image.clone(),
-            video_texture.clone(),
-            cc.wgpu_render_state
-                .as_ref()
-                .ok_or(anyhow::Error::msg("get render state err"))?
-                .clone(),
-        ))?;
+
         Ok(Self {
+            garbage_video_texture: Arc::new(RwLock::new(None)),
             // subtitle_text_receiver: subtitle_channel.1,
+            video_texture_id,
             video_texture,
             tiny_decoder,
             audio_player,
@@ -297,6 +299,7 @@ impl AppUi {
             audio_volumn: 1.0,
             current_video_timestamp,
             visible_num: 1.0,
+            wgpu_render_state,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -304,21 +307,19 @@ impl AppUi {
         show image that contains the video texture
          */
         let layer_painter = ui.ctx().layer_painter(ui.layer_id());
-        if let Ok(video_texture_with_id) = self.video_texture.try_read() {
-            if let Some(id) = &video_texture_with_id.id {
-                layer_painter.image(
-                    *id,
-                    Rect::from_min_max(
-                        Pos2::new(0.0, 0.0),
-                        Pos2::new(
-                            ui.ctx().content_rect().width(),
-                            ui.ctx().content_rect().height(),
-                        ),
+        if let Ok(texture_id) = self.video_texture_id.try_read() {
+            layer_painter.image(
+                *texture_id,
+                Rect::from_min_max(
+                    Pos2::new(0.0, 0.0),
+                    Pos2::new(
+                        ui.ctx().content_rect().width(),
+                        ui.ctx().content_rect().height(),
                     ),
-                    Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
+                ),
+                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
         }
     }
     fn update_time_and_time_text(&mut self) {
@@ -366,21 +367,12 @@ impl AppUi {
             }
         }
     }
-
-    async fn reset_video_texture(
+    fn new_and_register_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
-        texture_with_id: Arc<RwLock<VideoTextureWithId>>,
         render_state: RenderState,
-    ) -> PlayerResult<()> {
-        let main_color_image = main_color_image.read().await;
-        // let id = {
-        //     let video_texture = self.video_texture.blocking_read();
-        //     video_texture.id
-        // };
+    ) -> (Arc<RwLock<TextureId>>, Arc<RwLock<Texture>>) {
+        let main_color_image = main_color_image.blocking_read();
 
-        // if let Some(id) = id {
-        //     render_state.renderer.write().free_texture(&id);
-        // }
         let video_texture = render_state.device.create_texture(&TextureDescriptor {
             label: Some("Video"),
             size: Extent3d {
@@ -403,6 +395,11 @@ impl AppUi {
                 label: Some("Video_View"),
                 format: Some(TextureFormat::Rgba8Unorm),
                 aspect: TextureAspect::All,
+                usage: Some(
+                    TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::COPY_DST,
+                ),
                 ..Default::default()
             }),
             eframe::wgpu::FilterMode::Linear,
@@ -427,13 +424,103 @@ impl AppUi {
                 depth_or_array_layers: 1,
             },
         );
+        (
+            Arc::new(RwLock::new(texture_id)),
+            Arc::new(RwLock::new(video_texture)),
+        )
+    }
+    fn free_texture(&self) {
+        let texture_id = self.video_texture_id.blocking_read();
+        self.wgpu_render_state
+            .renderer
+            .write()
+            .free_texture(&texture_id);
+    }
+    async fn update_video_texture(
+        main_color_image: Arc<RwLock<ColorImage>>,
+        texture_id: Arc<RwLock<TextureId>>,
+        video_texture: Arc<RwLock<Texture>>,
+        garbage_texture_id: Arc<RwLock<Option<TextureId>>>,
+        render_state: RenderState,
+    ) -> PlayerResult<()> {
+        let main_color_image = main_color_image.read().await;
+        info!(
+            "color img wid{} hei{}",
+            main_color_image.width(),
+            main_color_image.height()
+        );
+        let new_video_texture = render_state.device.create_texture(&TextureDescriptor {
+            label: Some("Video"),
+            size: Extent3d {
+                width: main_color_image.width() as u32,
+                height: main_color_image.height() as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let new_texture_id = render_state.renderer.write().register_native_texture(
+            &render_state.device,
+            &new_video_texture.create_view(&TextureViewDescriptor {
+                label: Some("Video_View"),
+                format: Some(TextureFormat::Rgba8Unorm),
+                aspect: TextureAspect::All,
+                usage: Some(
+                    TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::COPY_DST,
+                ),
+                ..Default::default()
+            }),
+            eframe::wgpu::FilterMode::Linear,
+        );
+        render_state.queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &new_video_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            main_color_image.as_raw(),
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((main_color_image.width() * 4) as u32),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: main_color_image.width() as u32,
+                height: main_color_image.height() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
         {
-            let mut texture_with_id = texture_with_id.write().await;
-            texture_with_id.texture = Some(video_texture);
-            texture_with_id.id = Some(texture_id);
+            let mut texture_id = texture_id.write().await;
+            let old_id = *texture_id;
+            *texture_id = new_texture_id;
+            let mut garbage_texture_id = garbage_texture_id.write().await;
+            *garbage_texture_id = Some(old_id);
         }
-
+        {
+            let mut video_texture = video_texture.write().await;
+            *video_texture = new_video_texture;
+        }
         Ok(())
+    }
+    fn clear_garbage_texture(&self) {
+        if let Ok(mut garbage_texture) = self.garbage_video_texture.try_write() {
+            if let Some(garbage_texture) = garbage_texture.take() {
+                self.wgpu_render_state
+                    .renderer
+                    .write()
+                    .free_texture(&garbage_texture);
+            }
+        }
     }
 
     fn paint_file_btn(&mut self, ui: &mut Ui, frame: &Frame) {
@@ -936,12 +1023,29 @@ impl AppUi {
     }
     async fn reset_main_color_img_to_bg(
         bg_dyn_img: Arc<DynamicImage>,
+        video_rect: &[u32; 2],
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
-        let bg_color_img = ColorImage::from_rgba_unmultiplied(
-            [bg_dyn_img.width() as usize, bg_dyn_img.height() as usize],
-            bg_dyn_img.as_bytes(),
-        );
+        let bg_color_img = if video_rect[0] != 0 {
+            info!(
+                "before resize img width{},height{}",
+                video_rect[0], video_rect[1]
+            );
+            let img = bg_dyn_img.resize(
+                video_rect[0],
+                video_rect[1],
+                image::imageops::FilterType::Triangle,
+            );
+            ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_bytes(),
+            )
+        } else {
+            ColorImage::from_rgba_unmultiplied(
+                [bg_dyn_img.width() as usize, bg_dyn_img.height() as usize],
+                bg_dyn_img.as_bytes(),
+            )
+        };
         let mut main_color_image = main_color_image.write().await;
         *main_color_image = bg_color_img;
     }
@@ -953,7 +1057,17 @@ impl AppUi {
         let cover_data = cover_pic_data.read().await;
         if let Some(data_vec) = &*cover_data {
             if let Ok(img) = image::load_from_memory(data_vec) {
-                let rgba8_img = img.to_rgba8();
+                let video_frame_rect = tiny_decoder.video_frame_rect();
+                let rgba8_img = if video_frame_rect[0] != 0 {
+                    img.resize(
+                        video_frame_rect[0],
+                        video_frame_rect[1],
+                        image::imageops::FilterType::Triangle,
+                    )
+                    .to_rgba8()
+                } else {
+                    img.to_rgba8()
+                };
                 let cover_color_img = ColorImage::from_rgba_unmultiplied(
                     [rgba8_img.width() as usize, rgba8_img.height() as usize],
                     &rgba8_img,
@@ -976,24 +1090,33 @@ impl AppUi {
         let au_sink = self.audio_player.sink();
         let main_color_img = self.main_color_image.clone();
         let bg_dyn_img = self.bg_dyn_img.clone();
-        let texture_with_id = self.video_texture.clone();
+        let texture_id = self.video_texture_id.clone();
         let render_state = frame
             .wgpu_render_state()
             .ok_or(anyhow::Error::msg("get render state from egui::Frame err"))?
             .clone();
 
         let path = path.to_path_buf();
+        let garbage_texture = self.garbage_video_texture.clone();
+        let video_texture = self.video_texture.clone();
         self.async_rt.spawn(async move {
             let mut tiny_decoder = tiny_decoder.write().await;
             if let Err(e) = tiny_decoder.set_file_path_and_init_par(&path).await {
                 warn!("{}", e);
             }
             au_sink.clear();
-            Self::reset_main_color_img_to_bg(bg_dyn_img, main_color_img.clone()).await;
+            let video_rect = tiny_decoder.video_frame_rect();
+            Self::reset_main_color_img_to_bg(bg_dyn_img, video_rect, main_color_img.clone()).await;
             Self::reset_main_color_img_to_cover_pic(&tiny_decoder, main_color_img.clone()).await;
 
-            if let Err(e) =
-                Self::reset_video_texture(main_color_img, texture_with_id, render_state).await
+            if let Err(e) = Self::update_video_texture(
+                main_color_img,
+                texture_id,
+                video_texture,
+                garbage_texture,
+                render_state,
+            )
+            .await
             {
                 warn!("{}", e);
             }
@@ -1203,14 +1326,13 @@ impl AppUi {
                 .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
     }
 }
-
+impl Drop for AppUi {
+    fn drop(&mut self) {
+        self.free_texture();
+    }
+}
 struct VideoDes {
     pub name: String,
     pub path: PathBuf,
     pub texture_handle: TextureHandle,
-}
-
-pub struct VideoTextureWithId {
-    pub texture: Option<Texture>,
-    pub id: Option<TextureId>,
 }

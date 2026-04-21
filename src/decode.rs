@@ -30,7 +30,7 @@ use tokio::{
 };
 use tracing::{Instrument, Level, info, span, warn};
 
-use crate::{PlayerResult, appui::VideoTextureWithId, gpu_post_process::ColorSpaceConverter};
+use crate::{PlayerResult, gpu_post_process::ColorSpaceConverter};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -894,7 +894,7 @@ impl TinyDecoder {
         &self.end_time_formatted_string
     }
     /// video_frame_rect to config the main colorimage and texture size
-    pub fn _video_frame_rect(&self) -> &[u32; 2] {
+    pub fn video_frame_rect(&self) -> &[u32; 2] {
         &self.video_frame_rect
     }
     /// get the end audio timestamp used as the main time flow
@@ -1022,7 +1022,7 @@ impl TinyDecoder {
     }
     pub async fn render_video_frame(
         &self,
-        texture: Arc<RwLock<VideoTextureWithId>>,
+        texture: Arc<RwLock<eframe::wgpu::Texture>>,
         frame: Video,
     ) -> PlayerResult<()> {
         let hw_acc = self
