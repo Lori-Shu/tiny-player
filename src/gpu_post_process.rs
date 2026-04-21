@@ -23,7 +23,7 @@ use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
 
-use crate::{PlayerResult, appui::VideoTextureWithId};
+use crate::PlayerResult;
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
 const FALLBACK_SCALING_SHADER: &str = include_str!("./shaders/fallback_scaling_shader.wgsl");
 pub struct ColorSpaceConverter {
@@ -587,7 +587,7 @@ impl ColorSpaceConverter {
         &self,
         render_state: &RenderState,
         egui_ctx: &Context,
-        texture: Arc<RwLock<VideoTextureWithId>>,
+        texture: Arc<RwLock<Texture>>,
         frame: Video,
         is_hw_acc: bool,
     ) -> PlayerResult<()> {
@@ -642,45 +642,44 @@ impl ColorSpaceConverter {
                     });
 
             {
-                let texture = texture.read().await;
-                if let Some(texture) = &texture.texture {
-                    let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                        label: Some("Video_To_Texture_Pass"),
-                        color_attachments: &[Some(RenderPassColorAttachment {
-                            view: &texture.create_view(&TextureViewDescriptor {
-                                label: Some("Video_Playback_View"),
-                                format: Some(TextureFormat::Rgba8Unorm),
-                                dimension: Some(TextureViewDimension::D2),
-                                aspect: TextureAspect::All,
-                                base_mip_level: 0,
-                                mip_level_count: None,
-                                base_array_layer: 0,
-                                array_layer_count: None,
-                                usage: Some(
-                                    TextureUsages::RENDER_ATTACHMENT
-                                        | TextureUsages::TEXTURE_BINDING
-                                        | TextureUsages::COPY_DST,
-                                ),
-                            }),
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Clear(Color::BLACK),
-                                store: StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
+                let updated_texture = texture.read().await;
 
-                    render_pass.set_pipeline(&self.render_pipeline);
-                    render_pass.set_bind_group(0, &self.bind_group, &[]);
-                    render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+                let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("Video_To_Texture_Pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &updated_texture.create_view(&TextureViewDescriptor {
+                            label: Some("Video_Playback_View"),
+                            format: Some(TextureFormat::Rgba8Unorm),
+                            dimension: Some(TextureViewDimension::D2),
+                            aspect: TextureAspect::All,
+                            base_mip_level: 0,
+                            mip_level_count: None,
+                            base_array_layer: 0,
+                            array_layer_count: None,
+                            usage: Some(
+                                TextureUsages::RENDER_ATTACHMENT
+                                    | TextureUsages::TEXTURE_BINDING
+                                    | TextureUsages::COPY_DST,
+                            ),
+                        }),
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::BLACK),
+                            store: StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
 
-                    render_pass.draw(0..6, 0..1);
-                }
+                render_pass.set_pipeline(&self.render_pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+
+                render_pass.draw(0..6, 0..1);
             }
 
             render_state.queue.submit(std::iter::once(encoder.finish()));
@@ -757,49 +756,47 @@ impl ColorSpaceConverter {
                     });
 
             {
-                let texture = texture.read().await;
-                if let Some(texture) = &texture.texture {
-                    let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                        label: Some("Video_To_Texture_Pass"),
-                        color_attachments: &[Some(RenderPassColorAttachment {
-                            view: &texture.create_view(&TextureViewDescriptor {
-                                label: Some("Video_Playback_View"),
-                                format: Some(TextureFormat::Rgba8Unorm),
-                                dimension: Some(TextureViewDimension::D2),
-                                aspect: TextureAspect::All,
-                                base_mip_level: 0,
-                                mip_level_count: None,
-                                base_array_layer: 0,
-                                array_layer_count: None,
-                                usage: Some(
-                                    TextureUsages::RENDER_ATTACHMENT
-                                        | TextureUsages::TEXTURE_BINDING
-                                        | TextureUsages::COPY_DST,
-                                ),
-                            }),
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Clear(Color::BLACK),
-                                store: StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
+                let updated_texture = texture.read().await;
 
-                    render_pass.set_pipeline(&self.fallback_render_pipeline);
-                    render_pass.set_bind_group(0, &self.fallback_bind_group, &[]);
-                    render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+                let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("Video_To_Texture_Pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &updated_texture.create_view(&TextureViewDescriptor {
+                            label: Some("Video_Playback_View"),
+                            format: Some(TextureFormat::Rgba8Unorm),
+                            dimension: Some(TextureViewDimension::D2),
+                            aspect: TextureAspect::All,
+                            base_mip_level: 0,
+                            mip_level_count: None,
+                            base_array_layer: 0,
+                            array_layer_count: None,
+                            usage: Some(
+                                TextureUsages::RENDER_ATTACHMENT
+                                    | TextureUsages::TEXTURE_BINDING
+                                    | TextureUsages::COPY_DST,
+                            ),
+                        }),
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::BLACK),
+                            store: StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
 
-                    render_pass.draw(0..6, 0..1);
-                }
+                render_pass.set_pipeline(&self.fallback_render_pipeline);
+                render_pass.set_bind_group(0, &self.fallback_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+
+                render_pass.draw(0..6, 0..1);
             }
 
             render_state.queue.submit(std::iter::once(encoder.finish()));
-            // warn!("after write texture and render");
         }
         egui_ctx.request_repaint();
         Ok(())

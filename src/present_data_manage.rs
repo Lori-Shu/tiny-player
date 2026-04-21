@@ -7,13 +7,13 @@ use std::{
 };
 
 use derive_builder::Builder;
+use eframe::wgpu::Texture;
 use ffmpeg_the_third::Rational;
 use rodio::Player;
 use tokio::{runtime::Handle, sync::RwLock, task::JoinHandle, time::sleep};
 use tracing::warn;
 
 use crate::{
-    appui::VideoTextureWithId,
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
 };
@@ -157,7 +157,7 @@ impl PresentDataManager {
             if let Ok(frame) = frame_result {
                 let tiny_decoder = data_manage_context.tiny_decoder.read().await;
                 if let Err(e) = tiny_decoder
-                    .render_video_frame(data_manage_context.video_texture_with_id.clone(), frame)
+                    .render_video_frame(data_manage_context.video_texture.clone(), frame)
                     .await
                 {
                     warn!("{}", e);
@@ -224,6 +224,6 @@ pub struct DataManageContext {
     main_stream_current_timestamp: Arc<AtomicI64>,
     runtime_handle: Handle,
     current_video_timestamp: Arc<AtomicI64>,
-    video_texture_with_id: Arc<RwLock<VideoTextureWithId>>,
+    video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
 }
