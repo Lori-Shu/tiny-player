@@ -584,6 +584,7 @@ impl ColorSpaceConverter {
             self.texture_v = Some(texture_v);
         }
         self.texture_y = Some(texture_y);
+        self.playback_texture_view=None;
     }
     pub async fn render_video(
         &self,
