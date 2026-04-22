@@ -1022,7 +1022,7 @@ impl TinyDecoder {
         }
     }
     pub async fn render_video_frame(
-        &self,
+        &mut self,
         texture: Arc<RwLock<eframe::wgpu::Texture>>,
         frame: Video,
     ) -> PlayerResult<()> {

@@ -114,7 +114,7 @@ impl PresentDataManager {
 
                     let frame_result = match &main_stream {
                         MainStream::Video => {
-                            if ins_now - change_instant > Duration::from_millis(0) {
+                            if ins_now.checked_duration_since(change_instant).is_some() {
                                 if let Some(frame) = tiny_decoder.pull_one_video_play_frame().await
                                 {
                                     if let Some(f_pts) = frame.pts() {
@@ -171,7 +171,6 @@ impl PresentDataManager {
                         }
                     };
                     if let Ok(frame) = frame_result {
-                        let tiny_decoder = data_manage_context.tiny_decoder.read().await;
                         if let Err(e) = tiny_decoder
                             .render_video_frame(data_manage_context.video_texture.clone(), frame)
                             .await
@@ -180,8 +179,8 @@ impl PresentDataManager {
                         }
                     }
                 }
-                sleep(Duration::from_millis(10)).await;
             }
+            sleep(Duration::from_millis(10)).await;
         }
     }
     async fn update_current_timestamp(

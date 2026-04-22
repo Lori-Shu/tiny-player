@@ -589,7 +589,7 @@ impl ColorSpaceConverter {
         warn!("reset playback_texture_view success");
     }
     pub async fn render_video(
-        &self,
+        &mut self,
         render_state: &RenderState,
         egui_ctx: &Context,
         texture: Arc<RwLock<Texture>>,
@@ -600,7 +600,7 @@ impl ColorSpaceConverter {
             view.clone()
         } else {
             let updated_texture = texture.read().await;
-            updated_texture.create_view(&TextureViewDescriptor {
+            let new_texture_view = updated_texture.create_view(&TextureViewDescriptor {
                 label: Some("Video_Playback_View"),
                 format: Some(TextureFormat::Rgba8Unorm),
                 dimension: Some(TextureViewDimension::D2),
@@ -614,7 +614,9 @@ impl ColorSpaceConverter {
                         | TextureUsages::TEXTURE_BINDING
                         | TextureUsages::COPY_DST,
                 ),
-            })
+            });
+            self.playback_texture_view = Some(new_texture_view.clone());
+            new_texture_view
         };
         if is_hw_acc {
             if let Some(texture) = &self.texture_y {
