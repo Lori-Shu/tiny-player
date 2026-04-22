@@ -88,82 +88,100 @@ impl PresentDataManager {
     async fn play_video_task(data_manage_context: DataManageContext) {
         let mut change_instant = Instant::now();
         loop {
-            let (main_stream, audio_time_base, video_time_base) = {
-                let tiny_decoder = data_manage_context.tiny_decoder.read().await;
-                (
-                    tiny_decoder.main_stream().clone(),
-                    *tiny_decoder.audio_time_base(),
-                    *tiny_decoder.video_time_base(),
-                )
-            };
-            let frame_result = if PresentDataManager::should_video_catch_audio(
-                main_stream.clone(),
-                audio_time_base,
-                video_time_base,
-                data_manage_context.main_stream_current_timestamp.clone(),
-                data_manage_context.current_video_timestamp.clone(),
-            )
-            .await
+            if !data_manage_context
+                .pause_flag
+                .load(std::sync::atomic::Ordering::Acquire)
             {
-                let mut tiny_decoder = data_manage_context.tiny_decoder.write().await;
-                let ins_now = Instant::now();
-                if let Some(frame) = tiny_decoder.pull_one_video_play_frame().await {
-                    let main_stream = tiny_decoder.main_stream();
-                    let time_base = tiny_decoder.video_time_base();
-                    if let MainStream::Video = main_stream {
-                        if ins_now - change_instant > Duration::from_millis(0) {
-                            if let Some(f_pts) = frame.pts() {
-                                let cur_pts = data_manage_context
-                                    .current_video_timestamp
-                                    .load(std::sync::atomic::Ordering::Relaxed);
+                let (main_stream, audio_time_base, video_time_base) = {
+                    let tiny_decoder = data_manage_context.tiny_decoder.read().await;
+                    (
+                        tiny_decoder.main_stream().clone(),
+                        *tiny_decoder.audio_time_base(),
+                        *tiny_decoder.video_time_base(),
+                    )
+                };
+                if PresentDataManager::should_video_catch_audio(
+                    main_stream.clone(),
+                    audio_time_base,
+                    video_time_base,
+                    data_manage_context.main_stream_current_timestamp.clone(),
+                    data_manage_context.current_video_timestamp.clone(),
+                )
+                .await
+                {
+                    let mut tiny_decoder = data_manage_context.tiny_decoder.write().await;
+                    let ins_now = Instant::now();
 
-                                if f_pts > 0
-                                    && cur_pts > 0
-                                    && ((f_pts - cur_pts) * 1000 * (*time_base).numerator() as i64
-                                        / (*time_base).denominator() as i64)
-                                        < 1000
+                    let frame_result = match &main_stream {
+                        MainStream::Video => {
+                            if ins_now - change_instant > Duration::from_millis(0) {
+                                if let Some(frame) = tiny_decoder.pull_one_video_play_frame().await
                                 {
-                                    if let Some(ins) =
-                                        change_instant.checked_add(Duration::from_millis(
-                                            ((f_pts - cur_pts)
+                                    if let Some(f_pts) = frame.pts() {
+                                        let cur_pts = data_manage_context
+                                            .current_video_timestamp
+                                            .load(std::sync::atomic::Ordering::Relaxed);
+
+                                        if f_pts > 0
+                                            && ((f_pts - cur_pts)
                                                 * 1000
-                                                * (*time_base).numerator() as i64
-                                                / (*time_base).denominator() as i64)
-                                                as u64,
-                                        ))
-                                    {
-                                        change_instant = ins;
+                                                * video_time_base.numerator() as i64
+                                                / video_time_base.denominator() as i64)
+                                                < 1000
+                                        {
+                                            if let Some(ins) =
+                                                change_instant.checked_add(Duration::from_millis(
+                                                    ((f_pts - cur_pts)
+                                                        * 1000
+                                                        * video_time_base.numerator() as i64
+                                                        / video_time_base.denominator() as i64)
+                                                        as u64,
+                                                ))
+                                            {
+                                                change_instant = ins;
+                                            }
+                                        } else {
+                                            change_instant = ins_now;
+                                        }
+                                        data_manage_context
+                                            .current_video_timestamp
+                                            .store(f_pts, std::sync::atomic::Ordering::Release);
+                                        Ok(frame)
+                                    } else {
+                                        Err(anyhow::Error::msg("video frame pts is none"))
                                     }
                                 } else {
-                                    change_instant = ins_now;
+                                    Err(anyhow::Error::msg("try video frame failed"))
                                 }
+                            } else {
+                                Err(anyhow::Error::msg("video wait for its present time"))
                             }
                         }
-                    } else if let MainStream::Audio = main_stream {
-                        change_instant = ins_now;
+                        MainStream::Audio => {
+                            if let Some(frame) = tiny_decoder.pull_one_video_play_frame().await {
+                                if let Some(pts) = frame.pts() {
+                                    data_manage_context
+                                        .current_video_timestamp
+                                        .store(pts, std::sync::atomic::Ordering::Release);
+                                }
+                                Ok(frame)
+                            } else {
+                                Err(anyhow::Error::msg("try video frame failed"))
+                            }
+                        }
+                    };
+                    if let Ok(frame) = frame_result {
+                        let tiny_decoder = data_manage_context.tiny_decoder.read().await;
+                        if let Err(e) = tiny_decoder
+                            .render_video_frame(data_manage_context.video_texture.clone(), frame)
+                            .await
+                        {
+                            warn!("{}", e);
+                        }
                     }
-                    if let Some(pts) = frame.pts() {
-                        data_manage_context
-                            .current_video_timestamp
-                            .store(pts, std::sync::atomic::Ordering::Release);
-                    }
-                    Ok(frame)
-                } else {
-                    Err(anyhow::Error::msg("no video frame"))
                 }
-            } else {
-                Err(anyhow::Error::msg("no video frame"))
-            };
-            if let Ok(frame) = frame_result {
-                let tiny_decoder = data_manage_context.tiny_decoder.read().await;
-                if let Err(e) = tiny_decoder
-                    .render_video_frame(data_manage_context.video_texture.clone(), frame)
-                    .await
-                {
-                    warn!("{}", e);
-                }
+                sleep(Duration::from_millis(10)).await;
             }
-            sleep(Duration::from_millis(10)).await;
         }
     }
     async fn update_current_timestamp(

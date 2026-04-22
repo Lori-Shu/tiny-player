@@ -1,7 +1,10 @@
 use std::{
     path::Path,
     ptr::{null, null_mut},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64},
+    },
     time::Duration,
 };
 
@@ -79,7 +82,7 @@ pub struct TinyDecoder {
     audio_time_base: Rational,
     video_frame_rect: [u32; 2],
     format_duration: i64,
-    end_timestamp: i64,
+    end_timestamp: Arc<AtomicI64>,
     end_time_formatted_string: String,
     format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
     video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
@@ -124,6 +127,7 @@ impl TinyDecoder {
         runtime_handle: Handle,
         cc: &CreationContext,
         media_source_flag: Arc<AtomicBool>,
+        end_timestamp: Arc<AtomicI64>,
     ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let render_state = cc
@@ -140,7 +144,7 @@ impl TinyDecoder {
             audio_time_base: Rational::new(1, 1),
             video_frame_rect: [0, 0],
             format_duration: 0,
-            end_timestamp: 0,
+            end_timestamp,
             end_time_formatted_string: String::new(),
             format_input: Arc::new(RwLock::new(None)),
             video_decoder: Arc::new(RwLock::new(None)),
@@ -185,7 +189,8 @@ impl TinyDecoder {
         self.demux_exit_flag
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.end_time_formatted_string = String::new();
-        self.end_timestamp = 0;
+        self.end_timestamp
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self.format_duration = 0;
         *self.format_input.write().await = None;
         self.hardware_config_flag
@@ -273,7 +278,8 @@ impl TinyDecoder {
                     / 1_000_000
             }
         };
-        self.end_timestamp = adur_ts;
+        self.end_timestamp
+            .store(adur_ts, std::sync::atomic::Ordering::Relaxed);
         self.compute_and_set_end_time_str(adur_ts);
 
         if let Some(audio_stream) = audio_stream {
@@ -896,11 +902,6 @@ impl TinyDecoder {
     /// video_frame_rect to config the main colorimage and texture size
     pub fn video_frame_rect(&self) -> &[u32; 2] {
         &self.video_frame_rect
-    }
-    /// get the end audio timestamp used as the main time flow
-    /// it is more accurate than just use time second
-    pub fn end_ts(&self) -> i64 {
-        self.end_timestamp
     }
     /// seek the input to a selected timestamp
     /// use the ffi function to enable seek all the frames
