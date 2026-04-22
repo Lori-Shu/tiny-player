@@ -22,6 +22,7 @@ use egui::Context;
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::PlayerResult;
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
@@ -585,6 +586,7 @@ impl ColorSpaceConverter {
         }
         self.texture_y = Some(texture_y);
         self.playback_texture_view = None;
+        warn!("reset playback_texture_view success");
     }
     pub async fn render_video(
         &self,
