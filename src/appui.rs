@@ -17,8 +17,8 @@ use eframe::{
 };
 use egui::{
     AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Image, ImageData, ImageSource,
-    Layout, Pos2, Rect, RichText, Slider, Stroke, TextureHandle, TextureId, TextureOptions, Ui,
-    Vec2, ViewportBuilder, ViewportId, WidgetText, include_image,
+    Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
+    ViewportBuilder, ViewportId, WidgetText, include_image,
 };
 
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
@@ -93,6 +93,7 @@ pub struct AppUi {
     current_video_timestamp: Arc<AtomicI64>,
     visible_num: f32,
     wgpu_render_state: RenderState,
+    end_ts: Arc<AtomicI64>,
 }
 impl eframe::App for AppUi {
     /// this function will automaticly be called every ui redraw
@@ -233,8 +234,13 @@ impl AppUi {
         }?;
         let main_color_image = Arc::new(RwLock::new(color_image));
         let media_source_flag = Arc::new(AtomicBool::new(false));
-        let tiny_decoder =
-            crate::decode::TinyDecoder::new(rt.clone(), cc, media_source_flag.clone())?;
+        let end_ts = Arc::new(AtomicI64::new(0));
+        let tiny_decoder = crate::decode::TinyDecoder::new(
+            rt.clone(),
+            cc,
+            media_source_flag.clone(),
+            end_ts.clone(),
+        )?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
         // let subtitle_channel = mpsc::channel(10);
@@ -300,6 +306,7 @@ impl AppUi {
             current_video_timestamp,
             visible_num: 1.0,
             wgpu_render_state,
+            end_ts,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -646,23 +653,19 @@ impl AppUi {
                 ui.scope(|ui| {
                     ui.set_opacity(255.0 * self.visible_num);
 
-                    let progress_slider = if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-                        let end_ts = tiny_decoder.end_ts();
-                        egui::Slider::new(&mut ts, 0..=end_ts)
-                            .show_value(false)
-                            .text(WidgetText::RichText(Arc::new(
-                                RichText::new(self.time_text.clone()).size(20.0).color(
-                                    Color32::from_rgba_unmultiplied(
-                                        slider_color[0],
-                                        slider_color[1],
-                                        slider_color[2],
-                                        slider_color[3],
-                                    ),
+                    let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
+                    let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
+                        .show_value(false)
+                        .text(WidgetText::RichText(Arc::new(
+                            RichText::new(self.time_text.clone()).size(20.0).color(
+                                Color32::from_rgba_unmultiplied(
+                                    slider_color[0],
+                                    slider_color[1],
+                                    slider_color[2],
+                                    slider_color[3],
                                 ),
-                            )))
-                    } else {
-                        Slider::new(&mut ts, 0..=100)
-                    };
+                            ),
+                        )));
 
                     let mut slider_width_style = egui::style::Style::default();
                     slider_width_style.spacing.slider_width =
@@ -921,16 +924,16 @@ impl AppUi {
                 tiny_decoder.video_time_base()
             }
         };
+        let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
         if pts
             + main_stream_time_base.denominator() as i64
                 / main_stream_time_base.numerator() as i64
                 / 2
-            >= tiny_decoder.end_ts()
+            >= end_ts
         // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
         //     / audio_time_base.denominator() as i64
         {
-            let end = tiny_decoder.end_ts();
-            warn!("play end! end_ts:{end},current_ts:{pts} ");
+            warn!("play end! end_ts:{end_ts},current_ts:{pts} ");
             return true;
         }
 

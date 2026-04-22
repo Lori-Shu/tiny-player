@@ -13,7 +13,7 @@ use eframe::{
         RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor,
         ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TexelCopyBufferLayout,
         TexelCopyTextureInfo, Texture, TextureAspect, TextureDescriptor, TextureDimension,
-        TextureFormat, TextureSampleType, TextureUsages, TextureViewDescriptor,
+        TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
         TextureViewDimension, VertexState,
         util::{BufferInitDescriptor, DeviceExt},
     },
@@ -22,6 +22,7 @@ use egui::Context;
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::PlayerResult;
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
@@ -43,6 +44,7 @@ pub struct ColorSpaceConverter {
     sampler: Sampler,
     render_pipeline: RenderPipeline,
     fallback_render_pipeline: RenderPipeline,
+    playback_texture_view: Option<TextureView>,
 }
 impl ColorSpaceConverter {
     pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
@@ -284,6 +286,7 @@ impl ColorSpaceConverter {
             uniform_bind_group,
             render_pipeline,
             fallback_render_pipeline,
+            playback_texture_view: None,
         })
     }
     fn get_bt601_params() -> ColorSpaceUniform {
@@ -582,15 +585,39 @@ impl ColorSpaceConverter {
             self.texture_v = Some(texture_v);
         }
         self.texture_y = Some(texture_y);
+        self.playback_texture_view = None;
+        info!("reset playback_texture_view success");
     }
     pub async fn render_video(
-        &self,
+        &mut self,
         render_state: &RenderState,
         egui_ctx: &Context,
         texture: Arc<RwLock<Texture>>,
         frame: Video,
         is_hw_acc: bool,
     ) -> PlayerResult<()> {
+        let playback_texture_view = if let Some(view) = &self.playback_texture_view {
+            view.clone()
+        } else {
+            let updated_texture = texture.read().await;
+            let new_texture_view = updated_texture.create_view(&TextureViewDescriptor {
+                label: Some("Video_Playback_View"),
+                format: Some(TextureFormat::Rgba8Unorm),
+                dimension: Some(TextureViewDimension::D2),
+                aspect: TextureAspect::All,
+                base_mip_level: 0,
+                mip_level_count: None,
+                base_array_layer: 0,
+                array_layer_count: None,
+                usage: Some(
+                    TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::COPY_DST,
+                ),
+            });
+            self.playback_texture_view = Some(new_texture_view.clone());
+            new_texture_view
+        };
         if is_hw_acc {
             if let Some(texture) = &self.texture_y {
                 render_state.queue.write_texture(
@@ -642,26 +669,10 @@ impl ColorSpaceConverter {
                     });
 
             {
-                let updated_texture = texture.read().await;
-
                 let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("Video_To_Texture_Pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &updated_texture.create_view(&TextureViewDescriptor {
-                            label: Some("Video_Playback_View"),
-                            format: Some(TextureFormat::Rgba8Unorm),
-                            dimension: Some(TextureViewDimension::D2),
-                            aspect: TextureAspect::All,
-                            base_mip_level: 0,
-                            mip_level_count: None,
-                            base_array_layer: 0,
-                            array_layer_count: None,
-                            usage: Some(
-                                TextureUsages::RENDER_ATTACHMENT
-                                    | TextureUsages::TEXTURE_BINDING
-                                    | TextureUsages::COPY_DST,
-                            ),
-                        }),
+                        view: &playback_texture_view,
                         resolve_target: None,
                         ops: Operations {
                             load: LoadOp::Clear(Color::BLACK),
@@ -756,26 +767,10 @@ impl ColorSpaceConverter {
                     });
 
             {
-                let updated_texture = texture.read().await;
-
                 let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("Video_To_Texture_Pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &updated_texture.create_view(&TextureViewDescriptor {
-                            label: Some("Video_Playback_View"),
-                            format: Some(TextureFormat::Rgba8Unorm),
-                            dimension: Some(TextureViewDimension::D2),
-                            aspect: TextureAspect::All,
-                            base_mip_level: 0,
-                            mip_level_count: None,
-                            base_array_layer: 0,
-                            array_layer_count: None,
-                            usage: Some(
-                                TextureUsages::RENDER_ATTACHMENT
-                                    | TextureUsages::TEXTURE_BINDING
-                                    | TextureUsages::COPY_DST,
-                            ),
-                        }),
+                        view: &playback_texture_view,
                         resolve_target: None,
                         ops: Operations {
                             load: LoadOp::Clear(Color::BLACK),
