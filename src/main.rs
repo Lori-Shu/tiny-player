@@ -27,6 +27,7 @@ mod appui;
 mod audio_play;
 mod decode;
 mod gpu_post_process;
+mod internet_resource_ui;
 mod present_data_manage;
 // mod translate;
 

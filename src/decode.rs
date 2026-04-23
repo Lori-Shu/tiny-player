@@ -14,7 +14,7 @@ use egui::Context;
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream, codec,
     ffi::{
-        AV_CHANNEL_LAYOUT_STEREO, AVCodecContext, AVHWDeviceType, AVPixelFormat,
+        AV_CHANNEL_LAYOUT_STEREO, AV_NOPTS_VALUE, AVCodecContext, AVHWDeviceType, AVPixelFormat,
         AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
         av_hwframe_transfer_data, av_image_copy_to_buffer, av_image_get_buffer_size,
         avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
@@ -266,16 +266,26 @@ impl TinyDecoder {
         // format_input.duration() can get the precise duration of the media file
         // format_input.duration() number unit is us
         info!("total duration {} us", format_input.duration());
-        self.format_duration = format_input.duration();
+        let format_duration = format_input.duration();
+        if format_duration == AV_NOPTS_VALUE {
+            self.format_duration = 0;
+        } else {
+            self.format_duration = format_duration;
+        }
+
         let adur_ts = {
-            if let MainStream::Audio = self.main_stream {
-                format_input.duration() * self.audio_time_base.denominator() as i64
-                    / self.audio_time_base.numerator() as i64
-                    / 1_000_000
+            if format_duration != AV_NOPTS_VALUE {
+                if let MainStream::Audio = self.main_stream {
+                    format_duration * self.audio_time_base.denominator() as i64
+                        / self.audio_time_base.numerator() as i64
+                        / 1_000_000
+                } else {
+                    format_duration * self.video_time_base.denominator() as i64
+                        / self.video_time_base.numerator() as i64
+                        / 1_000_000
+                }
             } else {
-                format_input.duration() * self.video_time_base.denominator() as i64
-                    / self.video_time_base.numerator() as i64
-                    / 1_000_000
+                0
             }
         };
         self.end_timestamp
