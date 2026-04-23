@@ -30,6 +30,7 @@ use tracing::{info, warn};
 use crate::{
     PlayerResult,
     decode::{MainStream, TinyDecoder},
+    internet_resource_ui::InternetResourceUI,
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
 };
 
@@ -38,7 +39,7 @@ const VOLUME_IMG: ImageSource = include_image!("../resources/volume-2.png");
 const PLAY_IMG: ImageSource = include_image!("../resources/play.png");
 const PAUSE_IMG: ImageSource = include_image!("../resources/pause.png");
 const FULLSCREEN_IMG: ImageSource = include_image!("../resources/fullscreen.png");
-const DEFAULT_BG_IMG: ImageSource = include_image!("../resources/background.png");
+const DEFAULT_BG_IMG: ImageSource = include_image!("../resources/background_2.png");
 const PLAY_LIST_IMG: ImageSource = include_image!("../resources/list-video.png");
 const SUBTITLE_IMG: ImageSource = include_image!("../resources/captions.png");
 pub const MAPLE_FONT: &[u8] = include_bytes!("../resources/fonts/MapleMono-CN-Regular.ttf");
@@ -64,6 +65,8 @@ struct UiFlags {
     show_volumn_slider_flag: bool,
     visible_flag: bool,
     media_source_flag: Arc<AtomicBool>,
+    internet_list_window_flag: bool,
+    live_mode: bool,
 }
 
 pub struct AppUi {
@@ -94,6 +97,7 @@ pub struct AppUi {
     visible_num: f32,
     wgpu_render_state: RenderState,
     end_ts: Arc<AtomicI64>,
+    internet_resource_ui: InternetResourceUI,
 }
 impl eframe::App for AppUi {
     /// this function will automaticly be called every ui redraw
@@ -268,7 +272,7 @@ impl AppUi {
             .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
-
+        let internet_resource_ui = InternetResourceUI::new();
         Ok(Self {
             garbage_video_texture: Arc::new(RwLock::new(None)),
             // subtitle_text_receiver: subtitle_channel.1,
@@ -289,6 +293,8 @@ impl AppUi {
                 show_volumn_slider_flag: false,
                 visible_flag: false,
                 media_source_flag,
+                internet_list_window_flag: false,
+                live_mode: false,
             },
             // used_model,
             time_text: String::new(),
@@ -307,6 +313,7 @@ impl AppUi {
             visible_num: 1.0,
             wgpu_render_state,
             end_ts,
+            internet_resource_ui,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -652,55 +659,89 @@ impl AppUi {
                 slider_color[3] = 100;
                 ui.scope(|ui| {
                     ui.set_opacity(255.0 * self.visible_num);
-
-                    let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
-                    let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
-                        .show_value(false)
-                        .text(WidgetText::RichText(Arc::new(
-                            RichText::new(self.time_text.clone()).size(20.0).color(
-                                Color32::from_rgba_unmultiplied(
-                                    slider_color[0],
-                                    slider_color[1],
-                                    slider_color[2],
-                                    slider_color[3],
+                    if !self.ui_flags.live_mode {
+                        let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
+                        let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
+                            .show_value(false)
+                            .text(WidgetText::RichText(Arc::new(
+                                RichText::new(self.time_text.clone()).size(20.0).color(
+                                    Color32::from_rgba_unmultiplied(
+                                        slider_color[0],
+                                        slider_color[1],
+                                        slider_color[2],
+                                        slider_color[3],
+                                    ),
                                 ),
-                            ),
-                        )));
+                            )));
 
-                    let mut slider_width_style = egui::style::Style::default();
-                    slider_width_style.spacing.slider_width =
-                        ui.ctx().content_rect().width() - 450.0;
-                    slider_width_style.spacing.slider_rail_height = 10.0;
-                    slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                    slider_width_style.visuals.extreme_bg_color =
-                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                    slider_width_style.visuals.selection.bg_fill =
-                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                    slider_width_style.visuals.widgets.active.bg_fill =
-                        Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                    slider_width_style.visuals.widgets.inactive.bg_fill =
-                        Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                    ui.set_style(slider_width_style);
-                    let slider_response = ui.add(progress_slider);
-                    if slider_response.hovered() {
-                        self.ui_flags.visible_flag = true;
-                    }
-                    if slider_response.changed() {
-                        warn!("slider dragged!");
-                        let audio_player = &mut self.audio_player;
-                        let tiny_decoder = self.tiny_decoder.clone();
-                        self.async_rt.spawn(async move {
-                            let tiny_decoder = tiny_decoder.read().await;
-                            tiny_decoder.seek_timestamp_to_decode(ts).await;
-                        });
+                        let mut slider_width_style = egui::style::Style::default();
+                        slider_width_style.spacing.slider_width =
+                            ui.ctx().content_rect().width() - 450.0;
+                        slider_width_style.spacing.slider_rail_height = 10.0;
+                        slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
+                        slider_width_style.visuals.extreme_bg_color =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.selection.bg_fill =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.widgets.active.bg_fill =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.widgets.inactive.bg_fill =
+                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                        ui.set_style(slider_width_style);
+                        let slider_response = ui.add(progress_slider);
+                        if slider_response.hovered() {
+                            self.ui_flags.visible_flag = true;
+                        }
+                        if slider_response.changed() {
+                            warn!("slider dragged!");
+                            let audio_player = &mut self.audio_player;
+                            let tiny_decoder = self.tiny_decoder.clone();
+                            self.async_rt.spawn(async move {
+                                let tiny_decoder = tiny_decoder.read().await;
+                                tiny_decoder.seek_timestamp_to_decode(ts).await;
+                            });
 
-                        audio_player.source_queue_skip_to_end();
-                        if !self
-                            .ui_flags
-                            .pause_flag
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            audio_player.play();
+                            audio_player.source_queue_skip_to_end();
+                            if !self
+                                .ui_flags
+                                .pause_flag
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                audio_player.play();
+                            }
+                        }
+                    } else {
+                        let mut zero_val = 0;
+                        let progress_slider = egui::Slider::new(&mut zero_val, 0..=0)
+                            .show_value(false)
+                            .text(WidgetText::RichText(Arc::new(
+                                RichText::new(self.time_text.clone()).size(20.0).color(
+                                    Color32::from_rgba_unmultiplied(
+                                        slider_color[0],
+                                        slider_color[1],
+                                        slider_color[2],
+                                        slider_color[3],
+                                    ),
+                                ),
+                            )));
+
+                        let mut slider_width_style = egui::style::Style::default();
+                        slider_width_style.spacing.slider_width =
+                            ui.ctx().content_rect().width() - 450.0;
+                        slider_width_style.spacing.slider_rail_height = 10.0;
+                        slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
+                        slider_width_style.visuals.extreme_bg_color =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.selection.bg_fill =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.widgets.active.bg_fill =
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                        slider_width_style.visuals.widgets.inactive.bg_fill =
+                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                        ui.set_style(slider_width_style);
+                        let slider_response = ui.add(progress_slider);
+                        if slider_response.hovered() {
+                            self.ui_flags.visible_flag = true;
                         }
                     }
                 });
@@ -1225,6 +1266,42 @@ impl AppUi {
         }
         if self.ui_flags.playlist_window_flag {
             self.paint_playlist_window(ui, frame);
+        }
+        let open_btn = Button::new(
+            Image::from(PLAY_LIST_IMG)
+                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                .atom_size(Vec2::new(50.0, 50.0)),
+        )
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            0,
+            0,
+            0,
+            (10.0 * self.visible_num) as u8,
+        ))
+        .stroke(Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+        ))
+        .corner_radius(CornerRadius::from(30));
+
+        let btn_response = ui.add(open_btn);
+
+        if btn_response.hovered() {
+            self.ui_flags.visible_flag = true;
+        }
+        if btn_response.clicked() {
+            self.ui_flags.internet_list_window_flag = !self.ui_flags.internet_list_window_flag;
+        }
+        if self.ui_flags.internet_list_window_flag {
+            if let Some(media_source) = self
+                .internet_resource_ui
+                .show(ui, self.async_rt.handle().clone())
+            {
+                if let Err(e) = self.change_format_input(frame, &PathBuf::from(media_source.name)) {
+                    warn!("{}", e);
+                }
+                self.ui_flags.live_mode = true;
+            }
         }
     }
     async fn read_video_folder(ctx: Context, path: PathBuf, video_des: Arc<RwLock<Vec<VideoDes>>>) {
