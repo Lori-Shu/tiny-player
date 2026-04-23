@@ -55,34 +55,39 @@ impl InternetResourceUI {
             |ui, _viewport_class| {
                 CentralPanel::default()
                     .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.current_category,
-                                LanguageCategory::None,
-                                "None",
-                            );
-                            ui.selectable_value(
-                                &mut self.current_category,
-                                LanguageCategory::English,
-                                "English",
-                            );
-                            ui.selectable_value(
-                                &mut self.current_category,
-                                LanguageCategory::Chinese,
-                                "Chinese",
-                            );
-                        });
+                        let selectable_area_res = ui
+                            .horizontal(|ui| {
+                                let res0 = ui.selectable_value(
+                                    &mut self.current_category,
+                                    LanguageCategory::None,
+                                    "None",
+                                );
+                                let res1 = ui.selectable_value(
+                                    &mut self.current_category,
+                                    LanguageCategory::English,
+                                    "English",
+                                );
+                                let res2 = ui.selectable_value(
+                                    &mut self.current_category,
+                                    LanguageCategory::Chinese,
+                                    "Chinese",
+                                );
+                                res0.clicked() || res1.clicked() || res2.clicked()
+                            })
+                            .inner;
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
                             if self.current_category != LanguageCategory::None {
                                 if let Ok(map) = self.available_resource_map.try_read() {
                                     let queue = &map[&self.current_category];
-                                    if queue.is_empty() {
-                                        async_runtime.spawn(Self::request_playlist(
-                                            self.available_resource_map.clone(),
-                                            self.current_category.clone(),
-                                            self.web_client.clone(),
-                                        ));
+                                    if selectable_area_res {
+                                        if queue.is_empty() {
+                                            async_runtime.spawn(Self::request_playlist(
+                                                self.available_resource_map.clone(),
+                                                self.current_category.clone(),
+                                                self.web_client.clone(),
+                                            ));
+                                        }
                                     }
 
                                     for resource in queue {
