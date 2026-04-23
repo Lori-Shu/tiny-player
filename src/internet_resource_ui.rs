@@ -124,8 +124,9 @@ impl InternetResourceUI {
         let mut playlist = String::new();
         let mut buf = String::with_capacity(1024);
         for _count in 0..50 {
-            let line_len = buf_reader.read_line(&mut buf).await?;
-            playlist.push_str(&buf[0..line_len]);
+            let _line_len = buf_reader.read_line(&mut buf).await?;
+            playlist.push_str(&buf);
+            buf.clear();
         }
         let mut reader = quick_m3u8::Reader::from_str(&playlist, ParsingOptions::default());
         if let Some(queue) = map.get_mut(&current_category) {
