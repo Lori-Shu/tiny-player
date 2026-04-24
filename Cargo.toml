@@ -38,6 +38,7 @@ md-5 = "0.10.6"
 quick-m3u8 = "0.8.0"
 futures-util = "0.3.32"
 tokio-util = "0.7.18"
+num-complex = "0.4.6"
 [target.'cfg(windows)'.dependencies]
 
 [build-dependencies]
