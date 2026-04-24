@@ -1,10 +1,9 @@
 /resources
 /target
-/tiny_installer
 Cargo.lock
 debug.log
 tmp_font.ttf
-/test
+/tests
 /.cargo
 /.vscode
 /.zed
