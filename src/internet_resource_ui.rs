@@ -128,7 +128,7 @@ impl InternetResourceUI {
         let mut buf_reader = BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
         let mut playlist = String::new();
         let mut buf = String::with_capacity(1024);
-        for _count in 0..50 {
+        for _count in 0..500 {
             let _line_len = buf_reader.read_line(&mut buf).await?;
             playlist.push_str(&buf);
             buf.clear();

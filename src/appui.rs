@@ -955,29 +955,30 @@ impl AppUi {
         });
     }
     fn check_play_is_at_endtail(&self, tiny_decoder: &TinyDecoder) -> bool {
-        let pts = self
-            .main_stream_current_timestamp
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let main_stream_time_base = {
-            if let MainStream::Audio = tiny_decoder.main_stream() {
-                tiny_decoder.audio_time_base()
-            } else {
-                tiny_decoder.video_time_base()
+        if !self.ui_flags.live_mode {
+            let pts = self
+                .main_stream_current_timestamp
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let main_stream_time_base = {
+                if let MainStream::Audio = tiny_decoder.main_stream() {
+                    tiny_decoder.audio_time_base()
+                } else {
+                    tiny_decoder.video_time_base()
+                }
+            };
+            let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
+            if pts
+                + main_stream_time_base.denominator() as i64
+                    / main_stream_time_base.numerator() as i64
+                    / 2
+                >= end_ts
+            // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
+            //     / audio_time_base.denominator() as i64
+            {
+                warn!("play end! end_ts:{end_ts},current_ts:{pts} ");
+                return true;
             }
-        };
-        let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
-        if pts
-            + main_stream_time_base.denominator() as i64
-                / main_stream_time_base.numerator() as i64
-                / 2
-            >= end_ts
-        // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
-        //     / audio_time_base.denominator() as i64
-        {
-            warn!("play end! end_ts:{end_ts},current_ts:{pts} ");
-            return true;
         }
-
         false
     }
 
@@ -1017,6 +1018,7 @@ impl AppUi {
                                                         .change_format_input(frame, &des.path)
                                                         .is_ok()
                                                     {
+                                                        self.ui_flags.live_mode = false;
                                                         info!("change_format_input success");
                                                     }
                                                 }
