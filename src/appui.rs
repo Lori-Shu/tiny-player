@@ -16,9 +16,7 @@ use eframe::{
     },
 };
 use egui::{
-    AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Image, ImageData, ImageSource,
-    Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
-    ViewportBuilder, ViewportId, WidgetText, include_image,
+    Align2, AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Id, Image, ImageData, ImageSource, Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2, ViewportBuilder, ViewportId, WidgetText, include_image
 };
 
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
@@ -161,10 +159,10 @@ impl eframe::App for AppUi {
                     });
                 });
 
-                ui.add_space(ui.ctx().content_rect().height() / 2.0 - 200.0);
-                ui.horizontal(|ui| {
-                    self.paint_playpause_btn(ui);
-                });
+                
+                
+                self.paint_playpause_btn(ui);
+               
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     self.update_time_and_time_text();
@@ -597,51 +595,54 @@ impl AppUi {
             .media_source_flag
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            let play_or_pause_image_source = if self
-                .ui_flags
-                .pause_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                PLAY_IMG
-            } else {
-                PAUSE_IMG
-            };
-            let btn_rect = Vec2::new(
-                ui.ctx().content_rect().width() / 10.0,
-                ui.ctx().content_rect().width() / 10.0,
-            );
-            let btn_img = Image::from(play_or_pause_image_source)
-                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                .atom_size(btn_rect);
-            let play_or_pause_btn = egui::Button::new(btn_img)
-                .fill(egui::Color32::from_rgba_unmultiplied(
-                    0,
-                    0,
-                    0,
-                    (10.0 * self.visible_num) as u8,
-                ))
-                .stroke(Stroke::new(
-                    1.0,
-                    Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-                ))
-                .corner_radius(CornerRadius::from(30));
-
-            ui.add_space(ui.ctx().content_rect().width() / 2.0 - 100.0);
-            let btn_response = ui.add(play_or_pause_btn);
-            if btn_response.hovered() {
-                self.ui_flags.visible_flag = true;
-            }
-            if btn_response.clicked() || ui.ctx().input(|s| s.key_released(egui::Key::Space)) {
-                let pause_flag = &self.ui_flags.pause_flag;
-                let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
-                let audio_player = &self.audio_player;
-                if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    audio_player.pause();
+            egui::Area::new(Id::new("playpause button area")).fixed_pos(ui.content_rect().center()).pivot(Align2::CENTER_CENTER).show(ui.ctx(), |ui|{
+                let play_or_pause_image_source = if self
+                    .ui_flags
+                    .pause_flag
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    PLAY_IMG
                 } else {
-                    audio_player.play();
+                    PAUSE_IMG
+                };
+                let btn_rect = Vec2::new(
+                    ui.ctx().content_rect().width() / 10.0,
+                    ui.ctx().content_rect().width() / 10.0,
+                );
+                let btn_img = Image::from(play_or_pause_image_source)
+                    .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                    .atom_size(btn_rect);
+                let play_or_pause_btn = egui::Button::new(btn_img)
+                    .fill(egui::Color32::from_rgba_unmultiplied(
+                        0,
+                        0,
+                        0,
+                        (10.0 * self.visible_num) as u8,
+                    ))
+                    .stroke(Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
+                    ))
+                    .corner_radius(CornerRadius::from(30));
+    
+                
+                let btn_response = ui.add(play_or_pause_btn);
+                if btn_response.hovered() {
+                    self.ui_flags.visible_flag = true;
                 }
-            }
+                if btn_response.clicked() || ui.ctx().input(|s| s.key_released(egui::Key::Space)) {
+                    let pause_flag = &self.ui_flags.pause_flag;
+                    let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
+                    pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
+                    let audio_player = &self.audio_player;
+                    if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        audio_player.pause();
+                    } else {
+                        audio_player.play();
+                    }
+                }
+            });
+            
         }
     }
 
