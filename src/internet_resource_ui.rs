@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::ErrorKind,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -9,12 +10,14 @@ use futures_util::StreamExt;
 use quick_m3u8::config::ParsingOptions;
 use reqwest::Client;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    runtime::Handle,
+    io::{AsyncReadExt, BufReader},
     sync::RwLock,
 };
 
-use crate::PlayerResult;
+use crate::{
+    PlayerResult,
+    appui::{AppUi, ChangeInputContext},
+};
 const ENGLISH_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/eng.m3u";
 const CHINESE_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/zho.m3u";
 #[derive(Debug, Clone)]
@@ -27,48 +30,55 @@ pub enum LanguageCategory {
     Chinese,
     English,
 }
-#[derive(Debug)]
+
 pub struct InternetResourceUI {
     available_resource_map: Arc<RwLock<HashMap<LanguageCategory, VecDeque<MediaResource>>>>,
-    current_category: LanguageCategory,
+    current_category: Arc<RwLock<LanguageCategory>>,
     web_client: Client,
+    change_input_ctx: Arc<RwLock<ChangeInputContext>>,
 }
 
 impl InternetResourceUI {
-    pub fn new() -> Self {
+    pub fn new(change_input_ctx: ChangeInputContext) -> Self {
         let mut available_resource_map = HashMap::new();
         available_resource_map.insert(LanguageCategory::English, VecDeque::new());
         available_resource_map.insert(LanguageCategory::Chinese, VecDeque::new());
         let available_resource_map = Arc::new(RwLock::new(available_resource_map));
-        let current_category = LanguageCategory::None;
+        let current_category = Arc::new(RwLock::new(LanguageCategory::None));
         let web_client = Client::new();
+        let change_input_ctx = Arc::new(RwLock::new(change_input_ctx));
         Self {
             available_resource_map,
             current_category,
             web_client,
+            change_input_ctx,
         }
     }
-    pub fn show(&mut self, ui: &mut Ui, async_runtime: Handle) -> Option<MediaResource> {
-        ui.show_viewport_immediate(
+    pub fn show(&mut self, ui: &mut Ui) {
+        let current_category = self.current_category.clone();
+        let available_resource_map = self.available_resource_map.clone();
+        let web_client = self.web_client.clone();
+        let change_input_ctx = self.change_input_ctx.clone();
+        ui.show_viewport_deferred(
             ViewportId::from_hash_of("Internet Resource UI"),
             ViewportBuilder::default(),
-            |ui, _viewport_class| {
-                CentralPanel::default()
-                    .show_inside(ui, |ui| {
+            move |ui, _viewport_class| {
+                CentralPanel::default().show_inside(ui, |ui| {
+                    if let Ok(mut current_category) = current_category.try_write() {
                         let selectable_area_res = ui
                             .horizontal(|ui| {
                                 let res0 = ui.selectable_value(
-                                    &mut self.current_category,
+                                    &mut *current_category,
                                     LanguageCategory::None,
                                     "None",
                                 );
                                 let res1 = ui.selectable_value(
-                                    &mut self.current_category,
+                                    &mut *current_category,
                                     LanguageCategory::English,
                                     "English",
                                 );
                                 let res2 = ui.selectable_value(
-                                    &mut self.current_category,
+                                    &mut *current_category,
                                     LanguageCategory::Chinese,
                                     "Chinese",
                                 );
@@ -77,34 +87,49 @@ impl InternetResourceUI {
                             .inner;
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
-                            if self.current_category != LanguageCategory::None {
-                                if let Ok(map) = self.available_resource_map.try_read() {
-                                    let queue = &map[&self.current_category];
+                            if *current_category != LanguageCategory::None {
+                                if let Ok(map) = available_resource_map.try_read() {
+                                    let queue = &map[&*current_category];
                                     if selectable_area_res {
                                         if queue.is_empty() {
-                                            async_runtime.spawn(Self::request_playlist(
-                                                self.available_resource_map.clone(),
-                                                self.current_category.clone(),
-                                                self.web_client.clone(),
-                                            ));
+                                            if let Ok(change_input_ctx) =
+                                                change_input_ctx.try_read()
+                                            {
+                                                change_input_ctx.runtime_handle.spawn(
+                                                    Self::request_playlist(
+                                                        available_resource_map.clone(),
+                                                        current_category.clone(),
+                                                        web_client.clone(),
+                                                    ),
+                                                );
+                                            }
                                         }
                                     }
 
                                     for resource in queue {
                                         let btn_response = ui.add(Button::new(&resource.name));
                                         if btn_response.clicked() {
-                                            return Some(resource.clone());
+                                            if let Ok(mut context) = change_input_ctx.try_write() {
+                                                context.path = PathBuf::from(&resource.name);
+
+                                                if AppUi::change_format_input(context.clone())
+                                                    .is_ok()
+                                                {
+                                                    context.live_mode.store(
+                                                        true,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
-                            None
-                        })
-                    })
-                    .inner
+                        });
+                    }
+                });
             },
-        )
-        .inner
+        );
     }
     async fn request_playlist(
         available_resource_map: Arc<RwLock<HashMap<LanguageCategory, VecDeque<MediaResource>>>>,
@@ -126,14 +151,9 @@ impl InternetResourceUI {
             .map(|item| item.map_err(|e| std::io::Error::new(ErrorKind::Other, e)));
 
         let mut buf_reader = BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
-        let mut playlist = String::new();
-        let mut buf = String::with_capacity(1024);
-        for _count in 0..500 {
-            let _line_len = buf_reader.read_line(&mut buf).await?;
-            playlist.push_str(&buf);
-            buf.clear();
-        }
-        let mut reader = quick_m3u8::Reader::from_str(&playlist, ParsingOptions::default());
+        let mut buf = vec![0; 1024 * 32];
+        buf_reader.read_exact(&mut buf).await?;
+        let mut reader = quick_m3u8::Reader::from_bytes(&buf, ParsingOptions::default());
         if let Some(queue) = map.get_mut(&current_category) {
             loop {
                 if let Ok(Some(hls_line)) = reader.read_line() {

@@ -7,8 +7,9 @@ use std::{
     time::Instant,
 };
 
+use derive_builder::Builder;
 use eframe::{
-    CreationContext, Frame,
+    CreationContext,
     egui_wgpu::RenderState,
     wgpu::{
         Extent3d, Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
@@ -16,13 +17,19 @@ use eframe::{
     },
 };
 use egui::{
-    Align2, AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Id, Image, ImageData, ImageSource, Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2, ViewportBuilder, ViewportId, WidgetText, include_image
+    Align2, AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Id, Image, ImageData,
+    ImageSource, Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions,
+    Ui, Vec2, ViewportBuilder, ViewportId, WidgetText, include_image,
 };
 
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
-use tokio::{runtime::Runtime, sync::RwLock};
+use rodio::Player;
+use tokio::{
+    runtime::{Handle, Runtime},
+    sync::RwLock,
+};
 use tracing::{info, warn};
 
 use crate::{
@@ -64,19 +71,19 @@ struct UiFlags {
     visible_flag: bool,
     media_source_flag: Arc<AtomicBool>,
     internet_list_window_flag: bool,
-    live_mode: bool,
+    live_mode: Arc<AtomicBool>,
 }
 
 pub struct AppUi {
     video_texture_id: Arc<RwLock<TextureId>>,
-    video_texture: Arc<RwLock<Texture>>,
+    _video_texture: Arc<RwLock<Texture>>,
     garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
     audio_player: crate::audio_play::AudioPlayer,
     _present_data_manager: PresentDataManager,
-    main_stream_current_timestamp: Arc<AtomicI64>,
-    main_color_image: Arc<RwLock<ColorImage>>,
-    bg_dyn_img: Arc<DynamicImage>,
+    current_main_stream_timestamp: Arc<AtomicI64>,
+    _main_color_image: Arc<RwLock<ColorImage>>,
+    _bg_dyn_img: Arc<DynamicImage>,
     ui_flags: UiFlags,
     play_time: time::Time,
     time_text: String,
@@ -91,15 +98,16 @@ pub struct AppUi {
     video_des: Arc<RwLock<Vec<VideoDes>>>,
     // used_model: Arc<RwLock<UsedModel>>,
     audio_volumn: f32,
-    current_video_timestamp: Arc<AtomicI64>,
+    _current_video_timestamp: Arc<AtomicI64>,
     visible_num: f32,
-    wgpu_render_state: RenderState,
+    wgpu_render_state: Arc<RenderState>,
     end_ts: Arc<AtomicI64>,
     internet_resource_ui: InternetResourceUI,
+    change_input_context: ChangeInputContext,
 }
 impl eframe::App for AppUi {
     /// this function will automaticly be called every ui redraw
-    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical(|ui| {
                 /*
@@ -153,16 +161,13 @@ impl eframe::App for AppUi {
 
                 ui.horizontal(|ui| {
                     self.paint_tip_window(ui.ctx());
-                    self.paint_file_btn(ui, frame);
+                    self.paint_file_btn(ui);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        self.paint_playlist_button(ui, frame);
+                        self.paint_playlist_button(ui);
                     });
                 });
 
-                
-                
                 self.paint_playpause_btn(ui);
-               
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     self.update_time_and_time_text();
@@ -170,7 +175,7 @@ impl eframe::App for AppUi {
                     // self.paint_subtitle(ui, ctx);
                 });
 
-                self.detect_file_drag(ui, frame);
+                self.detect_file_drag(ui);
             });
         });
     }
@@ -248,7 +253,7 @@ impl AppUi {
         // let subtitle_channel = mpsc::channel(10);
         // let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
         let audio_player = crate::audio_play::AudioPlayer::new()?;
-        let main_stream_current_timestamp = Arc::new(AtomicI64::new(0));
+        let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
         let wgpu_render_state = cc
@@ -264,24 +269,45 @@ impl AppUi {
             // .ai_subtitle(subtitle.clone())
             .video_texture(video_texture.clone())
             .audio_sink(audio_player.sink())
-            .main_stream_current_timestamp(main_stream_current_timestamp.clone())
+            .main_stream_current_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .runtime_handle(rt)
             .pause_flag(pause_flag.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
-        let internet_resource_ui = InternetResourceUI::new();
+
+        let wgpu_render_state = Arc::new(wgpu_render_state);
+        let bg_dyn_img = Arc::new(dyn_img);
+        let garbage_video_texture = Arc::new(RwLock::new(None));
+        let live_mode = Arc::new(AtomicBool::new(false));
+        let change_input_context = ChangeInputContextBuilder::default()
+            .audio_player(audio_player.sink())
+            .bg_dyn_img(bg_dyn_img.clone())
+            .current_main_stream_timestamp(current_main_stream_timestamp.clone())
+            .current_video_timestamp(current_video_timestamp.clone())
+            .garbage_texture(garbage_video_texture.clone())
+            .main_color_image(main_color_image.clone())
+            .path(PathBuf::new())
+            .pause_flag(pause_flag.clone())
+            .render_state(wgpu_render_state.clone())
+            .runtime_handle(async_rt.handle().clone())
+            .tiny_decoder(tiny_decoder.clone())
+            .video_texture(video_texture.clone())
+            .video_texture_id(video_texture_id.clone())
+            .live_mode(live_mode.clone())
+            .build()?;
+        let internet_resource_ui = InternetResourceUI::new(change_input_context.clone());
         Ok(Self {
-            garbage_video_texture: Arc::new(RwLock::new(None)),
+            garbage_video_texture,
             // subtitle_text_receiver: subtitle_channel.1,
             video_texture_id,
-            video_texture,
+            _video_texture: video_texture,
             tiny_decoder,
             audio_player,
             _present_data_manager: present_data_manager,
-            main_stream_current_timestamp,
+            current_main_stream_timestamp,
             play_time,
-            main_color_image,
+            _main_color_image: main_color_image,
             ui_flags: UiFlags {
                 pause_flag,
                 fullscreen_flag: false,
@@ -292,7 +318,7 @@ impl AppUi {
                 visible_flag: false,
                 media_source_flag,
                 internet_list_window_flag: false,
-                live_mode: false,
+                live_mode,
             },
             // used_model,
             time_text: String::new(),
@@ -302,16 +328,17 @@ impl AppUi {
             async_rt,
             open_file_dialog: Some(f_dialog),
             scan_folder_dialog: Some(egui_file::FileDialog::select_folder()),
-            bg_dyn_img: Arc::new(dyn_img),
+            _bg_dyn_img: bg_dyn_img,
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
             video_des: Arc::new(RwLock::new(vec![])),
             audio_volumn: 1.0,
-            current_video_timestamp,
+            _current_video_timestamp: current_video_timestamp,
             visible_num: 1.0,
             wgpu_render_state,
             end_ts,
             internet_resource_ui,
+            change_input_context,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -342,7 +369,7 @@ impl AppUi {
                 .load(std::sync::atomic::Ordering::Acquire)
             {
                 let play_ts = self
-                    .main_stream_current_timestamp
+                    .current_main_stream_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
                 let sec_num = {
                     if let MainStream::Audio = tiny_decoder.main_stream() {
@@ -453,7 +480,7 @@ impl AppUi {
         texture_id: Arc<RwLock<TextureId>>,
         video_texture: Arc<RwLock<Texture>>,
         garbage_texture_id: Arc<RwLock<Option<TextureId>>>,
-        render_state: RenderState,
+        render_state: Arc<RenderState>,
     ) -> PlayerResult<()> {
         let main_color_image = main_color_image.read().await;
         info!(
@@ -535,7 +562,7 @@ impl AppUi {
         }
     }
 
-    fn paint_file_btn(&mut self, ui: &mut Ui, frame: &Frame) {
+    fn paint_file_btn(&mut self, ui: &mut Ui) {
         let btn_rect = Vec2::new(
             ui.ctx().content_rect().width() / 10.0,
             ui.ctx().content_rect().width() / 10.0,
@@ -578,7 +605,9 @@ impl AppUi {
             }
         }
         if let Some(p) = file_path {
-            if self.change_format_input(frame, &p).is_ok() {
+            let mut ctx = self.change_input_context.clone();
+            ctx.path = p.clone();
+            if Self::change_format_input(ctx).is_ok() {
                 if let Some(p_str) = p.to_str() {
                     warn!("accept file path{}", p_str);
                 }
@@ -595,61 +624,69 @@ impl AppUi {
             .media_source_flag
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            egui::Area::new(Id::new("playpause button area")).fixed_pos(ui.content_rect().center()).pivot(Align2::CENTER_CENTER).show(ui.ctx(), |ui|{
-                let play_or_pause_image_source = if self
-                    .ui_flags
-                    .pause_flag
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    PLAY_IMG
-                } else {
-                    PAUSE_IMG
-                };
-                let btn_rect = Vec2::new(
-                    ui.ctx().content_rect().width() / 10.0,
-                    ui.ctx().content_rect().width() / 10.0,
-                );
-                let btn_img = Image::from(play_or_pause_image_source)
-                    .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                    .atom_size(btn_rect);
-                let play_or_pause_btn = egui::Button::new(btn_img)
-                    .fill(egui::Color32::from_rgba_unmultiplied(
-                        0,
-                        0,
-                        0,
-                        (10.0 * self.visible_num) as u8,
-                    ))
-                    .stroke(Stroke::new(
-                        1.0,
-                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-                    ))
-                    .corner_radius(CornerRadius::from(30));
-    
-                
-                let btn_response = ui.add(play_or_pause_btn);
-                if btn_response.hovered() {
-                    self.ui_flags.visible_flag = true;
-                }
-                if btn_response.clicked() || ui.ctx().input(|s| s.key_released(egui::Key::Space)) {
-                    let pause_flag = &self.ui_flags.pause_flag;
-                    let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                    pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
-                    let audio_player = &self.audio_player;
-                    if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        audio_player.pause();
+            egui::Area::new(Id::new("playpause button area"))
+                .fixed_pos(ui.content_rect().center())
+                .pivot(Align2::CENTER_CENTER)
+                .show(ui.ctx(), |ui| {
+                    let play_or_pause_image_source = if self
+                        .ui_flags
+                        .pause_flag
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        PLAY_IMG
                     } else {
-                        audio_player.play();
+                        PAUSE_IMG
+                    };
+                    let btn_rect = Vec2::new(
+                        ui.ctx().content_rect().width() / 10.0,
+                        ui.ctx().content_rect().width() / 10.0,
+                    );
+                    let btn_img = Image::from(play_or_pause_image_source)
+                        .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
+                        .atom_size(btn_rect);
+                    let play_or_pause_btn = egui::Button::new(btn_img)
+                        .fill(egui::Color32::from_rgba_unmultiplied(
+                            0,
+                            0,
+                            0,
+                            (10.0 * self.visible_num) as u8,
+                        ))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                0,
+                                0,
+                                0,
+                                (10.0 * self.visible_num) as u8,
+                            ),
+                        ))
+                        .corner_radius(CornerRadius::from(30));
+
+                    let btn_response = ui.add(play_or_pause_btn);
+                    if btn_response.hovered() {
+                        self.ui_flags.visible_flag = true;
                     }
-                }
-            });
-            
+                    if btn_response.clicked()
+                        || ui.ctx().input(|s| s.key_released(egui::Key::Space))
+                    {
+                        let pause_flag = &self.ui_flags.pause_flag;
+                        let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
+                        pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
+                        let audio_player = &self.audio_player;
+                        if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            audio_player.pause();
+                        } else {
+                            audio_player.play();
+                        }
+                    }
+                });
         }
     }
 
     fn paint_control_area(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let mut ts = self
-                .main_stream_current_timestamp
+                .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
             if self
                 .ui_flags
@@ -660,7 +697,11 @@ impl AppUi {
                 slider_color[3] = 100;
                 ui.scope(|ui| {
                     ui.set_opacity(255.0 * self.visible_num);
-                    if !self.ui_flags.live_mode {
+                    if !self
+                        .ui_flags
+                        .live_mode
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
                         let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
                         let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
                             .show_value(false)
@@ -873,7 +914,7 @@ impl AppUi {
                     }
                 });
             }
-            self.main_stream_current_timestamp
+            self.current_main_stream_timestamp
                 .store(ts, std::sync::atomic::Ordering::Release);
         });
     }
@@ -956,9 +997,13 @@ impl AppUi {
         });
     }
     fn check_play_is_at_endtail(&self, tiny_decoder: &TinyDecoder) -> bool {
-        if !self.ui_flags.live_mode {
+        if !self
+            .ui_flags
+            .live_mode
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             let pts = self
-                .main_stream_current_timestamp
+                .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
             let main_stream_time_base = {
                 if let MainStream::Audio = tiny_decoder.main_stream() {
@@ -984,7 +1029,7 @@ impl AppUi {
     }
 
     /// return true when the current video time > audio time,else return false
-    fn paint_playlist_window(&mut self, ui: &mut Ui, frame: &Frame) {
+    fn paint_playlist_window(&mut self, ui: &mut Ui) {
         if self.ui_flags.playlist_window_flag {
             let viewport_id = ViewportId::from_hash_of("content_window");
             ui.ctx()
@@ -1015,11 +1060,13 @@ impl AppUi {
                                             columns[0].vertical(|ui| {
                                                 ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
-                                                    if self
-                                                        .change_format_input(frame, &des.path)
-                                                        .is_ok()
-                                                    {
-                                                        self.ui_flags.live_mode = false;
+                                                    let mut ctx = self.change_input_context.clone();
+                                                    ctx.path = des.path.clone();
+                                                    if Self::change_format_input(ctx).is_ok() {
+                                                        self.ui_flags.live_mode.store(
+                                                            false,
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
                                                         info!("change_format_input success");
                                                     }
                                                 }
@@ -1028,8 +1075,9 @@ impl AppUi {
                                             columns[1].vertical(|ui| {
                                                 ui.add(image_btn);
                                                 if ui.add(player_text_button).clicked() {
-                                                    match self.change_format_input(frame, &des.path)
-                                                    {
+                                                    let mut ctx = self.change_input_context.clone();
+                                                    ctx.path = des.path.clone();
+                                                    match Self::change_format_input(ctx) {
                                                         Ok(()) => {
                                                             info!("change_format_input success");
                                                         }
@@ -1125,43 +1173,41 @@ impl AppUi {
             }
         }
     }
-    fn change_format_input(&mut self, frame: &Frame, path: &Path) -> PlayerResult<()> {
-        self.ui_flags
-            .pause_flag
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.main_stream_current_timestamp
-            .store(0, std::sync::atomic::Ordering::Release);
-        self.current_video_timestamp
-            .store(0, std::sync::atomic::Ordering::Release);
-        let tiny_decoder = self.tiny_decoder.clone();
-        let au_sink = self.audio_player.sink();
-        let main_color_img = self.main_color_image.clone();
-        let bg_dyn_img = self.bg_dyn_img.clone();
-        let texture_id = self.video_texture_id.clone();
-        let render_state = frame
-            .wgpu_render_state()
-            .ok_or(anyhow::Error::msg("get render state from egui::Frame err"))?
-            .clone();
-
-        let path = path.to_path_buf();
-        let garbage_texture = self.garbage_video_texture.clone();
-        let video_texture = self.video_texture.clone();
-        self.async_rt.spawn(async move {
-            let mut tiny_decoder = tiny_decoder.write().await;
-            if let Err(e) = tiny_decoder.set_file_path_and_init_par(&path).await {
+    pub fn change_format_input(context: ChangeInputContext) -> PlayerResult<()> {
+        context.runtime_handle.spawn(async move {
+            context
+                .pause_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            context
+                .current_main_stream_timestamp
+                .store(0, std::sync::atomic::Ordering::Release);
+            context
+                .current_video_timestamp
+                .store(0, std::sync::atomic::Ordering::Release);
+            let mut tiny_decoder = context.tiny_decoder.write().await;
+            if let Err(e) = tiny_decoder.set_file_path_and_init_par(&context.path).await {
                 warn!("{}", e);
             }
-            au_sink.clear();
+            context.audio_player.clear();
             let video_rect = tiny_decoder.video_frame_rect();
-            Self::reset_main_color_img_to_bg(bg_dyn_img, video_rect, main_color_img.clone()).await;
-            Self::reset_main_color_img_to_cover_pic(&tiny_decoder, main_color_img.clone()).await;
+            Self::reset_main_color_img_to_bg(
+                context.bg_dyn_img,
+                video_rect,
+                context.main_color_image.clone(),
+            )
+            .await;
+            Self::reset_main_color_img_to_cover_pic(
+                &tiny_decoder,
+                context.main_color_image.clone(),
+            )
+            .await;
 
             if let Err(e) = Self::update_video_texture(
-                main_color_img,
-                texture_id,
-                video_texture,
-                garbage_texture,
-                render_state,
+                context.main_color_image,
+                context.video_texture_id,
+                context.video_texture,
+                context.garbage_texture,
+                context.render_state,
             )
             .await
             {
@@ -1220,7 +1266,7 @@ impl AppUi {
     //         }
     //     }
     // }
-    fn detect_file_drag(&mut self, ui: &mut Ui, frame: &Frame) {
+    fn detect_file_drag(&mut self, ui: &mut Ui) {
         let mut detected = None;
         ui.input(|input| {
             let dropped_files = &input.raw.dropped_files;
@@ -1231,7 +1277,9 @@ impl AppUi {
             }
         });
         if let Some(path_buf) = detected {
-            if self.change_format_input(frame, path_buf.as_path()).is_ok() {
+            let mut ctx = self.change_input_context.clone();
+            ctx.path = path_buf.clone();
+            if Self::change_format_input(ctx).is_ok() {
                 if let Some(p_str) = path_buf.to_str() {
                     warn!("filepath{}", p_str);
                 }
@@ -1241,7 +1289,7 @@ impl AppUi {
             }
         }
     }
-    fn paint_playlist_button(&mut self, ui: &mut Ui, frame: &Frame) {
+    fn paint_playlist_button(&mut self, ui: &mut Ui) {
         let open_btn = Button::new(
             Image::from(PLAY_LIST_IMG)
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
@@ -1268,7 +1316,7 @@ impl AppUi {
             self.ui_flags.playlist_window_flag = !self.ui_flags.playlist_window_flag;
         }
         if self.ui_flags.playlist_window_flag {
-            self.paint_playlist_window(ui, frame);
+            self.paint_playlist_window(ui);
         }
         let open_btn = Button::new(
             Image::from(PLAY_LIST_IMG)
@@ -1296,15 +1344,7 @@ impl AppUi {
             self.ui_flags.internet_list_window_flag = !self.ui_flags.internet_list_window_flag;
         }
         if self.ui_flags.internet_list_window_flag {
-            if let Some(media_source) = self
-                .internet_resource_ui
-                .show(ui, self.async_rt.handle().clone())
-            {
-                if let Err(e) = self.change_format_input(frame, &PathBuf::from(media_source.name)) {
-                    warn!("{}", e);
-                }
-                self.ui_flags.live_mode = true;
-            }
+            self.internet_resource_ui.show(ui);
         }
     }
     async fn read_video_folder(ctx: Context, path: PathBuf, video_des: Arc<RwLock<Vec<VideoDes>>>) {
@@ -1418,4 +1458,21 @@ struct VideoDes {
     pub name: String,
     pub path: PathBuf,
     pub texture_handle: TextureHandle,
+}
+#[derive(Clone, Builder)]
+pub struct ChangeInputContext {
+    pause_flag: Arc<AtomicBool>,
+    current_main_stream_timestamp: Arc<AtomicI64>,
+    current_video_timestamp: Arc<AtomicI64>,
+    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    audio_player: Arc<Player>,
+    main_color_image: Arc<RwLock<ColorImage>>,
+    bg_dyn_img: Arc<DynamicImage>,
+    video_texture_id: Arc<RwLock<TextureId>>,
+    render_state: Arc<RenderState>,
+    pub path: PathBuf,
+    garbage_texture: Arc<RwLock<Option<TextureId>>>,
+    video_texture: Arc<RwLock<Texture>>,
+    pub runtime_handle: Handle,
+    pub live_mode: Arc<AtomicBool>,
 }
