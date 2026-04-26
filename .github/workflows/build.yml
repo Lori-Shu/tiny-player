@@ -28,5 +28,5 @@ jobs:
       - name: Load Image and Extract Binary
         run: |
           docker create --name build_cont tiny_player:latest
-          docker cp build_cont:/app/target/debug/tiny_player ./tiny_player
+          docker cp build_cont:/app/target/debug/tiny-player ./tiny-player
           docker rm build_cont
