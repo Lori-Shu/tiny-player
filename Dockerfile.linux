@@ -15,22 +15,3 @@ WORKDIR /app
 COPY . .
 # 这里才是真正的业务代码编译，因为依赖已经缓存，这一步极快
 RUN cargo build
-
-# --- 阶段 3: 运行环境 (Runtime) ---
-FROM debian:trixie-slim
-
-RUN apt-get update && apt-get install -y \
-pkg-config \
-libasound2-dev \
-libavdevice-dev \
-libavcodec-dev \
-libavformat-dev \
-libavutil-dev \
-libswscale-dev \
-libswresample-dev \
-clang \
-    && rm -rf /var/lib/apt/lists/*
-
-# 从 builder 阶段拷贝编译好的二进制文件
-# 注意：cargo build --release 产物通常在 /app/target/release/
-COPY --from=builder /app/target/release/tiny-player /usr/local/bin/tiny-player
