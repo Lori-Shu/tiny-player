@@ -9,7 +9,7 @@ libavutil-dev \
 libswscale-dev \
 libswresample-dev \
 clang
-WORKDIR .
+WORKDIR /app
 
 COPY . .
 # 这里才是真正的业务代码编译，因为依赖已经缓存，这一步极快
