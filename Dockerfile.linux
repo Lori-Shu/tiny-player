@@ -1,6 +1,14 @@
 # --- 阶段 1: 依赖预构建 (Planner) ---
 FROM rust:1.95 AS builder
-RUN apt-get update && apt-get install -y pkg-config libavdevice-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev clang
+RUN apt-get update && apt-get install -y 
+pkg-config \
+libavdevice-dev \
+libavcodec-dev \
+libavformat-dev \
+libavutil-dev \
+libswscale-dev \
+libswresample-dev \
+clang
 WORKDIR .
 
 COPY . .
@@ -9,8 +17,16 @@ RUN cargo build --release
 
 # --- 阶段 3: 运行环境 (Runtime) ---
 FROM debian:trixie-slim
-# 运行时只需要动态库，不需要 -dev 包，减小体积
-RUN apt-get update && apt-get install -y pkg-config libavdevice-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev clang
+
+RUN apt-get update && apt-get install -y 
+pkg-config \
+libavdevice-dev \
+libavcodec-dev \
+libavformat-dev \
+libavutil-dev \
+libswscale-dev \
+libswresample-dev \ 
+clang \
     && rm -rf /var/lib/apt/lists/*
 
 # 从 builder 阶段拷贝编译好的二进制文件
