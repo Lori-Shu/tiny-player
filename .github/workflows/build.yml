@@ -22,12 +22,11 @@ jobs:
           context: .
           file: Dockerfile.linux
           tags: tiny_player:latest
-          outputs: type=docker,dest=/tmp/tiny_player.tar
+          load: true
 
 
       - name: Load Image and Extract Binary
         run: |
-          docker load -i /tmp/tiny_player.tar
           docker create --name build_cont tiny_player:latest
           docker cp build_cont:/app/target/release/tiny_player ./tiny_player
           docker rm build_cont
