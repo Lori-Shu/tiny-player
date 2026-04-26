@@ -152,8 +152,9 @@ impl InternetResourceUI {
 
         let mut buf_reader = BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
         let mut buf = vec![0; 1024 * 32];
-        buf_reader.read_exact(&mut buf).await?;
-        let mut reader = quick_m3u8::Reader::from_bytes(&buf, ParsingOptions::default());
+        let read_size = buf_reader.read(&mut buf).await?;
+        let mut reader =
+            quick_m3u8::Reader::from_bytes(&buf[0..read_size], ParsingOptions::default());
         if let Some(queue) = map.get_mut(&current_category) {
             loop {
                 if let Ok(Some(hls_line)) = reader.read_line() {
