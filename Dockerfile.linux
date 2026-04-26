@@ -1,7 +1,6 @@
 # --- 阶段 1: 依赖预构建 (Planner) ---
 FROM rust:1.95 AS builder
 RUN apt-get update && apt-get install -y 
-pkg-config \
 libavdevice-dev \
 libavcodec-dev \
 libavformat-dev \
@@ -19,7 +18,6 @@ RUN cargo build --release
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y 
-pkg-config \
 libavdevice-dev \
 libavcodec-dev \
 libavformat-dev \
