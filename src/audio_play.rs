@@ -17,8 +17,9 @@ impl AudioPlayer {
         let channel_count = NonZero::new(2).ok_or(anyhow::Error::msg("construct nonzero err"))?;
         let sample_rate =
             SampleRate::new(48000).ok_or(anyhow::Error::msg("construct SampleRate err"))?;
-        let default_host = default_host();
-        let device = default_host
+        let host =  default_host();
+        
+        let device = host
             .default_output_device()
             .ok_or(anyhow::Error::msg("get cpal output device err"))?;
         let device_sink = rodio::DeviceSinkBuilder::default()

@@ -1,4 +1,8 @@
-/resources
+/resources/dlls
+/resources/model
+/resources/moonshine_tiny_streaming
+/resources/whisper_tiny
+/resources/translate_key
 /target
 Cargo.lock
 debug.log
