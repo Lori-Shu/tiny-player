@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::ErrorKind,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use egui::{Button, CentralPanel, ScrollArea, Ui, ViewportBuilder, ViewportId};
@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     PlayerResult,
-    appui::{AppUi, ChangeInputContext},
+    appui::{AppUI, ChangeInputContext},
 };
 const ENGLISH_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/eng.m3u";
 const CHINESE_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/zho.m3u";
@@ -36,10 +36,11 @@ pub struct InternetResourceUI {
     current_category: Arc<RwLock<LanguageCategory>>,
     web_client: Client,
     change_input_ctx: Arc<RwLock<ChangeInputContext>>,
+    internet_list_window_flag:Arc<AtomicBool>
 }
 
 impl InternetResourceUI {
-    pub fn new(change_input_ctx: ChangeInputContext) -> Self {
+    pub fn new(change_input_ctx: ChangeInputContext,internet_list_window_flag:Arc<AtomicBool>) -> Self {
         let mut available_resource_map = HashMap::new();
         available_resource_map.insert(LanguageCategory::English, VecDeque::new());
         available_resource_map.insert(LanguageCategory::Chinese, VecDeque::new());
@@ -52,6 +53,7 @@ impl InternetResourceUI {
             current_category,
             web_client,
             change_input_ctx,
+            internet_list_window_flag
         }
     }
     pub fn show(&mut self, ui: &mut Ui) {
@@ -59,6 +61,7 @@ impl InternetResourceUI {
         let available_resource_map = self.available_resource_map.clone();
         let web_client = self.web_client.clone();
         let change_input_ctx = self.change_input_ctx.clone();
+        let internet_list_window_flag=self.internet_list_window_flag.clone();
         ui.show_viewport_deferred(
             ViewportId::from_hash_of("Internet Resource UI"),
             ViewportBuilder::default(),
@@ -112,7 +115,7 @@ impl InternetResourceUI {
                                             if let Ok(mut context) = change_input_ctx.try_write() {
                                                 context.path = PathBuf::from(&resource.name);
 
-                                                if AppUi::change_format_input(context.clone())
+                                                if AppUI::change_format_input(context.clone())
                                                     .is_ok()
                                                 {
                                                     context.live_mode.store(
@@ -127,6 +130,11 @@ impl InternetResourceUI {
                             }
                         });
                     }
+                });
+                ui.ctx().input(|state|{
+                   if state.viewport().close_requested(){
+                       internet_list_window_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                   } 
                 });
             },
         );

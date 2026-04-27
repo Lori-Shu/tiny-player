@@ -28,6 +28,7 @@ mod audio_play;
 mod decode;
 mod gpu_post_process;
 mod internet_resource_ui;
+mod playlist_ui;
 mod present_data_manage;
 // mod translate;
 
@@ -100,7 +101,7 @@ fn main() {
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            match appui::AppUi::new(cc) {
+            match appui::AppUI::new(cc) {
                 Ok(tiny_app_ui) => {
                     tiny_app_ui.replace_fonts(&cc.egui_ctx);
                     Ok(Box::new(tiny_app_ui))
