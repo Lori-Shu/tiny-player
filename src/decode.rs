@@ -8,9 +8,9 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use derive_builder::Builder;
 use eframe::{CreationContext, egui_wgpu::RenderState};
-use egui::Context;
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream, codec,
     ffi::{
@@ -117,7 +117,7 @@ pub struct TinyDecoder {
     video_decode_thread_notify: Arc<Notify>,
     color_space_converter: ColorSpaceConverter,
     render_state: RenderState,
-    egui_ctx: Context,
+    egui_ctx: egui::Context,
     media_source_flag: Arc<AtomicBool>,
 }
 impl TinyDecoder {
@@ -133,7 +133,7 @@ impl TinyDecoder {
         let render_state = cc
             .wgpu_render_state
             .clone()
-            .ok_or(anyhow::Error::msg("get render state err"))?;
+            .context("get render state err")?;
         let egui_ctx = cc.egui_ctx.clone();
         Ok(Self {
             video_stream_index: usize::MAX,
@@ -1138,13 +1138,13 @@ impl Drop for TinyDecoder {
         let audio_decode_task_handle = self.audio_decode_task_handle.take();
         self.runtime_handle.spawn(async move {
             demux_task_handle
-                .ok_or(anyhow::Error::msg("join demux thread err"))?
+                .context("join demux thread err")?
                 .await??;
             video_decode_task_handle
-                .ok_or(anyhow::Error::msg("join decode thread err"))?
+                .context(anyhow::Error::msg("join decode thread err"))?
                 .await??;
             audio_decode_task_handle
-                .ok_or(anyhow::Error::msg("join decode thread err"))?
+                .context("join decode thread err")?
                 .await??;
             info!("demux and decode thread exit gracefully");
             PlayerResult::Ok(())

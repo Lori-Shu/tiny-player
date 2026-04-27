@@ -1,5 +1,6 @@
 use std::{num::NonZero, sync::Arc};
 
+use anyhow::Context;
 use rodio::{
     MixerDeviceSink, Player, SampleRate,
     cpal::{default_host, traits::HostTrait},
@@ -14,14 +15,13 @@ pub struct AudioPlayer {
 }
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
-        let channel_count = NonZero::new(2).ok_or(anyhow::Error::msg("construct nonzero err"))?;
-        let sample_rate =
-            SampleRate::new(48000).ok_or(anyhow::Error::msg("construct SampleRate err"))?;
+        let channel_count = NonZero::new(2).context("construct nonzero err")?;
+        let sample_rate = SampleRate::new(48000).context("construct SampleRate err")?;
         let host = default_host();
 
         let device = host
             .default_output_device()
-            .ok_or(anyhow::Error::msg("get cpal output device err"))?;
+            .context("get cpal output device err")?;
         let device_sink = rodio::DeviceSinkBuilder::default()
             .with_device(device)
             .with_channels(channel_count)
@@ -46,8 +46,8 @@ impl AudioPlayer {
             &audio_data[0..audio_frame.samples() * audio_frame.ch_layout().channels() as usize];
         let source = rodio::buffer::SamplesBuffer::new(
             NonZero::new(audio_frame.ch_layout().channels() as u16)
-                .ok_or(anyhow::Error::msg("construct nonzero err"))?,
-            NonZero::new(audio_frame.rate()).ok_or(anyhow::Error::msg("construct nonzero err"))?,
+                .context("construct nonzero err")?,
+            NonZero::new(audio_frame.rate()).context("construct nonzero err")?,
             audio_data,
         );
         sink.append(source);

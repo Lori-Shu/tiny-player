@@ -36,11 +36,14 @@ pub struct InternetResourceUI {
     current_category: Arc<RwLock<LanguageCategory>>,
     web_client: Client,
     change_input_ctx: Arc<RwLock<ChangeInputContext>>,
-    internet_list_window_flag:Arc<AtomicBool>
+    internet_list_window_flag: Arc<AtomicBool>,
 }
 
 impl InternetResourceUI {
-    pub fn new(change_input_ctx: ChangeInputContext,internet_list_window_flag:Arc<AtomicBool>) -> Self {
+    pub fn new(
+        change_input_ctx: ChangeInputContext,
+        internet_list_window_flag: Arc<AtomicBool>,
+    ) -> Self {
         let mut available_resource_map = HashMap::new();
         available_resource_map.insert(LanguageCategory::English, VecDeque::new());
         available_resource_map.insert(LanguageCategory::Chinese, VecDeque::new());
@@ -53,7 +56,7 @@ impl InternetResourceUI {
             current_category,
             web_client,
             change_input_ctx,
-            internet_list_window_flag
+            internet_list_window_flag,
         }
     }
     pub fn show(&mut self, ui: &mut Ui) {
@@ -61,7 +64,7 @@ impl InternetResourceUI {
         let available_resource_map = self.available_resource_map.clone();
         let web_client = self.web_client.clone();
         let change_input_ctx = self.change_input_ctx.clone();
-        let internet_list_window_flag=self.internet_list_window_flag.clone();
+        let internet_list_window_flag = self.internet_list_window_flag.clone();
         ui.show_viewport_deferred(
             ViewportId::from_hash_of("Internet Resource UI"),
             ViewportBuilder::default(),
@@ -131,10 +134,11 @@ impl InternetResourceUI {
                         });
                     }
                 });
-                ui.ctx().input(|state|{
-                   if state.viewport().close_requested(){
-                       internet_list_window_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                   } 
+                ui.ctx().input(|state| {
+                    if state.viewport().close_requested() {
+                        internet_list_window_flag
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
                 });
             },
         );

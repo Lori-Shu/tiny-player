@@ -13,14 +13,14 @@ pub struct PlayListUI {
     live_mode: Arc<AtomicBool>,
     scan_folder_dialog: Arc<RwLock<FileDialog>>,
     runtime_handle: Handle,
-    playlist_window_flag:Arc<AtomicBool>
+    playlist_window_flag: Arc<AtomicBool>,
 }
 impl PlayListUI {
     pub fn new(
         change_input_context: ChangeInputContext,
         live_mode: Arc<AtomicBool>,
         runtime_handle: Handle,
-        playlist_window_flag:Arc<AtomicBool>
+        playlist_window_flag: Arc<AtomicBool>,
     ) -> Self {
         let video_des = Arc::new(RwLock::new(vec![]));
         let scan_folder_dialog = Arc::new(RwLock::new(FileDialog::select_folder()));
@@ -30,7 +30,7 @@ impl PlayListUI {
             live_mode,
             scan_folder_dialog,
             runtime_handle,
-            playlist_window_flag
+            playlist_window_flag,
         }
     }
     pub fn show(&mut self, ui: &mut Ui) {
@@ -46,14 +46,14 @@ impl PlayListUI {
         let live_mode = self.live_mode.clone();
         let scan_folder_dialog = self.scan_folder_dialog.clone();
         let runtime_handle = self.runtime_handle.clone();
-        let playlist_window_flag=self.playlist_window_flag.clone();
+        let playlist_window_flag = self.playlist_window_flag.clone();
         ui.show_viewport_deferred(viewport_id, viewport_builder, move |ui, _class| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui.vertical(|ui| {
                     let video_urls_scroll = egui::ScrollArea::vertical().max_height(500.0);
 
                     video_urls_scroll.show(ui, |ui| {
-                        if let Ok(videos) = video_des.try_write() {
+                        if let Ok(videos) = video_des.try_read() {
                             ui.columns(2, |columns| {
                                 for (i, des) in videos.iter().enumerate() {
                                     let image_btn = Button::new(
@@ -118,10 +118,10 @@ impl PlayListUI {
                     }
                 });
             });
-            ui.ctx().input(|state|{
-               if state.viewport().close_requested(){
-                   playlist_window_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-               } 
+            ui.ctx().input(|state| {
+                if state.viewport().close_requested() {
+                    playlist_window_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
             });
         });
     }

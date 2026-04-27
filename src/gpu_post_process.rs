@@ -1,5 +1,6 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
+use anyhow::Context;
 use eframe::{
     CreationContext,
     egui_wgpu::RenderState,
@@ -18,7 +19,7 @@ use eframe::{
         util::{BufferInitDescriptor, DeviceExt},
     },
 };
-use egui::Context;
+
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
 use glam::{Mat3, Vec3};
 use tokio::sync::RwLock;
@@ -54,7 +55,7 @@ impl ColorSpaceConverter {
         let render_state = cc
             .wgpu_render_state
             .clone()
-            .ok_or(anyhow::Error::msg("render state get error"))?;
+            .context("render state get error")?;
         let uniform_buffer = render_state
             .device
             .create_buffer_init(&BufferInitDescriptor {
@@ -591,7 +592,7 @@ impl ColorSpaceConverter {
     pub async fn render_video(
         &mut self,
         render_state: &RenderState,
-        egui_ctx: &Context,
+        egui_ctx: &egui::Context,
         texture: Arc<RwLock<Texture>>,
         frame: Video,
         is_hw_acc: bool,

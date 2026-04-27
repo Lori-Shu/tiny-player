@@ -7,6 +7,7 @@ use std::{
     time::Instant,
 };
 
+use anyhow::Context;
 use derive_builder::Builder;
 use eframe::{
     CreationContext,
@@ -17,9 +18,9 @@ use eframe::{
     },
 };
 use egui::{
-    Align2, AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Id, Image, ImageData,
-    ImageSource, Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions,
-    Ui, Vec2, WidgetText, include_image,
+    Align2, AtomExt, Button, Color32, ColorImage, CornerRadius, Id, Image, ImageData, ImageSource,
+    Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
+    WidgetText, include_image,
 };
 
 use egui_file::FileDialog;
@@ -260,7 +261,7 @@ impl AppUI {
         let wgpu_render_state = cc
             .wgpu_render_state
             .as_ref()
-            .ok_or(anyhow::Error::msg("get render state err"))?
+            .context("get render state err")?
             .clone();
         let (video_texture_id, video_texture) =
             Self::new_and_register_texture(main_color_image.clone(), wgpu_render_state.clone());
@@ -297,14 +298,17 @@ impl AppUI {
             .video_texture_id(video_texture_id.clone())
             .live_mode(live_mode.clone())
             .build()?;
-        let internet_list_window_flag=Arc::new(AtomicBool::new(false));
-        let internet_resource_ui = InternetResourceUI::new(change_input_context.clone(),internet_list_window_flag.clone());
-        let playlist_window_flag=Arc::new(AtomicBool::new(false));
+        let internet_list_window_flag = Arc::new(AtomicBool::new(false));
+        let internet_resource_ui = InternetResourceUI::new(
+            change_input_context.clone(),
+            internet_list_window_flag.clone(),
+        );
+        let playlist_window_flag = Arc::new(AtomicBool::new(false));
         let playlist_ui = PlayListUI::new(
             change_input_context.clone(),
             live_mode.clone(),
             async_rt.handle().clone(),
-            playlist_window_flag.clone()
+            playlist_window_flag.clone(),
         );
         Ok(Self {
             garbage_video_texture,
@@ -1237,9 +1241,15 @@ impl AppUI {
             self.ui_flags.visible_flag = true;
         }
         if btn_response.clicked() {
-            self.ui_flags.playlist_window_flag.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            self.ui_flags
+                .playlist_window_flag
+                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
-        if self.ui_flags.playlist_window_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .ui_flags
+            .playlist_window_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.playlist_ui.show(ui);
         }
         let open_btn = Button::new(
@@ -1265,14 +1275,20 @@ impl AppUI {
             self.ui_flags.visible_flag = true;
         }
         if btn_response.clicked() {
-            self.ui_flags.internet_list_window_flag.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            self.ui_flags
+                .internet_list_window_flag
+                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
-        if self.ui_flags.internet_list_window_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .ui_flags
+            .internet_list_window_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.internet_resource_ui.show(ui);
         }
     }
     pub async fn read_video_folder(
-        ctx: Context,
+        ctx: egui::Context,
         path: PathBuf,
         video_des: Arc<RwLock<Vec<VideoDes>>>,
     ) {
@@ -1345,7 +1361,11 @@ impl AppUI {
         }
         RgbaImage::new(1920, 1080)
     }
-    async fn load_cover_texture(ctx: &Context, cover: &RgbaImage, name: &str) -> TextureHandle {
+    async fn load_cover_texture(
+        ctx: &egui::Context,
+        cover: &RgbaImage,
+        name: &str,
+    ) -> TextureHandle {
         let color_image = ColorImage::from_rgba_unmultiplied(
             [cover.width() as usize, cover.height() as usize],
             cover.as_bytes(),
@@ -1357,7 +1377,7 @@ impl AppUI {
         )
     }
 
-    fn paint_tip_window(&mut self, ctx: &Context) {
+    fn paint_tip_window(&mut self, ctx: &egui::Context) {
         if self.ui_flags.tip_window_flag {
             let tip_window = egui::Window::new("tip window");
             tip_window.show(ctx, |ui| {
