@@ -95,18 +95,18 @@
 //                     let mel_filters = bytemuck::cast_slice::<_, f32>(MEL_FILTERS).to_vec();
 //                     let sot_id = tokenizer
 //                         .token_to_id(candle_transformers::models::whisper::SOT_TOKEN)
-//                         .ok_or(Error::msg("SOT_TOKEN token2id is none!!!"))?;
+//                         .context(Error::msg("SOT_TOKEN token2id is none!!!"))?;
 
 //                     let transcribe_id = tokenizer
 //                         .token_to_id(candle_transformers::models::whisper::TRANSCRIBE_TOKEN)
-//                         .ok_or(anyhow::Error::msg("TRANSCRIBE_TOKEN to id err"))?;
+//                         .context(anyhow::Error::msg("TRANSCRIBE_TOKEN to id err"))?;
 
 //                     let no_timestamp_id = tokenizer
 //                         .token_to_id(candle_transformers::models::whisper::NO_TIMESTAMPS_TOKEN)
-//                         .ok_or(anyhow::Error::msg("NO_TIMESTAMPS_TOKEN to id err"))?;
+//                         .context(anyhow::Error::msg("NO_TIMESTAMPS_TOKEN to id err"))?;
 //                     let eot_id = tokenizer
 //                         .token_to_id(candle_transformers::models::whisper::EOT_TOKEN)
-//                         .ok_or(anyhow::Error::msg("EOT_TOKEN to id err"))?;
+//                         .context(anyhow::Error::msg("EOT_TOKEN to id err"))?;
 //                     let no_speech_token = whisper::NO_SPEECH_TOKENS
 //                         .iter()
 //                         .find_map(|token| tokenizer.token_to_id(token));
