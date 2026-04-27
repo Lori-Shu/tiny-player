@@ -19,9 +19,10 @@ use eframe::{
 use egui::{
     Align2, AtomExt, Button, Color32, ColorImage, Context, CornerRadius, Id, Image, ImageData,
     ImageSource, Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions,
-    Ui, Vec2, ViewportBuilder, ViewportId, WidgetText, include_image,
+    Ui, Vec2, WidgetText, include_image,
 };
 
+use egui_file::FileDialog;
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
@@ -36,6 +37,7 @@ use crate::{
     PlayerResult,
     decode::{MainStream, TinyDecoder},
     internet_resource_ui::InternetResourceUI,
+    playlist_ui::PlayListUI,
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
 };
 
@@ -65,16 +67,16 @@ struct UiFlags {
     pause_flag: Arc<AtomicBool>,
     fullscreen_flag: bool,
     tip_window_flag: bool,
-    playlist_window_flag: bool,
+    playlist_window_flag: Arc<AtomicBool>,
     show_subtitle_options_flag: bool,
     show_volumn_slider_flag: bool,
     visible_flag: bool,
     media_source_flag: Arc<AtomicBool>,
-    internet_list_window_flag: bool,
+    internet_list_window_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
 }
 
-pub struct AppUi {
+pub struct AppUI {
     video_texture_id: Arc<RwLock<TextureId>>,
     _video_texture: Arc<RwLock<Texture>>,
     garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
@@ -90,12 +92,10 @@ pub struct AppUi {
     tip_window_msg: String,
     app_start_instant: Instant,
     async_rt: Runtime,
-    open_file_dialog: Option<egui_file::FileDialog>,
-    scan_folder_dialog: Option<egui_file::FileDialog>,
+    open_file_dialog: FileDialog,
     // _subtitle: Arc<RwLock<AISubTitle>>,
     // subtitle_text: String,
     // subtitle_text_receiver: mpsc::Receiver<String>,
-    video_des: Arc<RwLock<Vec<VideoDes>>>,
     // used_model: Arc<RwLock<UsedModel>>,
     audio_volumn: f32,
     _current_video_timestamp: Arc<AtomicI64>,
@@ -104,8 +104,9 @@ pub struct AppUi {
     end_ts: Arc<AtomicI64>,
     internet_resource_ui: InternetResourceUI,
     change_input_context: ChangeInputContext,
+    playlist_ui: PlayListUI,
 }
-impl eframe::App for AppUi {
+impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -180,7 +181,7 @@ impl eframe::App for AppUi {
         });
     }
 }
-impl AppUi {
+impl AppUI {
     pub fn replace_fonts(&self, ctx: &egui::Context) {
         // Start with the default fonts (we will be adding to them rather than replacing them).
         let mut fonts = egui::FontDefinitions::default();
@@ -296,7 +297,15 @@ impl AppUi {
             .video_texture_id(video_texture_id.clone())
             .live_mode(live_mode.clone())
             .build()?;
-        let internet_resource_ui = InternetResourceUI::new(change_input_context.clone());
+        let internet_list_window_flag=Arc::new(AtomicBool::new(false));
+        let internet_resource_ui = InternetResourceUI::new(change_input_context.clone(),internet_list_window_flag.clone());
+        let playlist_window_flag=Arc::new(AtomicBool::new(false));
+        let playlist_ui = PlayListUI::new(
+            change_input_context.clone(),
+            live_mode.clone(),
+            async_rt.handle().clone(),
+            playlist_window_flag.clone()
+        );
         Ok(Self {
             garbage_video_texture,
             // subtitle_text_receiver: subtitle_channel.1,
@@ -312,12 +321,12 @@ impl AppUi {
                 pause_flag,
                 fullscreen_flag: false,
                 tip_window_flag: false,
-                playlist_window_flag: false,
+                playlist_window_flag,
                 show_subtitle_options_flag: false,
                 show_volumn_slider_flag: false,
                 visible_flag: false,
                 media_source_flag,
-                internet_list_window_flag: false,
+                internet_list_window_flag,
                 live_mode,
             },
             // used_model,
@@ -326,12 +335,10 @@ impl AppUi {
             tip_window_msg: String::new(),
             app_start_instant: Instant::now(),
             async_rt,
-            open_file_dialog: Some(f_dialog),
-            scan_folder_dialog: Some(egui_file::FileDialog::select_folder()),
+            open_file_dialog: f_dialog,
             _bg_dyn_img: bg_dyn_img,
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
-            video_des: Arc::new(RwLock::new(vec![])),
             audio_volumn: 1.0,
             _current_video_timestamp: current_video_timestamp,
             visible_num: 1.0,
@@ -339,6 +346,7 @@ impl AppUi {
             end_ts,
             internet_resource_ui,
             change_input_context,
+            playlist_ui,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -590,25 +598,26 @@ impl AppUi {
             self.ui_flags.visible_flag = true;
         }
         if file_img_btn_response.clicked() {
-            if let Some(dialog) = &mut self.open_file_dialog {
-                dialog.open();
-            }
+            self.open_file_dialog.open();
         }
         let mut file_path = None;
-        if let Some(d) = &mut self.open_file_dialog {
-            d.show(ui.ctx());
-            if d.selected() {
-                if let Some(p) = d.path() {
-                    warn!("path selected{:#?}", p);
-                    file_path = Some(p.to_path_buf())
-                }
+
+        self.open_file_dialog.show(ui.ctx());
+        if self.open_file_dialog.selected() {
+            if let Some(p) = self.open_file_dialog.path() {
+                warn!("path selected{:#?}", p);
+                file_path = Some(p.to_path_buf())
             }
         }
+
         if let Some(p) = file_path {
             let mut ctx = self.change_input_context.clone();
             ctx.path = p.clone();
             if Self::change_format_input(ctx).is_ok() {
                 if let Some(p_str) = p.to_str() {
+                    self.ui_flags
+                        .live_mode
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     warn!("accept file path{}", p_str);
                 }
             } else {
@@ -1028,94 +1037,6 @@ impl AppUi {
         false
     }
 
-    /// return true when the current video time > audio time,else return false
-    fn paint_playlist_window(&mut self, ui: &mut Ui) {
-        if self.ui_flags.playlist_window_flag {
-            let viewport_id = ViewportId::from_hash_of("content_window");
-            ui.ctx()
-                .send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Visible(true));
-            ui.ctx().send_viewport_cmd_to(
-                viewport_id,
-                egui::ViewportCommand::Title("content_window".to_string()),
-            );
-
-            let viewport_builder = ViewportBuilder::default().with_close_button(false);
-            ui.show_viewport_immediate(viewport_id, viewport_builder, |ui, _| {
-                egui::CentralPanel::default().show_inside(ui, |ui| {
-                    ui.vertical(|ui| {
-                        let video_urls_scroll = egui::ScrollArea::vertical().max_height(500.0);
-
-                        video_urls_scroll.show(ui, |ui| {
-                            let video_des = self.video_des.clone();
-                            if let Ok(videos) = video_des.try_write() {
-                                ui.columns(2, |columns| {
-                                    for (i, des) in videos.iter().enumerate() {
-                                        let image_btn = Button::new(
-                                            Image::new(&des.texture_handle)
-                                                .atom_size(Vec2::new(1920.0 / 6.0, 1080.0 / 6.0)),
-                                        );
-
-                                        let player_text_button = Button::new(des.name.clone());
-                                        if i % 2 == 0 {
-                                            columns[0].vertical(|ui| {
-                                                ui.add(image_btn);
-                                                if ui.add(player_text_button).clicked() {
-                                                    let mut ctx = self.change_input_context.clone();
-                                                    ctx.path = des.path.clone();
-                                                    if Self::change_format_input(ctx).is_ok() {
-                                                        self.ui_flags.live_mode.store(
-                                                            false,
-                                                            std::sync::atomic::Ordering::Relaxed,
-                                                        );
-                                                        info!("change_format_input success");
-                                                    }
-                                                }
-                                            });
-                                        } else {
-                                            columns[1].vertical(|ui| {
-                                                ui.add(image_btn);
-                                                if ui.add(player_text_button).clicked() {
-                                                    let mut ctx = self.change_input_context.clone();
-                                                    ctx.path = des.path.clone();
-                                                    match Self::change_format_input(ctx) {
-                                                        Ok(()) => {
-                                                            info!("change_format_input success");
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("{}", e);
-                                                        }
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                        if let Some(dialog) = &mut self.scan_folder_dialog {
-                            dialog.show(ui.ctx());
-                            if ui.button("scan video folder").clicked() {
-                                dialog.open();
-                            }
-                            if dialog.selected() {
-                                {
-                                    let mut videos = self.video_des.blocking_write();
-                                    videos.clear();
-                                }
-                                if let Some(path) = dialog.path() {
-                                    let video_des = self.video_des.clone();
-                                    let path = path.to_path_buf();
-                                    let ctx = ui.ctx().clone();
-                                    self.async_rt
-                                        .spawn(AppUi::read_video_folder(ctx, path, video_des));
-                                }
-                            }
-                        }
-                    });
-                });
-            });
-        }
-    }
     async fn reset_main_color_img_to_bg(
         bg_dyn_img: Arc<DynamicImage>,
         video_rect: &[u32; 2],
@@ -1283,6 +1204,9 @@ impl AppUi {
                 if let Some(p_str) = path_buf.to_str() {
                     warn!("filepath{}", p_str);
                 }
+                self.ui_flags
+                    .live_mode
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
             } else {
                 self.tip_window_msg = "please choose a valid video or audio file !!!".to_string();
                 self.ui_flags.tip_window_flag = true;
@@ -1313,10 +1237,10 @@ impl AppUi {
             self.ui_flags.visible_flag = true;
         }
         if btn_response.clicked() {
-            self.ui_flags.playlist_window_flag = !self.ui_flags.playlist_window_flag;
+            self.ui_flags.playlist_window_flag.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
-        if self.ui_flags.playlist_window_flag {
-            self.paint_playlist_window(ui);
+        if self.ui_flags.playlist_window_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            self.playlist_ui.show(ui);
         }
         let open_btn = Button::new(
             Image::from(PLAY_LIST_IMG)
@@ -1341,13 +1265,17 @@ impl AppUi {
             self.ui_flags.visible_flag = true;
         }
         if btn_response.clicked() {
-            self.ui_flags.internet_list_window_flag = !self.ui_flags.internet_list_window_flag;
+            self.ui_flags.internet_list_window_flag.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
-        if self.ui_flags.internet_list_window_flag {
+        if self.ui_flags.internet_list_window_flag.load(std::sync::atomic::Ordering::Relaxed) {
             self.internet_resource_ui.show(ui);
         }
     }
-    async fn read_video_folder(ctx: Context, path: PathBuf, video_des: Arc<RwLock<Vec<VideoDes>>>) {
+    pub async fn read_video_folder(
+        ctx: Context,
+        path: PathBuf,
+        video_des: Arc<RwLock<Vec<VideoDes>>>,
+    ) {
         let mut video_targets = video_des.write().await;
         if let Ok(ite) = path.read_dir() {
             for entry in ite {
@@ -1449,12 +1377,12 @@ impl AppUi {
                 .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
     }
 }
-impl Drop for AppUi {
+impl Drop for AppUI {
     fn drop(&mut self) {
         self.free_texture();
     }
 }
-struct VideoDes {
+pub struct VideoDes {
     pub name: String,
     pub path: PathBuf,
     pub texture_handle: TextureHandle,
