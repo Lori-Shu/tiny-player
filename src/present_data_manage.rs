@@ -16,6 +16,7 @@ use tracing::warn;
 use crate::{
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
+    gpu_post_process::ColorSpaceConverter,
 };
 
 pub struct PresentDataManager {
@@ -171,8 +172,10 @@ impl PresentDataManager {
                         }
                     };
                     if let Ok(frame) = frame_result {
-                        if let Err(e) = tiny_decoder
-                            .render_video_frame(data_manage_context.video_texture.clone(), frame)
+                        let mut color_space_converter =
+                            data_manage_context.color_space_converter.write().await;
+                        if let Err(e) = color_space_converter
+                            .render_video(data_manage_context.video_texture.clone(), frame)
                             .await
                         {
                             warn!("{}", e);
@@ -243,4 +246,5 @@ pub struct DataManageContext {
     current_video_timestamp: Arc<AtomicI64>,
     video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
+    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
 }

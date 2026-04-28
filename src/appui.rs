@@ -37,6 +37,7 @@ use tracing::{info, warn};
 use crate::{
     PlayerResult,
     decode::{MainStream, TinyDecoder},
+    gpu_post_process::ColorSpaceConverter,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     present_data_manage::{DataManageContextBuilder, PresentDataManager},
@@ -79,7 +80,6 @@ struct UiFlags {
 
 pub struct AppUI {
     video_texture_id: Arc<RwLock<TextureId>>,
-    _video_texture: Arc<RwLock<Texture>>,
     garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
     audio_player: crate::audio_play::AudioPlayer,
@@ -242,13 +242,26 @@ impl AppUI {
             }
         }?;
         let main_color_image = Arc::new(RwLock::new(color_image));
+        let wgpu_render_state = Arc::new(
+            cc.wgpu_render_state
+                .as_ref()
+                .context("get render state err")?
+                .clone(),
+        );
         let media_source_flag = Arc::new(AtomicBool::new(false));
         let end_ts = Arc::new(AtomicI64::new(0));
+        let hardware_config_flag = Arc::new(AtomicBool::new(false));
+        let colorspace_converter = Arc::new(RwLock::new(ColorSpaceConverter::new(
+            wgpu_render_state.clone(),
+            cc.egui_ctx.clone(),
+            hardware_config_flag.clone(),
+        )?));
         let tiny_decoder = crate::decode::TinyDecoder::new(
             rt.clone(),
-            cc,
             media_source_flag.clone(),
             end_ts.clone(),
+            hardware_config_flag.clone(),
+            colorspace_converter.clone(),
         )?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
@@ -258,11 +271,7 @@ impl AppUI {
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let wgpu_render_state = cc
-            .wgpu_render_state
-            .as_ref()
-            .context("get render state err")?
-            .clone();
+
         let (video_texture_id, video_texture) =
             Self::new_and_register_texture(main_color_image.clone(), wgpu_render_state.clone());
         let data_manage_context = DataManageContextBuilder::default()
@@ -275,10 +284,10 @@ impl AppUI {
             .current_video_timestamp(current_video_timestamp.clone())
             .runtime_handle(rt)
             .pause_flag(pause_flag.clone())
+            .color_space_converter(colorspace_converter.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
 
-        let wgpu_render_state = Arc::new(wgpu_render_state);
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture = Arc::new(RwLock::new(None));
         let live_mode = Arc::new(AtomicBool::new(false));
@@ -314,7 +323,6 @@ impl AppUI {
             garbage_video_texture,
             // subtitle_text_receiver: subtitle_channel.1,
             video_texture_id,
-            _video_texture: video_texture,
             tiny_decoder,
             audio_player,
             _present_data_manager: present_data_manager,
@@ -420,7 +428,7 @@ impl AppUI {
     }
     fn new_and_register_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
-        render_state: RenderState,
+        render_state: Arc<RenderState>,
     ) -> (Arc<RwLock<TextureId>>, Arc<RwLock<Texture>>) {
         let main_color_image = main_color_image.blocking_read();
 
