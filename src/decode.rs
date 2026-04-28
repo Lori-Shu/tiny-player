@@ -10,7 +10,6 @@ use std::{
 
 use anyhow::Context;
 use derive_builder::Builder;
-use eframe::{CreationContext, egui_wgpu::RenderState};
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream, codec,
     ffi::{
@@ -115,9 +114,7 @@ pub struct TinyDecoder {
     demux_thread_notify: Arc<Notify>,
     audio_decode_thread_notify: Arc<Notify>,
     video_decode_thread_notify: Arc<Notify>,
-    color_space_converter: ColorSpaceConverter,
-    render_state: RenderState,
-    egui_ctx: egui::Context,
+    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
     media_source_flag: Arc<AtomicBool>,
 }
 impl TinyDecoder {
@@ -125,16 +122,12 @@ impl TinyDecoder {
     /// `runtime_handle` is the handle of the tokio runtime in async_context
     pub fn new(
         runtime_handle: Handle,
-        cc: &CreationContext,
         media_source_flag: Arc<AtomicBool>,
         end_timestamp: Arc<AtomicI64>,
+        hardware_config_flag: Arc<AtomicBool>,
+        color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
     ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
-        let render_state = cc
-            .wgpu_render_state
-            .clone()
-            .context("get render state err")?;
-        let egui_ctx = cc.egui_ctx.clone();
         Ok(Self {
             video_stream_index: usize::MAX,
             audio_stream_index: usize::MAX,
@@ -159,16 +152,15 @@ impl TinyDecoder {
             demux_task_handle: None,
             video_decode_task_handle: None,
             audio_decode_task_handle: None,
-            hardware_config_flag: Arc::new(AtomicBool::new(false)),
+            hardware_config_flag,
             cover_pic_data: Arc::new(RwLock::new(None)),
             runtime_handle,
             demux_thread_notify: Arc::new(Notify::new()),
             audio_decode_thread_notify: Arc::new(Notify::new()),
             video_decode_thread_notify: Arc::new(Notify::new()),
-            color_space_converter: ColorSpaceConverter::new(cc)?,
-            render_state,
+            color_space_converter,
+
             media_source_flag,
-            egui_ctx,
         })
     }
     /// reset all fields to the initial state
@@ -381,14 +373,14 @@ impl TinyDecoder {
             let codec_ctx =
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
             let video_decoder = self.choose_decoder_with_hardware_prefer(codec_ctx).await?;
-
-            self.color_space_converter.set_params_for_space(
-                &self.render_state,
-                video_decoder.color_space(),
-                video_decoder.format(),
-                [video_decoder.width(), video_decoder.height()],
-                self.hardware_config_flag.clone(),
-            );
+            {
+                let mut color_space_converter = self.color_space_converter.write().await;
+                color_space_converter.set_params_for_space(
+                    video_decoder.color_space(),
+                    video_decoder.format(),
+                    [video_decoder.width(), video_decoder.height()],
+                );
+            }
 
             info!("video decode format{:#?}", video_decoder.format());
             self.video_frame_rect = [video_decoder.width(), video_decoder.height()];
@@ -1030,19 +1022,6 @@ impl TinyDecoder {
         if let Some(v) = &mut *v_decoder {
             v.0.flush();
         }
-    }
-    pub async fn render_video_frame(
-        &mut self,
-        texture: Arc<RwLock<eframe::wgpu::Texture>>,
-        frame: Video,
-    ) -> PlayerResult<()> {
-        let hw_acc = self
-            .hardware_config_flag
-            .load(std::sync::atomic::Ordering::Relaxed);
-        self.color_space_converter
-            .render_video(&self.render_state, &self.egui_ctx, texture, frame, hw_acc)
-            .await?;
-        Ok(())
     }
 }
 

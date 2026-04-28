@@ -1,8 +1,6 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
-use anyhow::Context;
 use eframe::{
-    CreationContext,
     egui_wgpu::RenderState,
     wgpu::{
         AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
@@ -46,16 +44,19 @@ pub struct ColorSpaceConverter {
     render_pipeline: RenderPipeline,
     fallback_render_pipeline: RenderPipeline,
     playback_texture_view: Option<TextureView>,
+    hardware_config_flag: Arc<AtomicBool>,
+    render_state: Arc<RenderState>,
+    egui_ctx: egui::Context,
 }
 impl ColorSpaceConverter {
-    pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
+    pub fn new(
+        render_state: Arc<RenderState>,
+        egui_ctx: egui::Context,
+        hardware_config_flag: Arc<AtomicBool>,
+    ) -> PlayerResult<Self> {
         let bt709_uniform = Self::get_bt709_params();
         let bt601_uniform = Self::get_bt601_params();
         let bt2020_uniform = Self::get_bt2020_params();
-        let render_state = cc
-            .wgpu_render_state
-            .clone()
-            .context("render state get error")?;
         let uniform_buffer = render_state
             .device
             .create_buffer_init(&BufferInitDescriptor {
@@ -288,6 +289,9 @@ impl ColorSpaceConverter {
             render_pipeline,
             fallback_render_pipeline,
             playback_texture_view: None,
+            hardware_config_flag,
+            render_state,
+            egui_ctx,
         })
     }
     fn get_bt601_params() -> ColorSpaceUniform {
@@ -313,11 +317,9 @@ impl ColorSpaceConverter {
     }
     pub fn set_params_for_space(
         &mut self,
-        render_state: &RenderState,
         color_space: Space,
         pixel_format: Pixel,
         size_rect: [u32; 2],
-        hardware_flag: Arc<AtomicBool>,
     ) {
         let color_space_uniform = match color_space {
             Space::BT709 => self.bt709_uniform,
@@ -325,7 +327,7 @@ impl ColorSpaceConverter {
             Space::BT2020NCL | Space::BT2020CL => self.bt2020_uniform,
             _ => self.bt709_uniform,
         };
-        render_state.queue.write_buffer(
+        self.render_state.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[color_space_uniform]),
@@ -334,7 +336,7 @@ impl ColorSpaceConverter {
             && pixel_format != Pixel::YUV420P10
             && pixel_format != Pixel::YUV420P10LE
         {
-            render_state.device.create_texture(&TextureDescriptor {
+            self.render_state.device.create_texture(&TextureDescriptor {
                 label: Some("Video_Y_Plane"),
                 size: Extent3d {
                     width: size_rect[0],
@@ -349,7 +351,7 @@ impl ColorSpaceConverter {
                 view_formats: &[],
             })
         } else {
-            render_state.device.create_texture(&TextureDescriptor {
+            self.render_state.device.create_texture(&TextureDescriptor {
                 label: Some("Video_Y_Plane"),
                 size: Extent3d {
                     width: size_rect[0],
@@ -365,12 +367,15 @@ impl ColorSpaceConverter {
             })
         };
 
-        if hardware_flag.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .hardware_config_flag
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             if pixel_format != Pixel::P010LE
                 && pixel_format != Pixel::YUV420P10
                 && pixel_format != Pixel::YUV420P10LE
             {
-                let texture_uv = render_state.device.create_texture(&TextureDescriptor {
+                let texture_uv = self.render_state.device.create_texture(&TextureDescriptor {
                     label: Some("Video_NV12_UV_Plane"),
                     size: Extent3d {
                         width: size_rect[0] / 2,
@@ -385,8 +390,8 @@ impl ColorSpaceConverter {
                     view_formats: &[],
                 });
 
-                self.bind_group =
-                    Some(render_state.device.create_bind_group(&BindGroupDescriptor {
+                self.bind_group = Some(self.render_state.device.create_bind_group(
+                    &BindGroupDescriptor {
                         layout: &self.bind_group_layout,
                         entries: &[
                             BindGroupEntry {
@@ -425,11 +430,12 @@ impl ColorSpaceConverter {
                             },
                         ],
                         label: Some("video_frame_bind_group"),
-                    }));
+                    },
+                ));
 
                 self.texture_uv = Some(texture_uv);
             } else {
-                let texture_uv = render_state.device.create_texture(&TextureDescriptor {
+                let texture_uv = self.render_state.device.create_texture(&TextureDescriptor {
                     label: Some("Video_NV12_UV_Plane"),
                     size: Extent3d {
                         width: size_rect[0] / 2,
@@ -444,8 +450,8 @@ impl ColorSpaceConverter {
                     view_formats: &[],
                 });
 
-                self.bind_group =
-                    Some(render_state.device.create_bind_group(&BindGroupDescriptor {
+                self.bind_group = Some(self.render_state.device.create_bind_group(
+                    &BindGroupDescriptor {
                         layout: &self.bind_group_layout,
                         entries: &[
                             BindGroupEntry {
@@ -484,12 +490,13 @@ impl ColorSpaceConverter {
                             },
                         ],
                         label: Some("video_frame_bind_group"),
-                    }));
+                    },
+                ));
 
                 self.texture_uv = Some(texture_uv);
             }
         } else {
-            let texture_u = render_state.device.create_texture(&TextureDescriptor {
+            let texture_u = self.render_state.device.create_texture(&TextureDescriptor {
                 label: Some("Video_U_Plane"),
                 size: Extent3d {
                     width: size_rect[0] / 2,
@@ -503,7 +510,7 @@ impl ColorSpaceConverter {
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let texture_v = render_state.device.create_texture(&TextureDescriptor {
+            let texture_v = self.render_state.device.create_texture(&TextureDescriptor {
                 label: Some("Video_V_Plane"),
                 size: Extent3d {
                     width: size_rect[0] / 2,
@@ -517,8 +524,8 @@ impl ColorSpaceConverter {
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            self.fallback_bind_group =
-                Some(render_state.device.create_bind_group(&BindGroupDescriptor {
+            self.fallback_bind_group = Some(self.render_state.device.create_bind_group(
+                &BindGroupDescriptor {
                     layout: &self.fallback_bind_group_layout,
                     entries: &[
                         BindGroupEntry {
@@ -581,7 +588,8 @@ impl ColorSpaceConverter {
                         },
                     ],
                     label: Some("fallback_video_frame_bind_group"),
-                }));
+                },
+            ));
             self.texture_u = Some(texture_u);
             self.texture_v = Some(texture_v);
         }
@@ -591,11 +599,8 @@ impl ColorSpaceConverter {
     }
     pub async fn render_video(
         &mut self,
-        render_state: &RenderState,
-        egui_ctx: &egui::Context,
         texture: Arc<RwLock<Texture>>,
         frame: Video,
-        is_hw_acc: bool,
     ) -> PlayerResult<()> {
         let playback_texture_view = if let Some(view) = &self.playback_texture_view {
             view.clone()
@@ -619,9 +624,12 @@ impl ColorSpaceConverter {
             self.playback_texture_view = Some(new_texture_view.clone());
             new_texture_view
         };
-        if is_hw_acc {
+        if self
+            .hardware_config_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             if let Some(texture) = &self.texture_y {
-                render_state.queue.write_texture(
+                self.render_state.queue.write_texture(
                     TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
@@ -642,7 +650,7 @@ impl ColorSpaceConverter {
                 );
             }
             if let Some(texture) = &self.texture_uv {
-                render_state.queue.write_texture(
+                self.render_state.queue.write_texture(
                     TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
@@ -663,7 +671,7 @@ impl ColorSpaceConverter {
                 );
             }
             let mut encoder =
-                render_state
+                self.render_state
                     .device
                     .create_command_encoder(&CommandEncoderDescriptor {
                         label: Some("Offscreen_Render_Encoder"),
@@ -694,11 +702,13 @@ impl ColorSpaceConverter {
                 render_pass.draw(0..6, 0..1);
             }
 
-            render_state.queue.submit(std::iter::once(encoder.finish()));
+            self.render_state
+                .queue
+                .submit(std::iter::once(encoder.finish()));
             // warn!("after write texture and render");
         } else {
             if let Some(texture) = &self.texture_y {
-                render_state.queue.write_texture(
+                self.render_state.queue.write_texture(
                     TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
@@ -719,7 +729,7 @@ impl ColorSpaceConverter {
                 );
             }
             if let Some(texture) = &self.texture_u {
-                render_state.queue.write_texture(
+                self.render_state.queue.write_texture(
                     TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
@@ -740,7 +750,7 @@ impl ColorSpaceConverter {
                 );
             }
             if let Some(texture) = &self.texture_v {
-                render_state.queue.write_texture(
+                self.render_state.queue.write_texture(
                     TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
@@ -761,7 +771,7 @@ impl ColorSpaceConverter {
                 );
             }
             let mut encoder =
-                render_state
+                self.render_state
                     .device
                     .create_command_encoder(&CommandEncoderDescriptor {
                         label: Some("Offscreen_Render_Encoder"),
@@ -792,9 +802,11 @@ impl ColorSpaceConverter {
                 render_pass.draw(0..6, 0..1);
             }
 
-            render_state.queue.submit(std::iter::once(encoder.finish()));
+            self.render_state
+                .queue
+                .submit(std::iter::once(encoder.finish()));
         }
-        egui_ctx.request_repaint();
+        self.egui_ctx.request_repaint();
         Ok(())
     }
 }
