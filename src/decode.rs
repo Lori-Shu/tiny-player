@@ -32,7 +32,7 @@ use tokio::{
 };
 use tracing::{Instrument, Level, info, span, warn};
 
-use crate::{PlayerResult, gpu_post_process::ColorSpaceConverter};
+use crate::{PlayerResult, audio_play::AUDIO_SAMPLE_RATE, gpu_post_process::ColorSpaceConverter};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -86,7 +86,7 @@ pub struct TinyDecoder {
     format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
     video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
     audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
-    resampler_ctx: Option<ManualProtectedResampler>,
+    resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
     video_frame_cache_queue: (
         Sender<ffmpeg_the_third::frame::Video>,
         Receiver<ffmpeg_the_third::frame::Video>,
@@ -126,8 +126,19 @@ impl TinyDecoder {
         end_timestamp: Arc<AtomicI64>,
         hardware_config_flag: Arc<AtomicBool>,
         color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
+        audio_frame_cache_queue: (
+            Sender<ffmpeg_the_third::frame::Audio>,
+            Receiver<ffmpeg_the_third::frame::Audio>,
+        ),
+        video_frame_cache_queue: (
+            Sender<ffmpeg_the_third::frame::Video>,
+            Receiver<ffmpeg_the_third::frame::Video>,
+        ),
+        audio_decode_thread_notify: Arc<Notify>,
+        video_decode_thread_notify: Arc<Notify>,
     ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
+        let resampler = Arc::new(RwLock::new(None));
         Ok(Self {
             video_stream_index: usize::MAX,
             audio_stream_index: usize::MAX,
@@ -142,9 +153,8 @@ impl TinyDecoder {
             format_input: Arc::new(RwLock::new(None)),
             video_decoder: Arc::new(RwLock::new(None)),
             audio_decoder: Arc::new(RwLock::new(None)),
-            resampler_ctx: None,
-            video_frame_cache_queue: flume::bounded(16),
-            audio_frame_cache_queue: flume::bounded(32),
+            video_frame_cache_queue,
+            audio_frame_cache_queue,
             audio_packet_cache_queue: flume::bounded(512),
             video_packet_cache_queue: flume::bounded(512),
             demux_exit_flag: Arc::new(AtomicBool::new(false)),
@@ -156,10 +166,10 @@ impl TinyDecoder {
             cover_pic_data: Arc::new(RwLock::new(None)),
             runtime_handle,
             demux_thread_notify: Arc::new(Notify::new()),
-            audio_decode_thread_notify: Arc::new(Notify::new()),
-            video_decode_thread_notify: Arc::new(Notify::new()),
+            audio_decode_thread_notify,
+            video_decode_thread_notify,
             color_space_converter,
-
+            resampler,
             media_source_flag,
         })
     }
@@ -171,7 +181,17 @@ impl TinyDecoder {
         self.cover_stream_index = usize::MAX;
         self.main_stream = MainStream::Audio;
         *self.audio_decoder.write().await = None;
+
         self.audio_time_base = Rational::new(1, 1);
+        {
+            let mut resampler = self.resampler.write().await;
+            if let Ok(ctx) = resampler.as_mut().context("no resampler") {
+                unsafe {
+                    swr_free(&mut ctx.0);
+                }
+            }
+            *resampler = None;
+        }
         self.cover_pic_data = Arc::new(RwLock::new(None));
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
@@ -187,7 +207,6 @@ impl TinyDecoder {
         *self.format_input.write().await = None;
         self.hardware_config_flag
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        self.resampler_ctx = None;
         *self.video_decoder.write().await = None;
         self.video_frame_rect = [0, 0];
         self.video_time_base = Rational::new(1, 1);
@@ -342,13 +361,13 @@ impl TinyDecoder {
                     audio_decoder.ch_layout().channels(),
                 ));
             }
-            unsafe {
+            let resampler = unsafe {
                 let mut swr_ctx = null_mut();
                 let r = swr_alloc_set_opts2(
                     &mut swr_ctx,
                     &AV_CHANNEL_LAYOUT_STEREO,
                     ffmpeg_the_third::ffi::AVSampleFormat::FLT,
-                    48000,
+                    AUDIO_SAMPLE_RATE as i32,
                     audio_decoder.ch_layout().as_ptr(),
                     audio_format,
                     audio_decoder.rate() as i32,
@@ -362,8 +381,10 @@ impl TinyDecoder {
                 if r < 0 {
                     info!("swr init err");
                 }
-                self.resampler_ctx = Some(ManualProtectedResampler(swr_ctx));
-            }
+                ManualProtectedResampler(swr_ctx)
+            };
+            let mut resampler_guard = self.resampler.write().await;
+            *resampler_guard = Some(resampler);
             {
                 let mut a_decoder = self.audio_decoder.write().await;
                 *a_decoder = Some(ManualProtectedAudioDecoder(audio_decoder));
@@ -718,16 +739,33 @@ impl TinyDecoder {
                     let mut audio_decoder = decode_context.audio_decoder.write().await;
                     if let Some(decoder) = &mut *audio_decoder {
                         if decoder.0.send_packet(&packet).is_ok() {
+                            let mut resampler = decode_context.resampler.write().await;
+                            let resampler = resampler.as_mut().context("no resampler allocated")?;
                             loop {
                                 let mut audio_frame_tmp = ffmpeg_the_third::frame::Audio::empty();
 
                                 if decoder.0.receive_frame(&mut audio_frame_tmp).is_err() {
                                     break;
                                 }
-
+                                let mut resampled_frame = Audio::empty();
+                                resampled_frame.set_ch_layout(ChannelLayout::STEREO);
+                                resampled_frame.set_rate(AUDIO_SAMPLE_RATE);
+                                resampled_frame.set_format(Sample::F32(Type::Packed));
+                                resampled_frame.set_pts(audio_frame_tmp.pts());
+                                unsafe {
+                                    if swr_convert_frame(
+                                        resampler.0,
+                                        resampled_frame.as_mut_ptr(),
+                                        audio_frame_tmp.as_ptr(),
+                                    ) != 0
+                                    {
+                                        warn!("convert audio frame err, but still in decoding!!!");
+                                        return Err(anyhow::Error::msg("convert audio frame err"));
+                                    }
+                                }
                                 if let Err(e) = decode_context
                                     .audio_frame_sender
-                                    .send_async(audio_frame_tmp)
+                                    .send_async(resampled_frame)
                                     .await
                                 {
                                     warn!("{}", e);
@@ -796,6 +834,7 @@ impl TinyDecoder {
             .decode_exit_flag(self.decode_exit_flag.clone())
             .audio_decode_thread_notify(self.audio_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
+            .resampler(self.resampler.clone())
             .build()
         {
             self.audio_decode_task_handle = Some(self.runtime_handle.spawn(async move {
@@ -809,45 +848,7 @@ impl TinyDecoder {
             warn!("build decode context error!");
         }
     }
-    /// called by the main thread pull one audio frame from the queue
-    /// in addition, do the resample
-    pub async fn pull_one_audio_play_frame(&mut self) -> Option<ffmpeg_the_third::frame::Audio> {
-        if let Some(resampler_ctx) = &mut self.resampler_ctx {
-            let mut res = ffmpeg_the_third::frame::Audio::empty();
-            res.set_format(ffmpeg_the_third::format::Sample::F32(Type::Packed));
-            res.set_ch_layout(ChannelLayout::STEREO);
-            res.set_rate(48000);
 
-            {
-                if self.audio_frame_cache_queue.1.len() < 10 {
-                    self.audio_decode_thread_notify.notify_one();
-                }
-                if !self.audio_frame_cache_queue.1.is_empty() {
-                    if let Ok(raw_frame) = self.audio_frame_cache_queue.1.recv_async().await {
-                        // info!("channel len{}", self.audio_frame_cache_queue.1.len());
-                        unsafe {
-                            let r = swr_convert_frame(
-                                resampler_ctx.0,
-                                res.as_mut_ptr(),
-                                raw_frame.as_ptr(),
-                            );
-                            if r == 0 {
-                                if let Some(pts) = raw_frame.pts() {
-                                    res.set_pts(Some(pts));
-                                    res.set_rate(48000);
-                                    return Some(res);
-                                }
-                            } else {
-                                info!("resample err{}", r);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
     pub async fn _convert_frame_data_to_no_padding_layout(res: &mut Video) -> Box<[u8]> {
         unsafe {
             let buf_size = av_image_get_buffer_size(
@@ -875,20 +876,6 @@ impl TinyDecoder {
         }
     }
 
-    /// pull one frame from the video cache queue
-    /// in additon, do the convert and if the input changed(caused by source or hard acce)
-    /// set the new converter, only change the out put format, dont change the width and height which
-    /// have been used in the ui thread
-    pub async fn pull_one_video_play_frame(&mut self) -> Option<ffmpeg_the_third::frame::Video> {
-        if self.video_frame_cache_queue.1.len() < 5 {
-            self.video_decode_thread_notify.notify_one();
-        }
-        if !self.video_frame_cache_queue.1.is_empty() {
-            self.video_frame_cache_queue.1.recv_async().await.ok()
-        } else {
-            None
-        }
-    }
     /// get v time base used to check time and compare to sync
     pub fn video_time_base(&self) -> &Rational {
         &self.video_time_base
@@ -1128,8 +1115,8 @@ impl Drop for TinyDecoder {
             info!("demux and decode thread exit gracefully");
             PlayerResult::Ok(())
         });
-
-        if let Some(ctx) = &mut self.resampler_ctx {
+        let mut resampler = self.resampler.blocking_write();
+        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
             unsafe {
                 swr_free(&mut ctx.0);
             }
@@ -1169,4 +1156,5 @@ struct AudioDecodeContext {
     pub decode_exit_flag: Arc<AtomicBool>,
     pub demux_thread_notify: Arc<Notify>,
     pub audio_decode_thread_notify: Arc<Notify>,
+    pub resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
 }

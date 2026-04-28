@@ -30,7 +30,7 @@ use image::{DynamicImage, EncodableLayout, RgbaImage};
 use rodio::Player;
 use tokio::{
     runtime::{Handle, Runtime},
-    sync::RwLock,
+    sync::{Notify, RwLock},
 };
 use tracing::{info, warn};
 
@@ -83,7 +83,7 @@ pub struct AppUI {
     garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
     audio_player: crate::audio_play::AudioPlayer,
-    _present_data_manager: PresentDataManager,
+    _present_data_manager: Arc<RwLock<PresentDataManager>>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     _main_color_image: Arc<RwLock<ColorImage>>,
     _bg_dyn_img: Arc<DynamicImage>,
@@ -256,12 +256,20 @@ impl AppUI {
             cc.egui_ctx.clone(),
             hardware_config_flag.clone(),
         )?));
+        let audio_frame_cache_queue = flume::bounded(32);
+        let video_frame_cache_queue = flume::bounded(32);
+        let audio_decode_thread_notify=Arc::new(Notify::new());
+        let video_decode_thread_notify=Arc::new(Notify::new());
         let tiny_decoder = crate::decode::TinyDecoder::new(
             rt.clone(),
             media_source_flag.clone(),
             end_ts.clone(),
             hardware_config_flag.clone(),
             colorspace_converter.clone(),
+            audio_frame_cache_queue.clone(),
+            video_frame_cache_queue.clone(),
+            audio_decode_thread_notify.clone(),
+            video_decode_thread_notify.clone()
         )?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
@@ -285,9 +293,14 @@ impl AppUI {
             .runtime_handle(rt)
             .pause_flag(pause_flag.clone())
             .color_space_converter(colorspace_converter.clone())
+            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
+            .video_frame_receiver(video_frame_cache_queue.1.clone())
+            .audio_decode_thread_notify(audio_decode_thread_notify.clone())
+            .video_decode_thread_notify(video_decode_thread_notify.clone())
             .build()?;
-        let present_data_manager = PresentDataManager::new(data_manage_context);
-
+        let mut present_data_manager = PresentDataManager::new(data_manage_context);
+        present_data_manager.start_present_tasks();
+        let present_data_manager=Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture = Arc::new(RwLock::new(None));
         let live_mode = Arc::new(AtomicBool::new(false));
@@ -306,6 +319,7 @@ impl AppUI {
             .video_texture(video_texture.clone())
             .video_texture_id(video_texture_id.clone())
             .live_mode(live_mode.clone())
+            .present_data_manager(present_data_manager.clone())
             .build()?;
         let internet_list_window_flag = Arc::new(AtomicBool::new(false));
         let internet_resource_ui = InternetResourceUI::new(
@@ -1117,7 +1131,14 @@ impl AppUI {
             context
                 .current_video_timestamp
                 .store(0, std::sync::atomic::Ordering::Release);
+            {
+            let mut present_data_manager=context.present_data_manager.write().await;
+            if let Err(e)=present_data_manager.stop_present_tasks(){
+                warn!("{:?}",e);
+            }
+            
             let mut tiny_decoder = context.tiny_decoder.write().await;
+            
             if let Err(e) = tiny_decoder.set_file_path_and_init_par(&context.path).await {
                 warn!("{}", e);
             }
@@ -1147,6 +1168,8 @@ impl AppUI {
                 warn!("{}", e);
             }
             info!("reset video texture success");
+            present_data_manager.start_present_tasks();
+            }
         });
 
         Ok(())
@@ -1431,4 +1454,5 @@ pub struct ChangeInputContext {
     video_texture: Arc<RwLock<Texture>>,
     pub runtime_handle: Handle,
     pub live_mode: Arc<AtomicBool>,
+    present_data_manager:Arc<RwLock<PresentDataManager>>
 }
