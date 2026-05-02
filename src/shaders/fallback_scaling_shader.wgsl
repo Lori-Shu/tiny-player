@@ -53,8 +53,8 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
     let y = textureSample(t_y, s_sampler, tex_coords).r;
     let u = textureSample(t_u, s_sampler, tex_coords).r;
     let v = textureSample(t_v, s_sampler, tex_coords).r;
-
-    let yuv = vec3<f32>(y, u, v) + cs_params.yuv_offset;
+    let y_norm = (y - 0.063) * 1.164;
+    let yuv = vec3<f32>(y_norm, u, v) + cs_params.yuv_offset;
     let rgb = cs_params.yuv2rgb_matrix * yuv; 
 
     return vec4<f32>(rgb, 1.0);

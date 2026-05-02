@@ -41,7 +41,11 @@ impl AudioPlayer {
         sink: &Player,
         audio_frame: ffmpeg_the_third::frame::Audio,
     ) -> PlayerResult<()> {
-        let audio_data = bytemuck::cast_slice::<u8, f32>(&audio_frame.data(0)[0..(size_of::<f32>()*audio_frame.samples() * audio_frame.ch_layout().channels() as usize)]);
+        let audio_data = bytemuck::cast_slice::<u8, f32>(
+            &audio_frame.data(0)[0..(size_of::<f32>()
+                * audio_frame.samples()
+                * audio_frame.ch_layout().channels() as usize)],
+        );
         let source = rodio::buffer::SamplesBuffer::new(
             NonZero::new(audio_frame.ch_layout().channels() as u16)
                 .context("construct nonzero err")?,

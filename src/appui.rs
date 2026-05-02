@@ -258,8 +258,8 @@ impl AppUI {
         )?));
         let audio_frame_cache_queue = flume::bounded(32);
         let video_frame_cache_queue = flume::bounded(32);
-        let audio_decode_thread_notify=Arc::new(Notify::new());
-        let video_decode_thread_notify=Arc::new(Notify::new());
+        let audio_decode_thread_notify = Arc::new(Notify::new());
+        let video_decode_thread_notify = Arc::new(Notify::new());
         let tiny_decoder = crate::decode::TinyDecoder::new(
             rt.clone(),
             media_source_flag.clone(),
@@ -269,7 +269,7 @@ impl AppUI {
             audio_frame_cache_queue.clone(),
             video_frame_cache_queue.clone(),
             audio_decode_thread_notify.clone(),
-            video_decode_thread_notify.clone()
+            video_decode_thread_notify.clone(),
         )?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
@@ -300,7 +300,7 @@ impl AppUI {
             .build()?;
         let mut present_data_manager = PresentDataManager::new(data_manage_context);
         present_data_manager.start_present_tasks();
-        let present_data_manager=Arc::new(RwLock::new(present_data_manager));
+        let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture = Arc::new(RwLock::new(None));
         let live_mode = Arc::new(AtomicBool::new(false));
@@ -1132,43 +1132,43 @@ impl AppUI {
                 .current_video_timestamp
                 .store(0, std::sync::atomic::Ordering::Release);
             {
-            let mut present_data_manager=context.present_data_manager.write().await;
-            if let Err(e)=present_data_manager.stop_present_tasks(){
-                warn!("{:?}",e);
-            }
-            
-            let mut tiny_decoder = context.tiny_decoder.write().await;
-            
-            if let Err(e) = tiny_decoder.set_file_path_and_init_par(&context.path).await {
-                warn!("{}", e);
-            }
-            context.audio_player.clear();
-            let video_rect = tiny_decoder.video_frame_rect();
-            Self::reset_main_color_img_to_bg(
-                context.bg_dyn_img,
-                video_rect,
-                context.main_color_image.clone(),
-            )
-            .await;
-            Self::reset_main_color_img_to_cover_pic(
-                &tiny_decoder,
-                context.main_color_image.clone(),
-            )
-            .await;
+                let mut present_data_manager = context.present_data_manager.write().await;
+                if let Err(e) = present_data_manager.stop_present_tasks() {
+                    warn!("{:?}", e);
+                }
 
-            if let Err(e) = Self::update_video_texture(
-                context.main_color_image,
-                context.video_texture_id,
-                context.video_texture,
-                context.garbage_texture,
-                context.render_state,
-            )
-            .await
-            {
-                warn!("{}", e);
-            }
-            info!("reset video texture success");
-            present_data_manager.start_present_tasks();
+                let mut tiny_decoder = context.tiny_decoder.write().await;
+
+                if let Err(e) = tiny_decoder.set_file_path_and_init_par(&context.path).await {
+                    warn!("{}", e);
+                }
+                context.audio_player.clear();
+                let video_rect = tiny_decoder.video_frame_rect();
+                Self::reset_main_color_img_to_bg(
+                    context.bg_dyn_img,
+                    video_rect,
+                    context.main_color_image.clone(),
+                )
+                .await;
+                Self::reset_main_color_img_to_cover_pic(
+                    &tiny_decoder,
+                    context.main_color_image.clone(),
+                )
+                .await;
+
+                if let Err(e) = Self::update_video_texture(
+                    context.main_color_image,
+                    context.video_texture_id,
+                    context.video_texture,
+                    context.garbage_texture,
+                    context.render_state,
+                )
+                .await
+                {
+                    warn!("{}", e);
+                }
+                info!("reset video texture success");
+                present_data_manager.start_present_tasks();
             }
         });
 
@@ -1454,5 +1454,5 @@ pub struct ChangeInputContext {
     video_texture: Arc<RwLock<Texture>>,
     pub runtime_handle: Handle,
     pub live_mode: Arc<AtomicBool>,
-    present_data_manager:Arc<RwLock<PresentDataManager>>
+    present_data_manager: Arc<RwLock<PresentDataManager>>,
 }
