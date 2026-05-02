@@ -19,7 +19,7 @@ use eframe::{
 };
 
 use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
-use glam::{Mat3, Vec3};
+use glam::{Mat4, Vec4};
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -295,24 +295,27 @@ impl ColorSpaceConverter {
         })
     }
     fn get_bt601_params() -> ColorSpaceUniform {
-        let m = glam::Mat3::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, -0.391, 2.018, 1.596, -0.813, 0.0,
+        let m = glam::Mat4::from_cols_array(&[
+            1.164, 1.164, 1.164, 0.0, 0.0, -0.391, 2.018, 0.0, 1.596, -0.813, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0,
         ]);
-        let o = glam::Vec3::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0);
+        let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
         ColorSpaceUniform::new(m, o)
     }
     fn get_bt709_params() -> ColorSpaceUniform {
-        let m = glam::Mat3::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, -0.213, 2.112, 1.793, -0.533, 0.0,
+        let m = glam::Mat4::from_cols_array(&[
+            1.164, 1.164, 1.164, 0.0, 0.0, -0.213, 2.112, 0.0, 1.793, -0.533, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0,
         ]);
-        let o = glam::Vec3::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0);
+        let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
         ColorSpaceUniform::new(m, o)
     }
     fn get_bt2020_params() -> ColorSpaceUniform {
-        let m = glam::Mat3::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, -0.187, 2.142, 1.675, -0.650, 0.0,
+        let m = glam::Mat4::from_cols_array(&[
+            1.164, 1.164, 1.164, 0.0, 0.0, -0.187, 2.142, 0.0, 1.675, -0.650, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0,
         ]);
-        let o = glam::Vec3::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0);
+        let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
         ColorSpaceUniform::new(m, o)
     }
     pub fn set_params_for_space(
@@ -813,21 +816,15 @@ impl ColorSpaceConverter {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ColorSpaceUniform {
-    matrix: [[f32; 4]; 3],
-    offset: [f32; 3],
-    _padding: f32,
+    matrix: [[f32; 4]; 4],
+    offset: [f32; 4],
 }
 
 impl ColorSpaceUniform {
-    fn new(matrix: Mat3, offset: Vec3) -> Self {
+    fn new(matrix: Mat4, offset: Vec4) -> Self {
         Self {
-            matrix: [
-                [matrix.x_axis[0], matrix.x_axis[1], matrix.x_axis[2], 0.0],
-                [matrix.y_axis[0], matrix.y_axis[1], matrix.y_axis[2], 0.0],
-                [matrix.z_axis[0], matrix.z_axis[1], matrix.z_axis[2], 0.0],
-            ],
+            matrix: matrix.to_cols_array_2d(),
             offset: offset.into(),
-            _padding: 0.0,
         }
     }
 }

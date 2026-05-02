@@ -15,25 +15,32 @@ use ffmpeg_the_third::{
 };
 use flume::Receiver;
 use rodio::Player;
-use tokio::{runtime::Handle, sync::{Notify, RwLock}, task::JoinHandle, time::sleep};
+use tokio::{
+    runtime::Handle,
+    sync::{Notify, RwLock},
+    task::JoinHandle,
+    time::sleep,
+};
 use tracing::warn;
 
 use crate::{
-    PlayerResult, audio_play::AudioPlayer, decode::{MainStream, TinyDecoder}, gpu_post_process::ColorSpaceConverter
+    PlayerResult,
+    audio_play::AudioPlayer,
+    decode::{MainStream, TinyDecoder},
+    gpu_post_process::ColorSpaceConverter,
 };
 
 pub struct PresentDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
-    data_manage_context: DataManageContext
+    data_manage_context: DataManageContext,
 }
 impl PresentDataManager {
     pub fn new(data_manage_context: DataManageContext) -> Self {
-        
         Self {
-            audio_thread_handle:None,
-            video_thread_handle:None,
-            data_manage_context
+            audio_thread_handle: None,
+            video_thread_handle: None,
+            data_manage_context,
         }
     }
     async fn play_audio_task(data_manage_context: DataManageContext) {
@@ -52,7 +59,7 @@ impl PresentDataManager {
                     tiny_decoder.main_stream().clone()
                 };
                 if let MainStream::Audio = &mainstream {
-                    if data_manage_context.audio_frame_receiver.len()<5{
+                    if data_manage_context.audio_frame_receiver.len() < 5 {
                         data_manage_context.audio_decode_thread_notify.notify_one();
                     }
                     if let Ok(audio_frame) =
@@ -105,7 +112,7 @@ impl PresentDataManager {
                         *tiny_decoder.video_time_base(),
                     )
                 };
-                
+
                 if PresentDataManager::should_video_catch_audio(
                     main_stream.clone(),
                     audio_time_base,
@@ -116,7 +123,7 @@ impl PresentDataManager {
                 .await
                 {
                     let ins_now = Instant::now();
-                    if data_manage_context.video_frame_receiver.len()<10{
+                    if data_manage_context.video_frame_receiver.len() < 10 {
                         data_manage_context.video_decode_thread_notify.notify_one();
                     }
                     let frame_result = match &main_stream {
@@ -183,7 +190,7 @@ impl PresentDataManager {
                     if let Ok(frame) = frame_result {
                         let mut color_space_converter =
                             data_manage_context.color_space_converter.write().await;
-                        
+
                         if let Err(e) = color_space_converter
                             .render_video(data_manage_context.video_texture.clone(), frame)
                             .await
@@ -246,18 +253,26 @@ impl PresentDataManager {
 
         false
     }
-    pub fn stop_present_tasks(&self)->PlayerResult<()>{
-        let audio_task_join_handle = self.audio_thread_handle.as_ref().context("no audio play task running")?;
+    pub fn stop_present_tasks(&self) -> PlayerResult<()> {
+        let audio_task_join_handle = self
+            .audio_thread_handle
+            .as_ref()
+            .context("no audio play task running")?;
         audio_task_join_handle.abort();
-        let video_task_join_handle = self.video_thread_handle.as_ref().context("no video play task running")?;
+        let video_task_join_handle = self
+            .video_thread_handle
+            .as_ref()
+            .context("no video play task running")?;
         video_task_join_handle.abort();
         Ok(())
     }
-    pub fn start_present_tasks(&mut self){
+    pub fn start_present_tasks(&mut self) {
         let runtime_handle = self.data_manage_context.runtime_handle.clone();
-        self.audio_thread_handle=Some(runtime_handle.spawn(Self::play_audio_task(self.data_manage_context.clone())));
-        
-        self.video_thread_handle=Some(runtime_handle.spawn(Self::play_video_task(self.data_manage_context.clone())));
+        self.audio_thread_handle =
+            Some(runtime_handle.spawn(Self::play_audio_task(self.data_manage_context.clone())));
+
+        self.video_thread_handle =
+            Some(runtime_handle.spawn(Self::play_video_task(self.data_manage_context.clone())));
     }
 }
 #[derive(Builder, Clone)]
@@ -274,6 +289,6 @@ pub struct DataManageContext {
     color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
     audio_frame_receiver: Receiver<Audio>,
     video_frame_receiver: Receiver<Video>,
-    audio_decode_thread_notify:Arc<Notify>,
-    video_decode_thread_notify:Arc<Notify>,
+    audio_decode_thread_notify: Arc<Notify>,
+    video_decode_thread_notify: Arc<Notify>,
 }

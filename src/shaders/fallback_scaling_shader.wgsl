@@ -34,9 +34,8 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
     return out;
 }
 struct ColorSpaceUniform {
-    yuv2rgb_matrix: mat3x3<f32>,               
-    yuv_offset: vec3<f32>,  
-    _padding: f32,     
+    yuv2rgb_matrix: mat4x4<f32>,               
+    yuv_offset: vec4<f32>,    
 }
 
 
@@ -53,9 +52,16 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
     let y = textureSample(t_y, s_sampler, tex_coords).r;
     let u = textureSample(t_u, s_sampler, tex_coords).r;
     let v = textureSample(t_v, s_sampler, tex_coords).r;
+ 
+    let yuv_input = vec3<f32>(y, u, v);
+    
 
-    let yuv = vec3<f32>(y, u, v) + cs_params.yuv_offset;
-    let rgb = cs_params.yuv2rgb_matrix * yuv; 
+    let yuv_adjusted = yuv_input + cs_params.yuv_offset.xyz;
+    
+    
+    let rgb = (cs_params.yuv2rgb_matrix * vec4<f32>(yuv_adjusted, 1.0)).rgb;
+
+
 
     return vec4<f32>(rgb, 1.0);
 }
