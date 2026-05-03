@@ -294,29 +294,49 @@ impl ColorSpaceConverter {
             egui_ctx,
         })
     }
-    fn get_bt601_params() -> ColorSpaceUniform {
+    fn get_params_standard(kr: f32, kb: f32) -> ColorSpaceUniform {
+        let kg = 1.0 - kr - kb;
+
+        let y_scale = 255.0 / 219.0;
+        let cb_scale = (255.0 / 224.0) * (1.0 - kb);
+        let cr_scale = (255.0 / 224.0) * (1.0 - kr);
+
         let m = glam::Mat4::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, 0.0, -0.391, 2.018, 0.0, 1.596, -0.813, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0,
+            y_scale,
+            y_scale,
+            y_scale,
+            0.0,
+            0.0,
+            -(kb / kg) * cb_scale * 2.0,
+            cb_scale * 2.0,
+            0.0,
+            cr_scale * 2.0,
+            -(kr / kg) * cr_scale * 2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ]);
+
         let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
         ColorSpaceUniform::new(m, o)
+    }
+    fn get_bt601_params() -> ColorSpaceUniform {
+        let kr = 0.299f32;
+        let kb = 0.114f32;
+        Self::get_params_standard(kr, kb)
     }
     fn get_bt709_params() -> ColorSpaceUniform {
-        let m = glam::Mat4::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, 0.0, -0.213, 2.112, 0.0, 1.793, -0.533, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0,
-        ]);
-        let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
-        ColorSpaceUniform::new(m, o)
+        let kr = 0.2126f32;
+        let kb = 0.0722f32;
+        Self::get_params_standard(kr, kb)
     }
     fn get_bt2020_params() -> ColorSpaceUniform {
-        let m = glam::Mat4::from_cols_array(&[
-            1.164, 1.164, 1.164, 0.0, 0.0, -0.187, 2.142, 0.0, 1.675, -0.650, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0,
-        ]);
-        let o = Vec4::new(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0, 0.0);
-        ColorSpaceUniform::new(m, o)
+        let kr = 0.2627f32;
+        let kb = 0.0593f32;
+        Self::get_params_standard(kr, kb)
     }
     pub fn set_params_for_space(
         &mut self,
