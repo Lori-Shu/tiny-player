@@ -347,7 +347,7 @@ impl ColorSpaceConverter {
         let color_space_uniform = match color_space {
             Space::BT709 => self.bt709_uniform,
             Space::SMPTE170M | Space::BT470BG => self.bt601_uniform,
-            Space::BT2020NCL | Space::BT2020CL => self.bt2020_uniform,
+            Space::BT2020NCL => self.bt2020_uniform,
             _ => self.bt709_uniform,
         };
         self.render_state.queue.write_buffer(
