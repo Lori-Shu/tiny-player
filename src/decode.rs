@@ -76,13 +76,13 @@ pub struct TinyDecoder {
     video_stream_index: usize,
     audio_stream_index: usize,
     cover_stream_index: usize,
-    main_stream: MainStream,
-    video_time_base: Rational,
-    audio_time_base: Rational,
-    video_frame_rect: [u32; 2],
+    pub main_stream: MainStream,
+    pub video_time_base: Rational,
+    pub audio_time_base: Rational,
+    pub video_frame_rect: [u32; 2],
     format_duration: i64,
     end_timestamp: Arc<AtomicI64>,
-    end_time_formatted_string: String,
+    pub end_time_formatted_string: String,
     format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
     video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
     audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
@@ -109,7 +109,7 @@ pub struct TinyDecoder {
     video_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     audio_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     hardware_config_flag: Arc<AtomicBool>,
-    cover_pic_data: Arc<RwLock<Option<Vec<u8>>>>,
+    pub cover_pic_data: Arc<RwLock<Option<Vec<u8>>>>,
     runtime_handle: Handle,
     demux_thread_notify: Arc<Notify>,
     audio_decode_thread_notify: Arc<Notify>,
@@ -875,23 +875,6 @@ impl TinyDecoder {
             buf.into_boxed_slice()
         }
     }
-
-    /// get v time base used to check time and compare to sync
-    pub fn video_time_base(&self) -> &Rational {
-        &self.video_time_base
-    }
-    /// get a time base used to check time and compare to sync
-    pub fn audio_time_base(&self) -> &Rational {
-        &self.audio_time_base
-    }
-    /// get the calculated end time str
-    pub fn end_time_formatted_string(&self) -> &String {
-        &self.end_time_formatted_string
-    }
-    /// video_frame_rect to config the main colorimage and texture size
-    pub fn video_frame_rect(&self) -> &[u32; 2] {
-        &self.video_frame_rect
-    }
     /// seek the input to a selected timestamp
     /// use the ffi function to enable seek all the frames
     /// the ffmpeg_the_third::ffi::AVSEEK_FLAG_ANY flag makes sure
@@ -956,18 +939,7 @@ impl TinyDecoder {
             info!("end_time_err");
         }
     }
-    /// give an Arc of cover_pic_data out
-    pub fn cover_pic_data(&self) -> Arc<RwLock<Option<Vec<u8>>>> {
-        self.cover_pic_data.clone()
-    }
-    /// read the mainstream
-    pub fn main_stream(&self) -> &MainStream {
-        &self.main_stream
-    }
-    /// read video stream index
-    pub fn _video_stream_idx(&self) -> usize {
-        self.video_stream_index
-    }
+
     /// stop demux and decode
     async fn stop_demux_and_decode(&mut self) {
         self.demux_exit_flag

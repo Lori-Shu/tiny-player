@@ -406,12 +406,12 @@ impl AppUI {
                     .current_main_stream_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
                 let sec_num = {
-                    if let MainStream::Audio = tiny_decoder.main_stream() {
-                        let audio_time_base = tiny_decoder.audio_time_base();
+                    if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                        let audio_time_base = tiny_decoder.audio_time_base;
                         play_ts * audio_time_base.numerator() as i64
                             / audio_time_base.denominator() as i64
                     } else {
-                        let v_time_base = tiny_decoder.video_time_base();
+                        let v_time_base = tiny_decoder.video_time_base;
 
                         play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
                     }
@@ -428,7 +428,7 @@ impl AppUI {
                         {
                             if let Ok(mut now_str) = cur_time.format(&formatter) {
                                 now_str.push('|');
-                                now_str.push_str(tiny_decoder.end_time_formatted_string());
+                                now_str.push_str(&tiny_decoder.end_time_formatted_string);
                                 self.time_text = now_str;
                                 self.play_time = cur_time;
                             }
@@ -1041,10 +1041,10 @@ impl AppUI {
                 .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
             let main_stream_time_base = {
-                if let MainStream::Audio = tiny_decoder.main_stream() {
-                    tiny_decoder.audio_time_base()
+                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                    tiny_decoder.audio_time_base
                 } else {
-                    tiny_decoder.video_time_base()
+                    tiny_decoder.video_time_base
                 }
             };
             let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
@@ -1095,11 +1095,11 @@ impl AppUI {
         tiny_decoder: &TinyDecoder,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
-        let cover_pic_data = tiny_decoder.cover_pic_data();
+        let cover_pic_data = tiny_decoder.cover_pic_data.clone();
         let cover_data = cover_pic_data.read().await;
         if let Some(data_vec) = &*cover_data {
             if let Ok(img) = image::load_from_memory(data_vec) {
-                let video_frame_rect = tiny_decoder.video_frame_rect();
+                let video_frame_rect = tiny_decoder.video_frame_rect;
                 let rgba8_img = if video_frame_rect[0] != 0 {
                     img.resize(
                         video_frame_rect[0],
@@ -1143,10 +1143,10 @@ impl AppUI {
                     warn!("{}", e);
                 }
                 context.audio_player.clear();
-                let video_rect = tiny_decoder.video_frame_rect();
+                let video_rect = tiny_decoder.video_frame_rect;
                 Self::reset_main_color_img_to_bg(
                     context.bg_dyn_img,
-                    video_rect,
+                    &video_rect,
                     context.main_color_image.clone(),
                 )
                 .await;
