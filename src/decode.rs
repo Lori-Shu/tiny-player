@@ -175,7 +175,7 @@ impl TinyDecoder {
     }
     /// reset all fields to the initial state
     /// this is to make the decoder ready for fresh input
-    async fn reset_tiny_decoder_states(&mut self) {
+    async fn reset_states(&mut self) {
         self.audio_stream_index = usize::MAX;
         self.video_stream_index = usize::MAX;
         self.cover_stream_index = usize::MAX;
@@ -219,11 +219,11 @@ impl TinyDecoder {
     }
     /// called when user selected a file path to play
     /// init all the details from the file selected
-    pub async fn set_file_path_and_init_par(&mut self, path: &Path) -> PlayerResult<()> {
+    pub async fn reset_input(&mut self, path: &Path) -> PlayerResult<()> {
         info!("ffmpeg version{}", ffmpeg_the_third::format::version());
         if self.demux_task_handle.is_some() {
-            self.stop_demux_and_decode().await;
-            self.reset_tiny_decoder_states().await;
+            self.stop_background_tasks().await;
+            self.reset_states().await;
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
         info!("input construct finished");
@@ -301,7 +301,7 @@ impl TinyDecoder {
         };
         self.end_timestamp
             .store(adur_ts, std::sync::atomic::Ordering::Relaxed);
-        self.compute_and_set_end_time_str(adur_ts);
+        self.compute_end_time_str(adur_ts);
 
         if let Some(audio_stream) = audio_stream {
             let audio_decoder_ctx =
@@ -913,7 +913,7 @@ impl TinyDecoder {
         info!("seek finished!");
     }
     /// use the file detail to compute the video duration and make str to inform the user
-    fn compute_and_set_end_time_str(&mut self, end_ts: i64) {
+    fn compute_end_time_str(&mut self, end_ts: i64) {
         let sec_num = {
             if let MainStream::Audio = self.main_stream {
                 end_ts * self.audio_time_base.numerator() as i64
@@ -941,7 +941,7 @@ impl TinyDecoder {
     }
 
     /// stop demux and decode
-    async fn stop_demux_and_decode(&mut self) {
+    async fn stop_background_tasks(&mut self) {
         self.demux_exit_flag
             .store(true, std::sync::atomic::Ordering::Release);
         self.demux_thread_notify.notify_one();
