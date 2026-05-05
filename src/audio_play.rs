@@ -8,6 +8,7 @@ use rodio::{
 
 use crate::PlayerResult;
 pub const AUDIO_SAMPLE_RATE: u32 = 48000;
+pub const AUDIO_CHANNELS: u32 = 2;
 pub struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     sink: Arc<Player>,
@@ -15,8 +16,8 @@ pub struct AudioPlayer {
 }
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
-        let channel_count = NonZero::new(2).context("construct nonzero err")?;
-        let sample_rate = SampleRate::new(48000).context("construct SampleRate err")?;
+        let channel_count = NonZero::new(AUDIO_CHANNELS as u16).context("construct nonzero err")?;
+        let sample_rate = SampleRate::new(AUDIO_SAMPLE_RATE).context("construct SampleRate err")?;
         let host = default_host();
 
         let device = host

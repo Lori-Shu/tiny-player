@@ -56,7 +56,7 @@ impl PresentDataManager {
             {
                 let mainstream = {
                     let tiny_decoder = data_manage_context.tiny_decoder.read().await;
-                    tiny_decoder.main_stream().clone()
+                    tiny_decoder.main_stream.clone()
                 };
                 if let MainStream::Audio = &mainstream {
                     if data_manage_context.audio_frame_receiver.len() < 5 {
@@ -107,9 +107,9 @@ impl PresentDataManager {
                 let (main_stream, audio_time_base, video_time_base) = {
                     let tiny_decoder = data_manage_context.tiny_decoder.read().await;
                     (
-                        tiny_decoder.main_stream().clone(),
-                        *tiny_decoder.audio_time_base(),
-                        *tiny_decoder.video_time_base(),
+                        tiny_decoder.main_stream.clone(),
+                        tiny_decoder.audio_time_base,
+                        tiny_decoder.video_time_base,
                     )
                 };
 
