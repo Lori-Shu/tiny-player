@@ -28,6 +28,7 @@ use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
 use rodio::Player;
+use time::format_description::{self, OwnedFormatItem};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::{Notify, RwLock},
@@ -106,6 +107,7 @@ pub struct AppUI {
     internet_resource_ui: InternetResourceUI,
     change_input_context: ChangeInputContext,
     playlist_ui: PlayListUI,
+    time_formatter: OwnedFormatItem,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -172,7 +174,8 @@ impl eframe::App for AppUI {
                 self.paint_playpause_btn(ui);
 
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    self.update_time_and_time_text();
+                    self.update_time();
+                    self.update_time_text();
                     self.paint_control_area(ui);
                     // self.paint_subtitle(ui, ctx);
                 });
@@ -281,7 +284,7 @@ impl AppUI {
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
 
         let (video_texture_id, video_texture) =
-            Self::new_and_register_texture(main_color_image.clone(), wgpu_render_state.clone());
+            Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
         let data_manage_context = DataManageContextBuilder::default()
             .tiny_decoder(tiny_decoder.clone())
             // .used_model(used_model.clone())
@@ -333,6 +336,7 @@ impl AppUI {
             async_rt.handle().clone(),
             playlist_window_flag.clone(),
         );
+        let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
         Ok(Self {
             garbage_video_texture,
             // subtitle_text_receiver: subtitle_channel.1,
@@ -373,6 +377,7 @@ impl AppUI {
             internet_resource_ui,
             change_input_context,
             playlist_ui,
+            time_formatter,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -395,7 +400,7 @@ impl AppUI {
             );
         }
     }
-    fn update_time_and_time_text(&mut self) {
+    fn update_time(&mut self) {
         if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
             if self
                 .ui_flags
@@ -422,25 +427,25 @@ impl AppUI {
                 let hour_num = min_num / 60;
                 let hour = hour_num as u8;
                 if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                    if !cur_time.eq(&self.play_time) {
-                        if let Ok(formatter) =
-                            time::format_description::parse("[hour]:[minute]:[second]")
-                        {
-                            if let Ok(mut now_str) = cur_time.format(&formatter) {
-                                now_str.push('|');
-                                now_str.push_str(&tiny_decoder.end_time_formatted_string);
-                                self.time_text = now_str;
-                                self.play_time = cur_time;
-                            }
-                        }
+                    if cur_time != self.play_time {
+                        self.play_time = cur_time;
                     }
                 } else {
-                    warn!("update time str err!");
+                    warn!("update time err!");
                 }
             }
         }
     }
-    fn new_and_register_texture(
+    fn update_time_text(&mut self) {
+        if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
+            if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
+                now_str.push('|');
+                now_str.push_str(&tiny_decoder.end_time_formatted_string);
+                self.time_text = now_str;
+            }
+        }
+    }
+    fn alloc_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         render_state: Arc<RenderState>,
     ) -> (Arc<RwLock<TextureId>>, Arc<RwLock<Texture>>) {
@@ -1139,7 +1144,7 @@ impl AppUI {
 
                 let mut tiny_decoder = context.tiny_decoder.write().await;
 
-                if let Err(e) = tiny_decoder.set_file_path_and_init_par(&context.path).await {
+                if let Err(e) = tiny_decoder.reset_input(&context.path).await {
                     warn!("{}", e);
                 }
                 context.audio_player.clear();
