@@ -15,8 +15,8 @@ use ffmpeg_the_third::{
     ffi::{
         AV_CHANNEL_LAYOUT_STEREO, AV_NOPTS_VALUE, AVCodecContext, AVHWDeviceType, AVPixelFormat,
         AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
-        av_hwframe_transfer_data, av_image_copy_to_buffer, av_image_get_buffer_size,
-        avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init,
+        av_hwframe_transfer_data, avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame,
+        swr_free, swr_init,
     },
     format::{Sample, sample::Type, stream::Disposition},
     frame::{Audio, Video},
@@ -183,15 +183,7 @@ impl TinyDecoder {
         *self.audio_decoder.write().await = None;
 
         self.audio_time_base = Rational::new(1, 1);
-        {
-            let mut resampler = self.resampler.write().await;
-            if let Ok(ctx) = resampler.as_mut().context("no resampler") {
-                unsafe {
-                    swr_free(&mut ctx.0);
-                }
-            }
-            *resampler = None;
-        }
+        self.free_swr_ctx();
         self.cover_pic_data = Arc::new(RwLock::new(None));
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
@@ -361,28 +353,7 @@ impl TinyDecoder {
                     audio_decoder.ch_layout().channels(),
                 ));
             }
-            let resampler = unsafe {
-                let mut swr_ctx = null_mut();
-                let r = swr_alloc_set_opts2(
-                    &mut swr_ctx,
-                    &AV_CHANNEL_LAYOUT_STEREO,
-                    ffmpeg_the_third::ffi::AVSampleFormat::FLT,
-                    AUDIO_SAMPLE_RATE as i32,
-                    audio_decoder.ch_layout().as_ptr(),
-                    audio_format,
-                    audio_decoder.rate() as i32,
-                    0,
-                    null_mut(),
-                );
-                if r < 0 {
-                    info!("swr ctx create err");
-                }
-                let r = swr_init(swr_ctx);
-                if r < 0 {
-                    info!("swr init err");
-                }
-                ManualProtectedResampler(swr_ctx)
-            };
+            let resampler = self.alloc_swr_ctx(&audio_decoder, audio_format);
             let mut resampler_guard = self.resampler.write().await;
             *resampler_guard = Some(resampler);
             {
@@ -849,32 +820,6 @@ impl TinyDecoder {
         }
     }
 
-    pub async fn _convert_frame_data_to_no_padding_layout(res: &mut Video) -> Box<[u8]> {
-        unsafe {
-            let buf_size = av_image_get_buffer_size(
-                AVPixelFormat::RGBA,
-                res.width() as i32,
-                res.height() as i32,
-                1,
-            );
-            let mut buf = vec![0_u8; buf_size as usize];
-            let frame = res.as_mut_ptr();
-
-            if 0 > av_image_copy_to_buffer(
-                buf.as_mut_ptr(),
-                buf_size,
-                (*frame).data.as_ptr() as *const *const u8,
-                (*frame).linesize.as_ptr(),
-                AVPixelFormat::from(res.format()),
-                (*frame).width,
-                (*frame).height,
-                1,
-            ) {
-                warn!("av_image_copy_to_buffer err");
-            }
-            buf.into_boxed_slice()
-        }
-    }
     /// seek the input to a selected timestamp
     /// use the ffi function to enable seek all the frames
     /// the ffmpeg_the_third::ffi::AVSEEK_FLAG_ANY flag makes sure
@@ -1038,6 +983,42 @@ impl TinyDecoder {
             }
         }
     }
+    fn alloc_swr_ctx(
+        &self,
+        audio_decoder: &ffmpeg_the_third::decoder::Audio,
+        audio_format: AVSampleFormat,
+    ) -> ManualProtectedResampler {
+        unsafe {
+            let mut swr_ctx = null_mut();
+            let r = swr_alloc_set_opts2(
+                &mut swr_ctx,
+                &AV_CHANNEL_LAYOUT_STEREO,
+                ffmpeg_the_third::ffi::AVSampleFormat::FLT,
+                AUDIO_SAMPLE_RATE as i32,
+                audio_decoder.ch_layout().as_ptr(),
+                audio_format,
+                audio_decoder.rate() as i32,
+                0,
+                null_mut(),
+            );
+            if r < 0 {
+                info!("swr ctx create err");
+            }
+            let r = swr_init(swr_ctx);
+            if r < 0 {
+                info!("swr init err");
+            }
+            ManualProtectedResampler(swr_ctx)
+        }
+    }
+    fn free_swr_ctx(&self) {
+        let mut resampler = self.resampler.blocking_write();
+        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
+            unsafe {
+                swr_free(&mut ctx.0);
+            }
+        }
+    }
 }
 unsafe extern "C" fn get_format_callback(
     _ctx: *mut AVCodecContext,
@@ -1087,12 +1068,7 @@ impl Drop for TinyDecoder {
             info!("demux and decode thread exit gracefully");
             PlayerResult::Ok(())
         });
-        let mut resampler = self.resampler.blocking_write();
-        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
-            unsafe {
-                swr_free(&mut ctx.0);
-            }
-        }
+        self.free_swr_ctx();
     }
 }
 #[derive(Builder)]
