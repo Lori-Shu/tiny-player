@@ -183,7 +183,7 @@ impl TinyDecoder {
         *self.audio_decoder.write().await = None;
 
         self.audio_time_base = Rational::new(1, 1);
-        self.free_swr_ctx();
+        self.free_swr_ctx_async().await;
         self.cover_pic_data = Arc::new(RwLock::new(None));
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
@@ -353,7 +353,7 @@ impl TinyDecoder {
                     audio_decoder.ch_layout().channels(),
                 ));
             }
-            let resampler = self.alloc_swr_ctx(&audio_decoder, audio_format);
+            let resampler = self.alloc_swr_ctx(&audio_decoder, audio_format)?;
             let mut resampler_guard = self.resampler.write().await;
             *resampler_guard = Some(resampler);
             {
@@ -987,7 +987,7 @@ impl TinyDecoder {
         &self,
         audio_decoder: &ffmpeg_the_third::decoder::Audio,
         audio_format: AVSampleFormat,
-    ) -> ManualProtectedResampler {
+    ) -> PlayerResult<ManualProtectedResampler> {
         unsafe {
             let mut swr_ctx = null_mut();
             let r = swr_alloc_set_opts2(
@@ -1002,17 +1002,25 @@ impl TinyDecoder {
                 null_mut(),
             );
             if r < 0 {
-                info!("swr ctx create err");
+                return Err(anyhow::Error::msg("swr ctx create err"));
             }
             let r = swr_init(swr_ctx);
             if r < 0 {
-                info!("swr init err");
+                return Err(anyhow::Error::msg("swr init err"));
             }
-            ManualProtectedResampler(swr_ctx)
+            Ok(ManualProtectedResampler(swr_ctx))
         }
     }
     fn free_swr_ctx(&self) {
         let mut resampler = self.resampler.blocking_write();
+        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
+            unsafe {
+                swr_free(&mut ctx.0);
+            }
+        }
+    }
+    async fn free_swr_ctx_async(&self) {
+        let mut resampler = self.resampler.write().await;
         if let Ok(ctx) = resampler.as_mut().context("no resampler") {
             unsafe {
                 swr_free(&mut ctx.0);
