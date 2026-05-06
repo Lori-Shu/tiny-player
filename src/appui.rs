@@ -25,6 +25,7 @@ use egui::{
 
 use egui_file::FileDialog;
 use ffmpeg_the_third::{format::stream::Disposition, media::Type};
+use flume::{Receiver, Sender, bounded};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
 use rodio::Player;
@@ -81,7 +82,7 @@ struct UiFlags {
 
 pub struct AppUI {
     video_texture_id: Arc<RwLock<TextureId>>,
-    garbage_video_texture: Arc<RwLock<Option<TextureId>>>,
+    garbage_video_texture_receiver: Receiver<TextureId>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
     audio_player: crate::audio_play::AudioPlayer,
     _present_data_manager: Arc<RwLock<PresentDataManager>>,
@@ -144,7 +145,7 @@ impl eframe::App for AppUI {
                                 {
                                     warn!("keep awake err");
                                 }
-                                if self.check_play_is_at_endtail(&tiny_decoder) {
+                                if self.check_play_end(&tiny_decoder) {
                                     self.ui_flags
                                         .pause_flag
                                         .store(true, std::sync::atomic::Ordering::Release);
@@ -305,14 +306,14 @@ impl AppUI {
         present_data_manager.start_present_tasks();
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
-        let garbage_video_texture = Arc::new(RwLock::new(None));
+        let garbage_video_texture_queue = bounded(8);
         let live_mode = Arc::new(AtomicBool::new(false));
         let change_input_context = ChangeInputContextBuilder::default()
             .audio_player(audio_player.sink())
             .bg_dyn_img(bg_dyn_img.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
-            .garbage_texture(garbage_video_texture.clone())
+            .garbage_texture_sender(garbage_video_texture_queue.0.clone())
             .main_color_image(main_color_image.clone())
             .path(PathBuf::new())
             .pause_flag(pause_flag.clone())
@@ -338,7 +339,7 @@ impl AppUI {
         );
         let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
         Ok(Self {
-            garbage_video_texture,
+            garbage_video_texture_receiver: garbage_video_texture_queue.1,
             // subtitle_text_receiver: subtitle_channel.1,
             video_texture_id,
             tiny_decoder,
@@ -518,7 +519,7 @@ impl AppUI {
         main_color_image: Arc<RwLock<ColorImage>>,
         texture_id: Arc<RwLock<TextureId>>,
         video_texture: Arc<RwLock<Texture>>,
-        garbage_texture_id: Arc<RwLock<Option<TextureId>>>,
+        garbage_texture_sender: Sender<TextureId>,
         render_state: Arc<RenderState>,
     ) -> PlayerResult<()> {
         let main_color_image = main_color_image.read().await;
@@ -579,11 +580,10 @@ impl AppUI {
         );
         {
             let mut texture_id = texture_id.write().await;
-            let old_id = *texture_id;
+            garbage_texture_sender.send_async(*texture_id).await?;
             *texture_id = new_texture_id;
-            let mut garbage_texture_id = garbage_texture_id.write().await;
-            *garbage_texture_id = Some(old_id);
         }
+
         {
             let mut video_texture = video_texture.write().await;
             *video_texture = new_video_texture;
@@ -591,13 +591,11 @@ impl AppUI {
         Ok(())
     }
     fn clear_garbage_texture(&self) {
-        if let Ok(mut garbage_texture) = self.garbage_video_texture.try_write() {
-            if let Some(garbage_texture) = garbage_texture.take() {
-                self.wgpu_render_state
-                    .renderer
-                    .write()
-                    .free_texture(&garbage_texture);
-            }
+        if let Ok(garbage_texture) = self.garbage_video_texture_receiver.try_recv() {
+            self.wgpu_render_state
+                .renderer
+                .write()
+                .free_texture(&garbage_texture);
         }
     }
 
@@ -1036,7 +1034,7 @@ impl AppUI {
             ui.add(date_time_button);
         });
     }
-    fn check_play_is_at_endtail(&self, tiny_decoder: &TinyDecoder) -> bool {
+    fn check_play_end(&self, tiny_decoder: &TinyDecoder) -> bool {
         if !self
             .ui_flags
             .live_mode
@@ -1165,7 +1163,7 @@ impl AppUI {
                     context.main_color_image,
                     context.video_texture_id,
                     context.video_texture,
-                    context.garbage_texture,
+                    context.garbage_texture_sender,
                     context.render_state,
                 )
                 .await
@@ -1455,7 +1453,7 @@ pub struct ChangeInputContext {
     video_texture_id: Arc<RwLock<TextureId>>,
     render_state: Arc<RenderState>,
     pub path: PathBuf,
-    garbage_texture: Arc<RwLock<Option<TextureId>>>,
+    garbage_texture_sender: Sender<TextureId>,
     video_texture: Arc<RwLock<Texture>>,
     pub runtime_handle: Handle,
     pub live_mode: Arc<AtomicBool>,
