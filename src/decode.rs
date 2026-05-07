@@ -1013,7 +1013,7 @@ impl TinyDecoder {
     }
     fn free_swr_ctx(&self) {
         let mut resampler = self.resampler.blocking_write();
-        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
+        if let Ok(mut ctx) = resampler.take().context("no resampler") {
             unsafe {
                 swr_free(&mut ctx.0);
             }
@@ -1021,7 +1021,7 @@ impl TinyDecoder {
     }
     async fn free_swr_ctx_async(&self) {
         let mut resampler = self.resampler.write().await;
-        if let Ok(ctx) = resampler.as_mut().context("no resampler") {
+        if let Ok(mut ctx) = resampler.take().context("no resampler") {
             unsafe {
                 swr_free(&mut ctx.0);
             }

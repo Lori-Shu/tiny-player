@@ -53,6 +53,7 @@ const FULLSCREEN_IMG: ImageSource = include_image!("../resources/fullscreen.png"
 const DEFAULT_BG_IMG: ImageSource = include_image!("../resources/background_2.png");
 const PLAY_LIST_IMG: ImageSource = include_image!("../resources/list-video.png");
 const SUBTITLE_IMG: ImageSource = include_image!("../resources/captions.png");
+const TV_IMG: ImageSource = include_image!("../resources/tv.png");
 pub const MAPLE_FONT: &[u8] = include_bytes!("../resources/fonts/MapleMono-CN-Regular.ttf");
 const EMOJI_FONT: &[u8] = include_bytes!("../resources/fonts/seguiemj.ttf");
 static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
@@ -1287,7 +1288,7 @@ impl AppUI {
             self.playlist_ui.show(ui);
         }
         let open_btn = Button::new(
-            Image::from(PLAY_LIST_IMG)
+            Image::from(TV_IMG)
                 .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
