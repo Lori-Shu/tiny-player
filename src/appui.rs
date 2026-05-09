@@ -28,6 +28,7 @@ use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use flume::{Receiver, Sender, bounded};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
+use keepawake::KeepAwake;
 use rodio::Player;
 use time::format_description::{self, OwnedFormatItem};
 use tokio::{
@@ -110,6 +111,7 @@ pub struct AppUI {
     change_input_context: ChangeInputContext,
     playlist_ui: PlayListUI,
     time_formatter: OwnedFormatItem,
+    keep_awake: Option<KeepAwake>,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -121,38 +123,27 @@ impl eframe::App for AppUI {
 
                  */
                 let now = Instant::now();
+                if self.manage_keepawake().is_err() {
+                    warn!("manage keepawake err!");
+                }
+                if self
+                    .ui_flags
+                    .media_source_flag
+                    .load(std::sync::atomic::Ordering::Acquire)
                 {
-                    if self
+                    if !self
                         .ui_flags
-                        .media_source_flag
-                        .load(std::sync::atomic::Ordering::Acquire)
+                        .pause_flag
+                        .load(std::sync::atomic::Ordering::Relaxed)
                     {
-                        if !self
-                            .ui_flags
-                            .pause_flag
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            /*
-                            if now is next_frame_time or a little beyond get and show a new frame
-                             */
-                            if keepawake::Builder::default()
-                                .display(true)
-                                .idle(true)
-                                .app_name("tiny_player")
-                                .reason("video play")
-                                .create()
-                                .is_err()
-                            {
-                                warn!("keep awake err");
-                            }
-                            if self.check_play_end() {
-                                self.ui_flags
-                                    .pause_flag
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                            }
+                        if self.check_play_end() {
+                            self.ui_flags
+                                .pause_flag
+                                .store(true, std::sync::atomic::Ordering::Release);
                         }
                     }
                 }
+
                 self.clear_garbage_texture();
                 /*
                 down part is ui painting and control
@@ -337,6 +328,7 @@ impl AppUI {
             playlist_window_flag.clone(),
         );
         let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
+        let keep_awake = None;
         Ok(Self {
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
             // subtitle_text_receiver: subtitle_channel.1,
@@ -378,6 +370,7 @@ impl AppUI {
             change_input_context,
             playlist_ui,
             time_formatter,
+            keep_awake,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -1417,6 +1410,29 @@ impl AppUI {
         self.visible_num =
             ui.ctx()
                 .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
+    }
+    fn manage_keepawake(&mut self) -> PlayerResult<()> {
+        if !self
+            .ui_flags
+            .pause_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            if self.keep_awake.is_none() {
+                self.keep_awake = Some(
+                    keepawake::Builder::default()
+                        .display(true)
+                        .idle(true)
+                        .app_name("tiny-player")
+                        .reason("video play")
+                        .create()?,
+                );
+            }
+        } else {
+            if self.keep_awake.is_some() {
+                self.keep_awake.take();
+            }
+        }
+        Ok(())
     }
 }
 impl Drop for AppUI {

@@ -276,19 +276,36 @@ impl TinyDecoder {
             self.format_duration = format_duration;
         }
 
-        let end_ts = {
-            if format_duration != AV_NOPTS_VALUE {
-                if let MainStream::Audio = self.main_stream {
-                    let audio_stream = audio_stream.as_ref().context("audio stream is none")?;
-                    audio_stream.0.duration()
-                } else {
-                    let video_stream = video_stream.as_ref().context("video stream is none")?;
-                    video_stream.0.duration()
-                }
-            } else {
-                0
+        let mut end_ts = AV_NOPTS_VALUE;
+        if let Some(audio_stream) = audio_stream.as_ref() {
+            let audio_duration = audio_stream.0.duration();
+            end_ts = audio_duration;
+        }
+        if let Some(video_stream) = video_stream.as_ref() {
+            let video_duration = video_stream.0.duration();
+            if end_ts == AV_NOPTS_VALUE {
+                end_ts = video_duration;
             }
-        };
+        }
+        if end_ts == AV_NOPTS_VALUE {
+            info!("could not find duration in A/V streams, fallback to input duration");
+            let mut temp_ts = i64::MAX;
+            if audio_stream.is_some() {
+                temp_ts = temp_ts.min(
+                    format_duration * self.audio_time_base.denominator() as i64
+                        / self.audio_time_base.numerator() as i64
+                        / 1000000,
+                );
+            }
+            if video_stream.is_some() {
+                temp_ts = temp_ts.min(
+                    format_duration * self.video_time_base.denominator() as i64
+                        / self.video_time_base.numerator() as i64
+                        / 1000000,
+                );
+            }
+            end_ts = temp_ts;
+        }
         self.end_timestamp
             .store(end_ts, std::sync::atomic::Ordering::Relaxed);
         self.compute_end_time_str(end_ts).await;
