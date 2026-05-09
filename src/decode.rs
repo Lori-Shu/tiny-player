@@ -288,23 +288,27 @@ impl TinyDecoder {
             }
         }
         if end_ts == AV_NOPTS_VALUE {
-            info!("could not find duration in A/V streams, fallback to input duration");
-            let mut temp_ts = i64::MAX;
-            if audio_stream.is_some() {
-                temp_ts = temp_ts.min(
-                    format_duration * self.audio_time_base.denominator() as i64
-                        / self.audio_time_base.numerator() as i64
-                        / 1000000,
-                );
+            if format_duration != AV_NOPTS_VALUE {
+                info!("could not find duration in A/V streams, fallback to input duration");
+                let mut temp_ts = i64::MAX;
+                if audio_stream.is_some() {
+                    temp_ts = temp_ts.min(
+                        format_duration * self.audio_time_base.denominator() as i64
+                            / self.audio_time_base.numerator() as i64
+                            / 1000000,
+                    );
+                }
+                if video_stream.is_some() {
+                    temp_ts = temp_ts.min(
+                        format_duration * self.video_time_base.denominator() as i64
+                            / self.video_time_base.numerator() as i64
+                            / 1000000,
+                    );
+                }
+                end_ts = temp_ts;
+            } else {
+                end_ts = 0;
             }
-            if video_stream.is_some() {
-                temp_ts = temp_ts.min(
-                    format_duration * self.video_time_base.denominator() as i64
-                        / self.video_time_base.numerator() as i64
-                        / 1000000,
-                );
-            }
-            end_ts = temp_ts;
         }
         self.end_timestamp
             .store(end_ts, std::sync::atomic::Ordering::Relaxed);
