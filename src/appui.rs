@@ -28,6 +28,7 @@ use ffmpeg_the_third::{format::stream::Disposition, media::Type};
 use flume::{Receiver, Sender, bounded};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
+use keepawake::KeepAwake;
 use rodio::Player;
 use time::format_description::{self, OwnedFormatItem};
 use tokio::{
@@ -68,7 +69,7 @@ static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
 });
 
 /// the main struct stores all the vars which are related to ui
-struct UiFlags {
+struct UIFlags {
     pause_flag: Arc<AtomicBool>,
     fullscreen_flag: bool,
     tip_window_flag: bool,
@@ -90,7 +91,7 @@ pub struct AppUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     _main_color_image: Arc<RwLock<ColorImage>>,
     _bg_dyn_img: Arc<DynamicImage>,
-    ui_flags: UiFlags,
+    ui_flags: UIFlags,
     play_time: time::Time,
     time_text: String,
     tip_window_msg: String,
@@ -110,6 +111,7 @@ pub struct AppUI {
     change_input_context: ChangeInputContext,
     playlist_ui: PlayListUI,
     time_formatter: OwnedFormatItem,
+    keep_awake: Option<KeepAwake>,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -121,40 +123,27 @@ impl eframe::App for AppUI {
 
                  */
                 let now = Instant::now();
+                if self.manage_keepawake().is_err() {
+                    warn!("manage keepawake err!");
+                }
+                if self
+                    .ui_flags
+                    .media_source_flag
+                    .load(std::sync::atomic::Ordering::Acquire)
                 {
-                    if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-                        if self
-                            .ui_flags
-                            .media_source_flag
-                            .load(std::sync::atomic::Ordering::Acquire)
-                        {
-                            if !self
-                                .ui_flags
+                    if !self
+                        .ui_flags
+                        .pause_flag
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        if self.check_play_end() {
+                            self.ui_flags
                                 .pause_flag
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                /*
-                                if now is next_frame_time or a little beyond get and show a new frame
-                                 */
-                                if keepawake::Builder::default()
-                                    .display(true)
-                                    .idle(true)
-                                    .app_name("tiny_player")
-                                    .reason("video play")
-                                    .create()
-                                    .is_err()
-                                {
-                                    warn!("keep awake err");
-                                }
-                                if self.check_play_end(&tiny_decoder) {
-                                    self.ui_flags
-                                        .pause_flag
-                                        .store(true, std::sync::atomic::Ordering::Release);
-                                }
-                            }
+                                .store(true, std::sync::atomic::Ordering::Release);
                         }
                     }
                 }
+
                 self.clear_garbage_texture();
                 /*
                 down part is ui painting and control
@@ -339,6 +328,7 @@ impl AppUI {
             playlist_window_flag.clone(),
         );
         let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
+        let keep_awake = None;
         Ok(Self {
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
             // subtitle_text_receiver: subtitle_channel.1,
@@ -349,7 +339,7 @@ impl AppUI {
             current_main_stream_timestamp,
             play_time,
             _main_color_image: main_color_image,
-            ui_flags: UiFlags {
+            ui_flags: UIFlags {
                 pause_flag,
                 fullscreen_flag: false,
                 tip_window_flag: false,
@@ -380,6 +370,7 @@ impl AppUI {
             change_input_context,
             playlist_ui,
             time_formatter,
+            keep_awake,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -1035,7 +1026,7 @@ impl AppUI {
             ui.add(date_time_button);
         });
     }
-    fn check_play_end(&self, tiny_decoder: &TinyDecoder) -> bool {
+    fn check_play_end(&self) -> bool {
         if !self
             .ui_flags
             .live_mode
@@ -1044,19 +1035,8 @@ impl AppUI {
             let pts = self
                 .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let main_stream_time_base = {
-                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                    tiny_decoder.audio_time_base
-                } else {
-                    tiny_decoder.video_time_base
-                }
-            };
             let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
-            if pts
-                + main_stream_time_base.denominator() as i64
-                    / main_stream_time_base.numerator() as i64
-                    / 2
-                >= end_ts
+            if pts >= end_ts
             // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
             //     / audio_time_base.denominator() as i64
             {
@@ -1095,7 +1075,7 @@ impl AppUI {
         let mut main_color_image = main_color_image.write().await;
         *main_color_image = bg_color_img;
     }
-    async fn reset_main_color_img_to_cover_pic(
+    async fn reset_main_color_img_to_cover(
         tiny_decoder: &TinyDecoder,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
@@ -1154,7 +1134,7 @@ impl AppUI {
                     context.main_color_image.clone(),
                 )
                 .await;
-                Self::reset_main_color_img_to_cover_pic(
+                Self::reset_main_color_img_to_cover(
                     &tiny_decoder,
                     context.main_color_image.clone(),
                 )
@@ -1345,7 +1325,7 @@ impl AppUI {
                                     || file_name.ends_with(".opus")
                                 {
                                     let media_path = en.path().clone();
-                                    let cover = Self::load_file_cover_pic(&media_path).await;
+                                    let cover = Self::load_file_cover(&media_path).await;
                                     let texture_handle =
                                         Self::load_cover_texture(&ctx, &cover, file_name).await;
                                     video_targets.push(VideoDes {
@@ -1363,7 +1343,7 @@ impl AppUI {
             }
         }
     }
-    async fn load_file_cover_pic(file_path: &Path) -> RgbaImage {
+    async fn load_file_cover(file_path: &Path) -> RgbaImage {
         if let Ok(input) = &mut ffmpeg_the_third::format::input(file_path) {
             let mut cover_idx = None;
 
@@ -1430,6 +1410,29 @@ impl AppUI {
         self.visible_num =
             ui.ctx()
                 .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
+    }
+    fn manage_keepawake(&mut self) -> PlayerResult<()> {
+        if !self
+            .ui_flags
+            .pause_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            if self.keep_awake.is_none() {
+                self.keep_awake = Some(
+                    keepawake::Builder::default()
+                        .display(true)
+                        .idle(true)
+                        .app_name("tiny-player")
+                        .reason("video play")
+                        .create()?,
+                );
+            }
+        } else {
+            if self.keep_awake.is_some() {
+                self.keep_awake.take();
+            }
+        }
+        Ok(())
     }
 }
 impl Drop for AppUI {

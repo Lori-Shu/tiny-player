@@ -276,24 +276,39 @@ impl TinyDecoder {
             self.format_duration = format_duration;
         }
 
-        let adur_ts = {
-            if format_duration != AV_NOPTS_VALUE {
-                if let MainStream::Audio = self.main_stream {
+        let mut end_ts = AV_NOPTS_VALUE;
+        if let Some(audio_stream) = audio_stream.as_ref() {
+            let audio_duration = audio_stream.0.duration();
+            end_ts = audio_duration;
+        }
+        if let Some(video_stream) = video_stream.as_ref() {
+            let video_duration = video_stream.0.duration();
+            if end_ts == AV_NOPTS_VALUE {
+                end_ts = video_duration;
+            }
+        }
+        if end_ts == AV_NOPTS_VALUE {
+            info!("could not find duration in A/V streams, fallback to input duration");
+            let mut temp_ts = i64::MAX;
+            if audio_stream.is_some() {
+                temp_ts = temp_ts.min(
                     format_duration * self.audio_time_base.denominator() as i64
                         / self.audio_time_base.numerator() as i64
-                        / 1_000_000
-                } else {
+                        / 1000000,
+                );
+            }
+            if video_stream.is_some() {
+                temp_ts = temp_ts.min(
                     format_duration * self.video_time_base.denominator() as i64
                         / self.video_time_base.numerator() as i64
-                        / 1_000_000
-                }
-            } else {
-                0
+                        / 1000000,
+                );
             }
-        };
+            end_ts = temp_ts;
+        }
         self.end_timestamp
-            .store(adur_ts, std::sync::atomic::Ordering::Relaxed);
-        self.compute_end_time_str(adur_ts);
+            .store(end_ts, std::sync::atomic::Ordering::Relaxed);
+        self.compute_end_time_str(end_ts).await;
 
         if let Some(audio_stream) = audio_stream {
             let audio_decoder_ctx =
@@ -364,7 +379,7 @@ impl TinyDecoder {
         if let Some(video_stream) = video_stream {
             let codec_ctx =
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
-            let video_decoder = self.choose_decoder_with_hardware_prefer(codec_ctx).await?;
+            let video_decoder = self.enable_decoder_hwacc_with_fallback(codec_ctx).await?;
             {
                 let mut color_space_converter = self.color_space_converter.write().await;
                 color_space_converter.set_params_for_space(
@@ -858,7 +873,7 @@ impl TinyDecoder {
         info!("seek finished!");
     }
     /// use the file detail to compute the video duration and make str to inform the user
-    fn compute_end_time_str(&mut self, end_ts: i64) {
+    async fn compute_end_time_str(&mut self, end_ts: i64) {
         let sec_num = {
             if let MainStream::Audio = self.main_stream {
                 end_ts * self.audio_time_base.numerator() as i64
@@ -933,7 +948,7 @@ impl TinyDecoder {
     /// enable hardware accelerate for video decode, currently use d3d12 only on windows
     /// others like vulkan are in developing
     /// fallback to softerware decoder if doesnt support
-    async fn choose_decoder_with_hardware_prefer(
+    async fn enable_decoder_hwacc_with_fallback(
         &mut self,
         codec_ctx: codec::Context,
     ) -> PlayerResult<ffmpeg_the_third::decoder::Video> {

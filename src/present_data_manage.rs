@@ -113,7 +113,7 @@ impl PresentDataManager {
                     )
                 };
 
-                if PresentDataManager::should_video_catch_audio(
+                if PresentDataManager::should_video_chase_audio(
                     main_stream.clone(),
                     audio_time_base,
                     video_time_base,
@@ -226,7 +226,7 @@ impl PresentDataManager {
         };
     }
     /// if video time-audio time is too high(more than 1 second),default return true
-    async fn should_video_catch_audio(
+    async fn should_video_chase_audio(
         main_stream: MainStream,
         audio_time_base: Rational,
         video_time_base: Rational,
