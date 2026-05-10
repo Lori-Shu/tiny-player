@@ -25,6 +25,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // mod ai_sub_title;
 mod appui;
 mod audio_play;
+mod controlbar_ui;
 mod decode;
 mod gpu_post_process;
 mod internet_resource_ui;
@@ -94,7 +95,7 @@ fn main() {
         }
     }
     options.centered = true;
-    options.viewport.inner_size = Some(Vec2::new(900.0, 700.0));
+    options.viewport.inner_size = Some(Vec2::new(1280.0, 720.0));
 
     if let Err(e) = eframe::run_native(
         "tiny player",
