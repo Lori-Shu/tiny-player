@@ -95,7 +95,7 @@ fn main() {
         }
     }
     options.centered = true;
-    options.viewport.inner_size = Some(Vec2::new(900.0, 700.0));
+    options.viewport.inner_size = Some(Vec2::new(1280.0, 720.0));
 
     if let Err(e) = eframe::run_native(
         "tiny player",

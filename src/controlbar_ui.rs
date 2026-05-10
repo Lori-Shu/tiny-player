@@ -78,17 +78,17 @@ impl ControlBarUI {
                 .load(std::sync::atomic::Ordering::Acquire)
             {
                 let mut slider_color = THEME_COLOR.to_srgba_unmultiplied();
-                slider_color[3] = 100;
+                slider_color[3] = 255;
                 ui.scope(|ui| {
                     if let Ok(visible_num) = self.visible_num.try_read() {
-                        ui.set_opacity(255.0 * *visible_num);
+                        ui.set_opacity(*visible_num);
                     }
                     if !self.live_mode.load(std::sync::atomic::Ordering::Relaxed) {
                         let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Relaxed);
                         let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
                             .show_value(false)
                             .text(WidgetText::RichText(Arc::new(
-                                RichText::new(self.time_text.clone()).size(20.0).color(
+                                RichText::new(self.time_text.clone()).size(22.0).color(
                                     Color32::from_rgba_unmultiplied(
                                         slider_color[0],
                                         slider_color[1],
@@ -106,18 +106,18 @@ impl ControlBarUI {
                         slider_width_style.visuals.extreme_bg_color =
                             Color32::from_rgba_unmultiplied(0, 0, 0, 100);
                         slider_width_style.visuals.selection.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 200);
                         slider_width_style.visuals.widgets.active.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 200);
                         slider_width_style.visuals.widgets.inactive.bg_fill =
-                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                            Color32::from_rgba_unmultiplied(255, 165, 0, 200);
                         ui.set_style(slider_width_style);
                         let slider_response = ui.add(progress_slider);
                         if slider_response.hovered() {
                             self.visible_flag
                                 .store(true, std::sync::atomic::Ordering::Release);
                         }
-                        if slider_response.changed() {
+                        if slider_response.drag_stopped() {
                             info!("slider dragged!");
                             let audio_player = &mut self.audio_player;
                             let tiny_decoder = self.tiny_decoder.clone();
@@ -154,11 +154,11 @@ impl ControlBarUI {
                         slider_width_style.visuals.extreme_bg_color =
                             Color32::from_rgba_unmultiplied(0, 0, 0, 100);
                         slider_width_style.visuals.selection.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 200);
                         slider_width_style.visuals.widgets.active.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 200);
                         slider_width_style.visuals.widgets.inactive.bg_fill =
-                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                            Color32::from_rgba_unmultiplied(255, 165, 0, 200);
                         ui.set_style(slider_width_style);
                         let slider_response = ui.add(progress_slider);
                         if slider_response.hovered() {
@@ -236,7 +236,7 @@ impl ControlBarUI {
                                     ui.add_space(150.0);
                                     let audio_player = &mut self.audio_player;
                                     ui.scope(|ui| {
-                                        ui.set_opacity(255.0 * *visible_num);
+                                        ui.set_opacity(*visible_num);
                                         let volumn_slider =
                                             egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
                                                 .vertical()
@@ -261,7 +261,7 @@ impl ControlBarUI {
                                             self.visible_flag
                                                 .store(true, std::sync::atomic::Ordering::Release);
                                         }
-                                        if slider_response.changed() {
+                                        if slider_response.drag_stopped() {
                                             info!("volumn slider dragged!");
                                             audio_player.change_volumn(self.audio_volume);
                                         }
