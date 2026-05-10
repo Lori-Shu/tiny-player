@@ -25,6 +25,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // mod ai_sub_title;
 mod appui;
 mod audio_play;
+mod controlbar_ui;
 mod decode;
 mod gpu_post_process;
 mod internet_resource_ui;

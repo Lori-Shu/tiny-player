@@ -20,7 +20,7 @@ use eframe::{
 use egui::{
     Align2, AtomExt, Button, Color32, ColorImage, CornerRadius, Id, Image, ImageData, ImageSource,
     Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
-    WidgetText, include_image,
+    include_image,
 };
 
 use egui_file::FileDialog;
@@ -39,6 +39,7 @@ use tracing::{info, warn};
 
 use crate::{
     PlayerResult,
+    controlbar_ui::ControlBarUI,
     decode::{MainStream, TinyDecoder},
     gpu_post_process::ColorSpaceConverter,
     internet_resource_ui::InternetResourceUI,
@@ -47,17 +48,17 @@ use crate::{
 };
 
 const VIDEO_FILE_IMG: ImageSource = include_image!("../resources/file-play.png");
-const VOLUME_IMG: ImageSource = include_image!("../resources/volume-2.png");
+pub const VOLUME_IMG: ImageSource = include_image!("../resources/volume-2.png");
 const PLAY_IMG: ImageSource = include_image!("../resources/play.png");
 const PAUSE_IMG: ImageSource = include_image!("../resources/pause.png");
-const FULLSCREEN_IMG: ImageSource = include_image!("../resources/fullscreen.png");
+pub const FULLSCREEN_IMG: ImageSource = include_image!("../resources/fullscreen.png");
 const DEFAULT_BG_IMG: ImageSource = include_image!("../resources/background_2.png");
 const PLAY_LIST_IMG: ImageSource = include_image!("../resources/list-video.png");
-const SUBTITLE_IMG: ImageSource = include_image!("../resources/captions.png");
+pub const SUBTITLE_IMG: ImageSource = include_image!("../resources/captions.png");
 const TV_IMG: ImageSource = include_image!("../resources/tv.png");
 pub const MAPLE_FONT: &[u8] = include_bytes!("../resources/fonts/MapleMono-CN-Regular.ttf");
 const EMOJI_FONT: &[u8] = include_bytes!("../resources/fonts/seguiemj.ttf");
-static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
+pub static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
     let mut orange_color = Color32::ORANGE.to_srgba_unmultiplied();
     orange_color[3] = 200;
     Color32::from_rgba_unmultiplied(
@@ -71,40 +72,32 @@ static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
 /// the main struct stores all the vars which are related to ui
 struct UIFlags {
     pause_flag: Arc<AtomicBool>,
-    fullscreen_flag: bool,
     tip_window_flag: bool,
     playlist_window_flag: Arc<AtomicBool>,
-    show_subtitle_options_flag: bool,
-    show_volumn_slider_flag: bool,
-    visible_flag: bool,
+    visible_flag: Arc<AtomicBool>,
     media_source_flag: Arc<AtomicBool>,
     internet_list_window_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
 }
 
 pub struct AppUI {
+    #[allow(unused)]
+    async_runtime: Runtime,
     video_texture_id: Arc<RwLock<TextureId>>,
     garbage_video_texture_receiver: Receiver<TextureId>,
     tiny_decoder: Arc<RwLock<crate::decode::TinyDecoder>>,
-    audio_player: crate::audio_play::AudioPlayer,
-    _present_data_manager: Arc<RwLock<PresentDataManager>>,
+    audio_player: Arc<crate::audio_play::AudioPlayer>,
     current_main_stream_timestamp: Arc<AtomicI64>,
-    _main_color_image: Arc<RwLock<ColorImage>>,
-    _bg_dyn_img: Arc<DynamicImage>,
     ui_flags: UIFlags,
     play_time: time::Time,
-    time_text: String,
     tip_window_msg: String,
     app_start_instant: Instant,
-    async_rt: Runtime,
     open_file_dialog: FileDialog,
     // _subtitle: Arc<RwLock<AISubTitle>>,
     // subtitle_text: String,
     // subtitle_text_receiver: mpsc::Receiver<String>,
     // used_model: Arc<RwLock<UsedModel>>,
-    audio_volumn: f32,
-    _current_video_timestamp: Arc<AtomicI64>,
-    visible_num: f32,
+    visible_num: Arc<RwLock<f32>>,
     wgpu_render_state: Arc<RenderState>,
     end_ts: Arc<AtomicI64>,
     internet_resource_ui: InternetResourceUI,
@@ -112,6 +105,7 @@ pub struct AppUI {
     playlist_ui: PlayListUI,
     time_formatter: OwnedFormatItem,
     keep_awake: Option<KeepAwake>,
+    controlbar_ui: ControlBarUI,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -150,7 +144,9 @@ impl eframe::App for AppUI {
 
                  */
                 self.visiable_anime(ui);
-                self.ui_flags.visible_flag = false;
+                self.ui_flags
+                    .visible_flag
+                    .store(false, std::sync::atomic::Ordering::Release);
                 self.paint_video_image(ui);
                 self.paint_frame_info_text(ui, &now);
 
@@ -167,7 +163,7 @@ impl eframe::App for AppUI {
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     self.update_time();
                     self.update_time_text();
-                    self.paint_control_area(ui);
+                    self.controlbar_ui.paint_controlbar(ui);
                     // self.paint_subtitle(ui, ctx);
                 });
 
@@ -216,10 +212,10 @@ impl AppUI {
     pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
         let play_time = time::Time::from_hms(0, 0, 0)?;
 
-        let async_rt = tokio::runtime::Builder::new_multi_thread()
+        let async_runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let rt = async_rt.handle().clone();
+        let rt = async_runtime.handle().clone();
         let f_dialog = egui_file::FileDialog::open_file();
         let (color_image, dyn_img) = {
             if let ImageSource::Bytes { bytes, .. } = DEFAULT_BG_IMG {
@@ -269,7 +265,7 @@ impl AppUI {
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
         // let subtitle_channel = mpsc::channel(10);
         // let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
-        let audio_player = crate::audio_play::AudioPlayer::new()?;
+        let audio_player = Arc::new(crate::audio_play::AudioPlayer::new()?);
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let pause_flag = Arc::new(AtomicBool::new(false));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
@@ -284,7 +280,7 @@ impl AppUI {
             .audio_sink(audio_player.sink())
             .main_stream_current_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
-            .runtime_handle(rt)
+            .runtime_handle(rt.clone())
             .pause_flag(pause_flag.clone())
             .color_space_converter(colorspace_converter.clone())
             .audio_frame_receiver(audio_frame_cache_queue.1.clone())
@@ -308,7 +304,7 @@ impl AppUI {
             .path(PathBuf::new())
             .pause_flag(pause_flag.clone())
             .render_state(wgpu_render_state.clone())
-            .runtime_handle(async_rt.handle().clone())
+            .runtime_handle(rt.clone())
             .tiny_decoder(tiny_decoder.clone())
             .video_texture(video_texture.clone())
             .video_texture_id(video_texture_id.clone())
@@ -324,46 +320,50 @@ impl AppUI {
         let playlist_ui = PlayListUI::new(
             change_input_context.clone(),
             live_mode.clone(),
-            async_rt.handle().clone(),
+            rt.clone(),
             playlist_window_flag.clone(),
         );
         let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
         let keep_awake = None;
+        let visible_flag = Arc::new(AtomicBool::new(false));
+        let visible_num = Arc::new(RwLock::new(1.0_f32));
+        let controlbar_ui = ControlBarUI::new(
+            current_main_stream_timestamp.clone(),
+            media_source_flag.clone(),
+            visible_flag.clone(),
+            live_mode.clone(),
+            end_ts.clone(),
+            audio_player.clone(),
+            tiny_decoder.clone(),
+            rt.clone(),
+            pause_flag.clone(),
+            visible_num.clone(),
+        );
         Ok(Self {
+            async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
             // subtitle_text_receiver: subtitle_channel.1,
             video_texture_id,
             tiny_decoder,
             audio_player,
-            _present_data_manager: present_data_manager,
             current_main_stream_timestamp,
             play_time,
-            _main_color_image: main_color_image,
             ui_flags: UIFlags {
                 pause_flag,
-                fullscreen_flag: false,
                 tip_window_flag: false,
                 playlist_window_flag,
-                show_subtitle_options_flag: false,
-                show_volumn_slider_flag: false,
-                visible_flag: false,
+                visible_flag,
                 media_source_flag,
                 internet_list_window_flag,
                 live_mode,
             },
             // used_model,
-            time_text: String::new(),
-
             tip_window_msg: String::new(),
             app_start_instant: Instant::now(),
-            async_rt,
             open_file_dialog: f_dialog,
-            _bg_dyn_img: bg_dyn_img,
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
-            audio_volumn: 1.0,
-            _current_video_timestamp: current_video_timestamp,
-            visible_num: 1.0,
+            visible_num,
             wgpu_render_state,
             end_ts,
             internet_resource_ui,
@@ -371,6 +371,7 @@ impl AppUI {
             playlist_ui,
             time_formatter,
             keep_awake,
+            controlbar_ui,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -434,7 +435,7 @@ impl AppUI {
             if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
                 now_str.push('|');
                 now_str.push_str(&tiny_decoder.end_time_formatted_string);
-                self.time_text = now_str;
+                self.controlbar_ui.time_text = now_str;
             }
         }
     }
@@ -592,58 +593,63 @@ impl AppUI {
     }
 
     fn paint_file_btn(&mut self, ui: &mut Ui) {
-        let btn_rect = Vec2::new(
-            ui.ctx().content_rect().width() / 10.0,
-            ui.ctx().content_rect().width() / 10.0,
-        );
-        let file_image_button = egui::Button::new(
-            Image::from(VIDEO_FILE_IMG)
-                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                .atom_size(btn_rect),
-        )
-        .fill(egui::Color32::from_rgba_unmultiplied(
-            0,
-            0,
-            0,
-            (10.0 * self.visible_num) as u8,
-        ))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-        ))
-        .corner_radius(CornerRadius::from(30));
+        if let Ok(visible_num) = self.visible_num.try_read() {
+            let btn_rect = Vec2::new(
+                ui.ctx().content_rect().width() / 10.0,
+                ui.ctx().content_rect().width() / 10.0,
+            );
+            let file_image_button = egui::Button::new(
+                Image::from(VIDEO_FILE_IMG)
+                    .tint(Color32::from_white_alpha((255.0 * *visible_num) as u8))
+                    .atom_size(btn_rect),
+            )
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                0,
+                0,
+                0,
+                (10.0 * *visible_num) as u8,
+            ))
+            .stroke(Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * *visible_num) as u8),
+            ))
+            .corner_radius(CornerRadius::from(30));
 
-        let file_img_btn_response = ui.add(file_image_button);
+            let file_img_btn_response = ui.add(file_image_button);
 
-        if file_img_btn_response.hovered() {
-            self.ui_flags.visible_flag = true;
-        }
-        if file_img_btn_response.clicked() {
-            self.open_file_dialog.open();
-        }
-        let mut file_path = None;
-
-        self.open_file_dialog.show(ui.ctx());
-        if self.open_file_dialog.selected() {
-            if let Some(p) = self.open_file_dialog.path() {
-                warn!("path selected{:#?}", p);
-                file_path = Some(p.to_path_buf())
+            if file_img_btn_response.hovered() {
+                self.ui_flags
+                    .visible_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
-        }
+            if file_img_btn_response.clicked() {
+                self.open_file_dialog.open();
+            }
+            let mut file_path = None;
 
-        if let Some(p) = file_path {
-            let mut ctx = self.change_input_context.clone();
-            ctx.path = p.clone();
-            if Self::change_format_input(ctx).is_ok() {
-                if let Some(p_str) = p.to_str() {
-                    self.ui_flags
-                        .live_mode
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    warn!("accept file path{}", p_str);
+            self.open_file_dialog.show(ui.ctx());
+            if self.open_file_dialog.selected() {
+                if let Some(p) = self.open_file_dialog.path() {
+                    warn!("path selected{:#?}", p);
+                    file_path = Some(p.to_path_buf())
                 }
-            } else {
-                self.tip_window_msg = "please choose a valid video or audio file !!!".to_string();
-                self.ui_flags.tip_window_flag = true;
+            }
+
+            if let Some(p) = file_path {
+                let mut ctx = self.change_input_context.clone();
+                ctx.path = p.clone();
+                if Self::change_format_input(ctx).is_ok() {
+                    if let Some(p_str) = p.to_str() {
+                        self.ui_flags
+                            .live_mode
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        warn!("accept file path{}", p_str);
+                    }
+                } else {
+                    self.tip_window_msg =
+                        "please choose a valid video or audio file !!!".to_string();
+                    self.ui_flags.tip_window_flag = true;
+                }
             }
         }
     }
@@ -658,296 +664,65 @@ impl AppUI {
                 .fixed_pos(ui.content_rect().center())
                 .pivot(Align2::CENTER_CENTER)
                 .show(ui.ctx(), |ui| {
-                    let play_or_pause_image_source = if self
-                        .ui_flags
-                        .pause_flag
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        PLAY_IMG
-                    } else {
-                        PAUSE_IMG
-                    };
-                    let btn_rect = Vec2::new(
-                        ui.ctx().content_rect().width() / 10.0,
-                        ui.ctx().content_rect().width() / 10.0,
-                    );
-                    let btn_img = Image::from(play_or_pause_image_source)
-                        .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                        .atom_size(btn_rect);
-                    let play_or_pause_btn = egui::Button::new(btn_img)
-                        .fill(egui::Color32::from_rgba_unmultiplied(
-                            0,
-                            0,
-                            0,
-                            (10.0 * self.visible_num) as u8,
-                        ))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_rgba_unmultiplied(
-                                0,
-                                0,
-                                0,
-                                (10.0 * self.visible_num) as u8,
-                            ),
-                        ))
-                        .corner_radius(CornerRadius::from(30));
-
-                    let btn_response = ui.add(play_or_pause_btn);
-                    if btn_response.hovered() {
-                        self.ui_flags.visible_flag = true;
-                    }
-                    if btn_response.clicked()
-                        || ui.ctx().input(|s| s.key_released(egui::Key::Space))
-                    {
-                        let pause_flag = &self.ui_flags.pause_flag;
-                        let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                        pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
-                        let audio_player = &self.audio_player;
-                        if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                            audio_player.pause();
+                    if let Ok(visible_num) = self.visible_num.try_read() {
+                        let play_or_pause_image_source = if self
+                            .ui_flags
+                            .pause_flag
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            PLAY_IMG
                         } else {
-                            audio_player.play();
+                            PAUSE_IMG
+                        };
+                        let btn_rect = Vec2::new(
+                            ui.ctx().content_rect().width() / 10.0,
+                            ui.ctx().content_rect().width() / 10.0,
+                        );
+                        let btn_img = Image::from(play_or_pause_image_source)
+                            .tint(Color32::from_white_alpha((255.0 * *visible_num) as u8))
+                            .atom_size(btn_rect);
+                        let play_or_pause_btn = egui::Button::new(btn_img)
+                            .fill(egui::Color32::from_rgba_unmultiplied(
+                                0,
+                                0,
+                                0,
+                                (10.0 * *visible_num) as u8,
+                            ))
+                            .stroke(Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(
+                                    0,
+                                    0,
+                                    0,
+                                    (10.0 * *visible_num) as u8,
+                                ),
+                            ))
+                            .corner_radius(CornerRadius::from(30));
+
+                        let btn_response = ui.add(play_or_pause_btn);
+                        if btn_response.hovered() {
+                            self.ui_flags
+                                .visible_flag
+                                .store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        if btn_response.clicked()
+                            || ui.ctx().input(|s| s.key_released(egui::Key::Space))
+                        {
+                            let pause_flag = &self.ui_flags.pause_flag;
+                            let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
+                            pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
+                            let audio_player = &self.audio_player;
+                            if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                audio_player.pause();
+                            } else {
+                                audio_player.play();
+                            }
                         }
                     }
                 });
         }
     }
 
-    fn paint_control_area(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let mut ts = self
-                .current_main_stream_timestamp
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if self
-                .ui_flags
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                let mut slider_color = THEME_COLOR.to_srgba_unmultiplied();
-                slider_color[3] = 100;
-                ui.scope(|ui| {
-                    ui.set_opacity(255.0 * self.visible_num);
-                    if !self
-                        .ui_flags
-                        .live_mode
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
-                        let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
-                            .show_value(false)
-                            .text(WidgetText::RichText(Arc::new(
-                                RichText::new(self.time_text.clone()).size(20.0).color(
-                                    Color32::from_rgba_unmultiplied(
-                                        slider_color[0],
-                                        slider_color[1],
-                                        slider_color[2],
-                                        slider_color[3],
-                                    ),
-                                ),
-                            )));
-
-                        let mut slider_width_style = egui::style::Style::default();
-                        slider_width_style.spacing.slider_width =
-                            ui.ctx().content_rect().width() - 450.0;
-                        slider_width_style.spacing.slider_rail_height = 10.0;
-                        slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                        slider_width_style.visuals.extreme_bg_color =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.selection.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.widgets.active.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.widgets.inactive.bg_fill =
-                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                        ui.set_style(slider_width_style);
-                        let slider_response = ui.add(progress_slider);
-                        if slider_response.hovered() {
-                            self.ui_flags.visible_flag = true;
-                        }
-                        if slider_response.changed() {
-                            warn!("slider dragged!");
-                            let audio_player = &mut self.audio_player;
-                            let tiny_decoder = self.tiny_decoder.clone();
-                            self.async_rt.spawn(async move {
-                                let tiny_decoder = tiny_decoder.read().await;
-                                tiny_decoder.seek_timestamp_to_decode(ts).await;
-                            });
-
-                            audio_player.source_queue_skip_to_end();
-                            if !self
-                                .ui_flags
-                                .pause_flag
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                audio_player.play();
-                            }
-                        }
-                    } else {
-                        let mut zero_val = 0;
-                        let progress_slider = egui::Slider::new(&mut zero_val, 0..=0)
-                            .show_value(false)
-                            .text(WidgetText::RichText(Arc::new(
-                                RichText::new(self.time_text.clone()).size(20.0).color(
-                                    Color32::from_rgba_unmultiplied(
-                                        slider_color[0],
-                                        slider_color[1],
-                                        slider_color[2],
-                                        slider_color[3],
-                                    ),
-                                ),
-                            )));
-
-                        let mut slider_width_style = egui::style::Style::default();
-                        slider_width_style.spacing.slider_width =
-                            ui.ctx().content_rect().width() - 450.0;
-                        slider_width_style.spacing.slider_rail_height = 10.0;
-                        slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                        slider_width_style.visuals.extreme_bg_color =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.selection.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.widgets.active.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_width_style.visuals.widgets.inactive.bg_fill =
-                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                        ui.set_style(slider_width_style);
-                        let slider_response = ui.add(progress_slider);
-                        if slider_response.hovered() {
-                            self.ui_flags.visible_flag = true;
-                        }
-                    }
-                });
-
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let subtitle_btn = Button::new(
-                        Image::from(SUBTITLE_IMG)
-                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                            .atom_size(Vec2::new(50.0, 50.0)),
-                    )
-                    .fill(egui::Color32::from_rgba_unmultiplied(
-                        0,
-                        0,
-                        0,
-                        (10.0 * self.visible_num) as u8,
-                    ))
-                    .stroke(Stroke::new(
-                        1.0,
-                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-                    ))
-                    .corner_radius(CornerRadius::from(30));
-                    let btn_response = ui.add(subtitle_btn);
-                    if btn_response.hovered() {
-                        self.ui_flags.visible_flag = true;
-                    }
-                    if btn_response.clicked() {
-                        self.ui_flags.show_subtitle_options_flag =
-                            !self.ui_flags.show_subtitle_options_flag;
-                    }
-                    // let used_model = self.used_model.clone();
-                    // let mut used_model = self.async_rt.block_on(used_model.write());
-                    // if self.ui_flags.show_subtitle_options_flag {
-                    //     ui.radio_value(&mut *used_model, UsedModel::Empty, "closed");
-                    //     ui.radio_value(&mut *used_model, UsedModel::Chinese, "中文");
-                    //     ui.radio_value(&mut *used_model, UsedModel::English, "English");
-                    // }
-                });
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let volumn_img_btn = egui::Button::new(
-                        Image::from(VOLUME_IMG)
-                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                            .atom_size(Vec2::new(50.0, 50.0)),
-                    )
-                    .fill(egui::Color32::from_rgba_unmultiplied(
-                        0,
-                        0,
-                        0,
-                        (10.0 * self.visible_num) as u8,
-                    ))
-                    .stroke(Stroke::new(
-                        1.0,
-                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-                    ))
-                    .corner_radius(CornerRadius::from(30));
-                    let btn_response = ui.add(volumn_img_btn);
-                    if btn_response.hovered() {
-                        self.ui_flags.visible_flag = true;
-                    }
-                    if btn_response.clicked() {
-                        self.ui_flags.show_volumn_slider_flag =
-                            !self.ui_flags.show_volumn_slider_flag;
-                    }
-                    if self.ui_flags.show_volumn_slider_flag {
-                        ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                            ui.add_space(150.0);
-                            let audio_player = &mut self.audio_player;
-                            ui.scope(|ui| {
-                                ui.set_opacity(255.0 * self.visible_num);
-                                let volumn_slider =
-                                    egui::Slider::new(&mut self.audio_volumn, 0.0..=2.0)
-                                        .vertical()
-                                        .show_value(false);
-                                let mut slider_style = egui::style::Style::default();
-                                slider_style.spacing.slider_width = 150.0;
-                                slider_style.spacing.slider_rail_height = 10.0;
-                                slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                                slider_style.visuals.extreme_bg_color =
-                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                                slider_style.visuals.selection.bg_fill =
-                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                                slider_style.visuals.widgets.active.bg_fill =
-                                    Color32::from_rgba_unmultiplied(0, 0, 100, 100);
-                                slider_style.visuals.widgets.inactive.bg_fill =
-                                    Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                                ui.set_style(slider_style);
-                                let mut slider_response = ui.add(volumn_slider);
-                                slider_response = slider_response.on_hover_text(
-                                    (audio_player.current_volumn() * 100.0).to_string(),
-                                );
-                                if slider_response.hovered() {
-                                    self.ui_flags.visible_flag = true;
-                                }
-                                if slider_response.changed() {
-                                    warn!("volumn slider dragged!");
-                                    audio_player.change_volumn(self.audio_volumn);
-                                }
-                            });
-                        });
-                    }
-                });
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let fullscreen_image_btn = egui::Button::new(
-                        Image::from(FULLSCREEN_IMG)
-                            .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                            .atom_size(Vec2::new(50.0, 50.0)),
-                    )
-                    .fill(egui::Color32::from_rgba_unmultiplied(
-                        0,
-                        0,
-                        0,
-                        (10.0 * self.visible_num) as u8,
-                    ))
-                    .stroke(Stroke::new(
-                        1.0,
-                        Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-                    ))
-                    .corner_radius(CornerRadius::from(30));
-                    let btn_response = ui.add(fullscreen_image_btn);
-                    if btn_response.hovered() {
-                        self.ui_flags.visible_flag = true;
-                    }
-                    if btn_response.clicked() {
-                        self.ui_flags.fullscreen_flag = !self.ui_flags.fullscreen_flag;
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-                                self.ui_flags.fullscreen_flag,
-                            ));
-                    }
-                });
-            }
-            self.current_main_stream_timestamp
-                .store(ts, std::sync::atomic::Ordering::Release);
-        });
-    }
     // fn paint_subtitle(&mut self, ui: &mut Ui, ctx: &Context) {
     //     ui.horizontal(|ui| {
     //         if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
@@ -1035,7 +810,7 @@ impl AppUI {
             let pts = self
                 .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Acquire);
+            let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Relaxed);
             if pts >= end_ts
             // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
             //     / audio_time_base.denominator() as i64
@@ -1105,6 +880,7 @@ impl AppUI {
         }
     }
     pub fn change_format_input(context: ChangeInputContext) -> PlayerResult<()> {
+        info!("in change format input");
         context.runtime_handle.spawn(async move {
             context
                 .pause_flag
@@ -1233,73 +1009,79 @@ impl AppUI {
         }
     }
     fn paint_playlist_button(&mut self, ui: &mut Ui) {
-        let open_btn = Button::new(
-            Image::from(PLAY_LIST_IMG)
-                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                .atom_size(Vec2::new(50.0, 50.0)),
-        )
-        .fill(egui::Color32::from_rgba_unmultiplied(
-            0,
-            0,
-            0,
-            (10.0 * self.visible_num) as u8,
-        ))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-        ))
-        .corner_radius(CornerRadius::from(30));
+        if let Ok(visible_num) = self.visible_num.try_read() {
+            let open_btn = Button::new(
+                Image::from(PLAY_LIST_IMG)
+                    .tint(Color32::from_white_alpha((255.0 * *visible_num) as u8))
+                    .atom_size(Vec2::new(50.0, 50.0)),
+            )
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                0,
+                0,
+                0,
+                (10.0 * *visible_num) as u8,
+            ))
+            .stroke(Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * *visible_num) as u8),
+            ))
+            .corner_radius(CornerRadius::from(30));
 
-        let btn_response = ui.add(open_btn);
+            let btn_response = ui.add(open_btn);
 
-        if btn_response.hovered() {
-            self.ui_flags.visible_flag = true;
-        }
-        if btn_response.clicked() {
-            self.ui_flags
+            if btn_response.hovered() {
+                self.ui_flags
+                    .visible_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if btn_response.clicked() {
+                self.ui_flags
+                    .playlist_window_flag
+                    .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if self
+                .ui_flags
                 .playlist_window_flag
-                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if self
-            .ui_flags
-            .playlist_window_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.playlist_ui.show(ui);
-        }
-        let open_btn = Button::new(
-            Image::from(TV_IMG)
-                .tint(Color32::from_white_alpha((255.0 * self.visible_num) as u8))
-                .atom_size(Vec2::new(50.0, 50.0)),
-        )
-        .fill(egui::Color32::from_rgba_unmultiplied(
-            0,
-            0,
-            0,
-            (10.0 * self.visible_num) as u8,
-        ))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * self.visible_num) as u8),
-        ))
-        .corner_radius(CornerRadius::from(30));
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                self.playlist_ui.show(ui);
+            }
+            let open_btn = Button::new(
+                Image::from(TV_IMG)
+                    .tint(Color32::from_white_alpha((255.0 * *visible_num) as u8))
+                    .atom_size(Vec2::new(50.0, 50.0)),
+            )
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                0,
+                0,
+                0,
+                (10.0 * *visible_num) as u8,
+            ))
+            .stroke(Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * *visible_num) as u8),
+            ))
+            .corner_radius(CornerRadius::from(30));
 
-        let btn_response = ui.add(open_btn);
+            let btn_response = ui.add(open_btn);
 
-        if btn_response.hovered() {
-            self.ui_flags.visible_flag = true;
-        }
-        if btn_response.clicked() {
-            self.ui_flags
+            if btn_response.hovered() {
+                self.ui_flags
+                    .visible_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if btn_response.clicked() {
+                self.ui_flags
+                    .internet_list_window_flag
+                    .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if self
+                .ui_flags
                 .internet_list_window_flag
-                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if self
-            .ui_flags
-            .internet_list_window_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.internet_resource_ui.show(ui);
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                self.internet_resource_ui.show(ui);
+            }
         }
     }
     pub async fn read_video_folder(
@@ -1406,10 +1188,16 @@ impl AppUI {
         }
     }
     fn visiable_anime(&mut self, ui: &mut Ui) {
-        let visible_id = ui.make_persistent_id("visiable_num");
-        self.visible_num =
-            ui.ctx()
-                .animate_bool_with_time(visible_id, self.ui_flags.visible_flag, 2.0);
+        if let Ok(mut visible_num) = self.visible_num.try_write() {
+            let visible_id = ui.make_persistent_id("visiable_num");
+            *visible_num = ui.ctx().animate_bool_with_time(
+                visible_id,
+                self.ui_flags
+                    .visible_flag
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                4.0,
+            );
+        }
     }
     fn manage_keepawake(&mut self) -> PlayerResult<()> {
         if !self

@@ -12,7 +12,6 @@ pub const AUDIO_CHANNELS: u32 = 2;
 pub struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     sink: Arc<Player>,
-    current_volumn: f32,
 }
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
@@ -34,7 +33,6 @@ impl AudioPlayer {
         Ok(Self {
             sink,
             _device_sink: device_sink,
-            current_volumn: 1.0,
         })
     }
 
@@ -57,11 +55,10 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn change_volumn(&mut self, volumn: f32) {
+    pub fn change_volumn(&self, volumn: f32) {
         self.sink.set_volume(volumn);
-        self.current_volumn = volumn;
     }
-    pub fn source_queue_skip_to_end(&mut self) {
+    pub fn source_queue_skip_to_end(&self) {
         self.sink.clear();
     }
     pub fn pause(&self) {
@@ -69,10 +66,6 @@ impl AudioPlayer {
     }
     pub fn play(&self) {
         self.sink.play();
-    }
-
-    pub fn current_volumn(&self) -> &f32 {
-        &self.current_volumn
     }
     pub fn sink(&self) -> Arc<Player> {
         self.sink.clone()
