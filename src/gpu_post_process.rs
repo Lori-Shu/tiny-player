@@ -384,7 +384,7 @@ impl ColorSpaceConverter {
             Space::BT709 => self.bt709_uniform,
             Space::SMPTE170M | Space::BT470BG => self.bt601_uniform,
             Space::BT2020NCL => {
-                info!("input video is 10bit");
+                info!("input video color space is BT.2020 NCL");
                 self.bt2020_uniform
             }
             _ => self.bt709_uniform,

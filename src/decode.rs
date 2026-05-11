@@ -11,12 +11,16 @@ use std::{
 use anyhow::Context;
 use derive_builder::Builder;
 use ffmpeg_the_third::{
-    ChannelLayout, Packet, Rational, Stream, codec, color::TransferCharacteristic, ffi::{
+    ChannelLayout, Packet, Rational, Stream, codec,
+    color::TransferCharacteristic,
+    ffi::{
         AV_CHANNEL_LAYOUT_STEREO, AV_NOPTS_VALUE, AVCodecContext, AVHWDeviceType, AVPixelFormat,
         AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
         av_hwframe_transfer_data, avcodec_get_hw_config, swr_alloc_set_opts2, swr_convert_frame,
         swr_free, swr_init,
-    }, format::{Sample, sample::Type, stream::Disposition}, frame::{Audio, Video}
+    },
+    format::{Sample, sample::Type, stream::Disposition},
+    frame::{Audio, Video},
 };
 
 use flume::{Receiver, Sender};
@@ -382,10 +386,10 @@ impl TinyDecoder {
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
             let video_decoder = self.enable_decoder_hwacc_with_fallback(codec_ctx).await?;
             {
-                let is_hdr=match video_decoder.color_transfer_characteristic() {
-                    TransferCharacteristic::SMPTE2084|TransferCharacteristic::ARIB_STD_B67|TransferCharacteristic::SMPTE428=>true,
-                    TransferCharacteristic::BT709=>false,
-                    _=>false
+                let is_hdr = match video_decoder.color_transfer_characteristic() {
+                    TransferCharacteristic::SMPTE2084 | TransferCharacteristic::SMPTE428 => true,
+                    TransferCharacteristic::BT709 => false,
+                    _ => false,
                 };
                 let mut color_space_converter = self.color_space_converter.write().await;
                 color_space_converter.set_params_for_space(
