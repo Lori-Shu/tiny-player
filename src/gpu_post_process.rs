@@ -26,11 +26,15 @@ use tracing::info;
 use crate::PlayerResult;
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
 const FALLBACK_SCALING_SHADER: &str = include_str!("./shaders/fallback_scaling_shader.wgsl");
+
 pub struct ColorSpaceConverter {
     bt709_uniform: ColorSpaceUniform,
     bt601_uniform: ColorSpaceUniform,
     bt2020_uniform: ColorSpaceUniform,
-    uniform_buffer: Buffer,
+    sdr_uniform: HDRFlagUniform,
+    hdr_uniform: HDRFlagUniform,
+    colorspace_uniform_buffer: Buffer,
+    hdr_uniform_buffer: Buffer,
     bind_group_layout: BindGroupLayout,
     fallback_bind_group_layout: BindGroupLayout,
     uniform_bind_group: BindGroup,
@@ -57,11 +61,21 @@ impl ColorSpaceConverter {
         let bt709_uniform = Self::get_bt709_params();
         let bt601_uniform = Self::get_bt601_params();
         let bt2020_uniform = Self::get_bt2020_params();
-        let uniform_buffer = render_state
+        let hdr_uniform = HDRFlagUniform { flag: [1, 0, 0, 0] };
+        let sdr_uniform = HDRFlagUniform { flag: [0, 0, 0, 0] };
+        let colorspace_uniform_buffer =
+            render_state
+                .device
+                .create_buffer_init(&BufferInitDescriptor {
+                    label: Some("Color_Space_Uniform_Buffer"),
+                    contents: bytemuck::cast_slice(&[bt709_uniform]),
+                    usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                });
+        let hdr_uniform_buffer = render_state
             .device
             .create_buffer_init(&BufferInitDescriptor {
-                label: Some("Color Space Uniform Buffer"),
-                contents: bytemuck::cast_slice(&[bt709_uniform]),
+                label: Some("HDR_Flag_Uniform_Buffer"),
+                contents: bytemuck::cast_slice(&[sdr_uniform]),
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             });
         let bind_group_layout =
@@ -160,25 +174,43 @@ impl ColorSpaceConverter {
             render_state
                 .device
                 .create_bind_group_layout(&BindGroupLayoutDescriptor {
-                    label: Some("ColorSpace_Uniform_Layout"),
-                    entries: &[BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::Buffer {
-                            ty: BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
+                    label: Some("Uniform_Layout"),
+                    entries: &[
+                        BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: ShaderStages::FRAGMENT,
+                            ty: BindingType::Buffer {
+                                ty: BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
                         },
-                        count: None,
-                    }],
+                        BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: ShaderStages::FRAGMENT,
+                            ty: BindingType::Buffer {
+                                ty: BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
                 });
         let uniform_bind_group = render_state.device.create_bind_group(&BindGroupDescriptor {
             layout: &uniform_bind_group_layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-            label: Some("ColorSpace_Uniform_BindGroup"),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: colorspace_uniform_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: hdr_uniform_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("Uniform_BindGroup"),
         });
         let scaling_shader = render_state
             .device
@@ -275,7 +307,10 @@ impl ColorSpaceConverter {
             bt709_uniform,
             bt601_uniform,
             bt2020_uniform,
-            uniform_buffer,
+            hdr_uniform,
+            sdr_uniform,
+            colorspace_uniform_buffer,
+            hdr_uniform_buffer,
             texture_y: None,
             texture_u: None,
             texture_v: None,
@@ -342,19 +377,36 @@ impl ColorSpaceConverter {
         &mut self,
         color_space: Space,
         pixel_format: Pixel,
+        is_hdr: bool,
         size_rect: [u32; 2],
     ) {
         let color_space_uniform = match color_space {
             Space::BT709 => self.bt709_uniform,
             Space::SMPTE170M | Space::BT470BG => self.bt601_uniform,
-            Space::BT2020NCL => self.bt2020_uniform,
+            Space::BT2020NCL => {
+                info!("input video color space is BT.2020 NCL");
+                self.bt2020_uniform
+            }
             _ => self.bt709_uniform,
         };
         self.render_state.queue.write_buffer(
-            &self.uniform_buffer,
+            &self.colorspace_uniform_buffer,
             0,
             bytemuck::cast_slice(&[color_space_uniform]),
         );
+        if is_hdr {
+            self.render_state.queue.write_buffer(
+                &self.hdr_uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[self.hdr_uniform]),
+            );
+        } else {
+            self.render_state.queue.write_buffer(
+                &self.hdr_uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[self.sdr_uniform]),
+            );
+        }
         let texture_y = if pixel_format != Pixel::P010LE
             && pixel_format != Pixel::YUV420P10
             && pixel_format != Pixel::YUV420P10LE
@@ -374,6 +426,7 @@ impl ColorSpaceConverter {
                 view_formats: &[],
             })
         } else {
+            info!("allocating 10bit texture");
             self.render_state.device.create_texture(&TextureDescriptor {
                 label: Some("Video_Y_Plane"),
                 size: Extent3d {
@@ -847,4 +900,9 @@ impl ColorSpaceUniform {
             offset: offset.into(),
         }
     }
+}
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct HDRFlagUniform {
+    flag: [u32; 4],
 }
