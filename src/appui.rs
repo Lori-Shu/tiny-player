@@ -91,7 +91,6 @@ pub struct AppUI {
     ui_flags: UIFlags,
     play_time: time::Time,
     tip_window_msg: String,
-    app_start_instant: Instant,
     open_file_dialog: FileDialog,
     // _subtitle: Arc<RwLock<AISubTitle>>,
     // subtitle_text: String,
@@ -106,6 +105,8 @@ pub struct AppUI {
     time_formatter: OwnedFormatItem,
     keep_awake: Option<KeepAwake>,
     controlbar_ui: ControlBarUI,
+    last_fps_update_instant: Instant,
+    fps_text_str: String,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -116,7 +117,6 @@ impl eframe::App for AppUI {
                 down part is update data part with no ui painting
 
                  */
-                let now = Instant::now();
                 if self.manage_keepawake().is_err() {
                     warn!("manage keepawake err!");
                 }
@@ -148,7 +148,7 @@ impl eframe::App for AppUI {
                     .visible_flag
                     .store(false, std::sync::atomic::Ordering::Release);
                 self.paint_video_image(ui);
-                self.paint_frame_info_text(ui, &now);
+                self.paint_frame_info_text(ui);
 
                 ui.horizontal(|ui| {
                     self.paint_tip_window(ui.ctx());
@@ -339,6 +339,8 @@ impl AppUI {
             pause_flag.clone(),
             visible_num.clone(),
         );
+        let last_fps_update_instant = Instant::now();
+        let fps_text_str = String::new();
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
@@ -359,7 +361,6 @@ impl AppUI {
             },
             // used_model,
             tip_window_msg: String::new(),
-            app_start_instant: Instant::now(),
             open_file_dialog: f_dialog,
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
@@ -372,6 +373,8 @@ impl AppUI {
             time_formatter,
             keep_awake,
             controlbar_ui,
+            last_fps_update_instant,
+            fps_text_str,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -401,31 +404,38 @@ impl AppUI {
                 .media_source_flag
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                let play_ts = self
-                    .current_main_stream_timestamp
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let sec_num = {
-                    if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                        let audio_time_base = tiny_decoder.audio_time_base;
-                        play_ts * audio_time_base.numerator() as i64
-                            / audio_time_base.denominator() as i64
-                    } else {
-                        let v_time_base = tiny_decoder.video_time_base;
+                if !self
+                    .ui_flags
+                    .live_mode
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    let play_ts = self
+                        .current_main_stream_timestamp
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let sec_num = {
+                        if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                            let audio_time_base = tiny_decoder.audio_time_base;
+                            play_ts * audio_time_base.numerator() as i64
+                                / audio_time_base.denominator() as i64
+                        } else {
+                            let v_time_base = tiny_decoder.video_time_base;
 
-                        play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
+                            play_ts * v_time_base.numerator() as i64
+                                / v_time_base.denominator() as i64
+                        }
+                    };
+                    let sec = (sec_num % 60) as u8;
+                    let min_num = sec_num / 60;
+                    let min = (min_num % 60) as u8;
+                    let hour_num = min_num / 60;
+                    let hour = hour_num as u8;
+                    if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
+                        if cur_time != self.play_time {
+                            self.play_time = cur_time;
+                        }
+                    } else {
+                        warn!("update time err!");
                     }
-                };
-                let sec = (sec_num % 60) as u8;
-                let min_num = sec_num / 60;
-                let min = (min_num % 60) as u8;
-                let hour_num = min_num / 60;
-                let hour = hour_num as u8;
-                if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                    if cur_time != self.play_time {
-                        self.play_time = cur_time;
-                    }
-                } else {
-                    warn!("update time err!");
                 }
             }
         }
@@ -595,8 +605,8 @@ impl AppUI {
     fn paint_file_btn(&mut self, ui: &mut Ui) {
         if let Ok(visible_num) = self.visible_num.try_read() {
             let btn_rect = Vec2::new(
-                ui.ctx().content_rect().width() / 10.0,
-                ui.ctx().content_rect().width() / 10.0,
+                ui.ctx().content_rect().width() / 20.0,
+                ui.ctx().content_rect().width() / 20.0,
             );
             let file_image_button = egui::Button::new(
                 Image::from(VIDEO_FILE_IMG)
@@ -758,26 +768,29 @@ impl AppUI {
     //     });
     // }
 
-    fn paint_frame_info_text(&self, ui: &mut Ui, now: &Instant) {
+    fn paint_frame_info_text(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let app_sec = (*now - self.app_start_instant).as_secs();
             let mut orange_color = Color32::ORANGE.to_srgba_unmultiplied();
             orange_color[3] = 100;
-            if let Some(fps) = ui.ctx().cumulative_frame_nr().checked_div(app_sec) {
-                let mut text_str = "fps：".to_string();
-                text_str.push_str(fps.to_string().as_str());
-
-                let rich_text = egui::RichText::new(text_str)
-                    .color(Color32::from_rgba_unmultiplied(
-                        orange_color[0],
-                        orange_color[1],
-                        orange_color[2],
-                        orange_color[3],
-                    ))
-                    .size(30.0);
-                let fps_button = egui::Button::new(rich_text).frame(false);
-                ui.add(fps_button);
+            let now_ins = Instant::now();
+            if let Some(dur) = now_ins.checked_duration_since(self.last_fps_update_instant) {
+                if dur.as_secs() > 0 {
+                    let fps = ui.input(|input| 1.0 / input.stable_dt.min(0.1));
+                    self.fps_text_str = format!("fps:{}", fps as i32);
+                    self.last_fps_update_instant = now_ins;
+                }
             }
+            let rich_text = egui::RichText::new(&self.fps_text_str)
+                .color(Color32::from_rgba_unmultiplied(
+                    orange_color[0],
+                    orange_color[1],
+                    orange_color[2],
+                    orange_color[3],
+                ))
+                .size(30.0);
+            let fps_button = egui::Button::new(rich_text).frame(false);
+            ui.add(fps_button);
+
             let mut date_time_str = "date-time：".to_string();
             if let Ok(formatter) =
                 time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")

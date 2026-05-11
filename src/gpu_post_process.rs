@@ -146,7 +146,7 @@ impl ColorSpaceConverter {
             label: Some("Video_Frame_Sampler"),
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
-            mipmap_filter: MipmapFilterMode::Nearest,
+            mipmap_filter: MipmapFilterMode::Linear,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
