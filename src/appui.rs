@@ -404,31 +404,38 @@ impl AppUI {
                 .media_source_flag
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                let play_ts = self
-                    .current_main_stream_timestamp
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let sec_num = {
-                    if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                        let audio_time_base = tiny_decoder.audio_time_base;
-                        play_ts * audio_time_base.numerator() as i64
-                            / audio_time_base.denominator() as i64
-                    } else {
-                        let v_time_base = tiny_decoder.video_time_base;
+                if !self
+                    .ui_flags
+                    .live_mode
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    let play_ts = self
+                        .current_main_stream_timestamp
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let sec_num = {
+                        if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                            let audio_time_base = tiny_decoder.audio_time_base;
+                            play_ts * audio_time_base.numerator() as i64
+                                / audio_time_base.denominator() as i64
+                        } else {
+                            let v_time_base = tiny_decoder.video_time_base;
 
-                        play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
+                            play_ts * v_time_base.numerator() as i64
+                                / v_time_base.denominator() as i64
+                        }
+                    };
+                    let sec = (sec_num % 60) as u8;
+                    let min_num = sec_num / 60;
+                    let min = (min_num % 60) as u8;
+                    let hour_num = min_num / 60;
+                    let hour = hour_num as u8;
+                    if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
+                        if cur_time != self.play_time {
+                            self.play_time = cur_time;
+                        }
+                    } else {
+                        warn!("update time err!");
                     }
-                };
-                let sec = (sec_num % 60) as u8;
-                let min_num = sec_num / 60;
-                let min = (min_num % 60) as u8;
-                let hour_num = min_num / 60;
-                let hour = hour_num as u8;
-                if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                    if cur_time != self.play_time {
-                        self.play_time = cur_time;
-                    }
-                } else {
-                    warn!("update time err!");
                 }
             }
         }
@@ -768,7 +775,7 @@ impl AppUI {
             let now_ins = Instant::now();
             if let Some(dur) = now_ins.checked_duration_since(self.last_fps_update_instant) {
                 if dur.as_secs() > 0 {
-                    let fps = ui.input(|input| 1.0 / input.stable_dt);
+                    let fps = ui.input(|input| 1.0 / input.stable_dt.min(0.1));
                     self.fps_text_str = format!("fps:{}", fps as i32);
                     self.last_fps_update_instant = now_ins;
                 }
