@@ -245,9 +245,7 @@ impl PresentDataManager {
             / video_time_base.denominator() as i64;
         let a_time = timestamp * 1000 * audio_time_base.numerator() as i64
             / audio_time_base.denominator() as i64;
-        let time_dur = a_time - v_time;
-        let time_dur_abs = time_dur.abs();
-        if a_time > v_time || time_dur_abs > 10000 {
+        if a_time > v_time {
             return true;
         }
 

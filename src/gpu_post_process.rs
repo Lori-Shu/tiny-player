@@ -18,7 +18,11 @@ use eframe::{
     },
 };
 
-use ffmpeg_the_third::{color::Space, format::Pixel, frame::Video};
+use ffmpeg_the_third::{
+    color::{Space, TransferCharacteristic},
+    format::Pixel,
+    frame::Video,
+};
 use glam::{Mat4, Vec4};
 use tokio::sync::RwLock;
 use tracing::info;
@@ -32,7 +36,8 @@ pub struct ColorSpaceConverter {
     bt601_uniform: ColorSpaceUniform,
     bt2020_uniform: ColorSpaceUniform,
     sdr_uniform: HDRFlagUniform,
-    hdr_uniform: HDRFlagUniform,
+    pq_uniform: HDRFlagUniform,
+    hlg_uniform: HDRFlagUniform,
     colorspace_uniform_buffer: Buffer,
     hdr_uniform_buffer: Buffer,
     bind_group_layout: BindGroupLayout,
@@ -61,7 +66,8 @@ impl ColorSpaceConverter {
         let bt709_uniform = Self::get_bt709_params();
         let bt601_uniform = Self::get_bt601_params();
         let bt2020_uniform = Self::get_bt2020_params();
-        let hdr_uniform = HDRFlagUniform { flag: [1, 0, 0, 0] };
+        let pq_uniform = HDRFlagUniform { flag: [1, 0, 0, 0] };
+        let hlg_uniform = HDRFlagUniform { flag: [0, 1, 0, 0] };
         let sdr_uniform = HDRFlagUniform { flag: [0, 0, 0, 0] };
         let colorspace_uniform_buffer =
             render_state
@@ -307,7 +313,8 @@ impl ColorSpaceConverter {
             bt709_uniform,
             bt601_uniform,
             bt2020_uniform,
-            hdr_uniform,
+            pq_uniform,
+            hlg_uniform,
             sdr_uniform,
             colorspace_uniform_buffer,
             hdr_uniform_buffer,
@@ -377,7 +384,7 @@ impl ColorSpaceConverter {
         &mut self,
         color_space: Space,
         pixel_format: Pixel,
-        is_hdr: bool,
+        transfer_characteristic: TransferCharacteristic,
         size_rect: [u32; 2],
     ) {
         let color_space_uniform = match color_space {
@@ -394,18 +401,28 @@ impl ColorSpaceConverter {
             0,
             bytemuck::cast_slice(&[color_space_uniform]),
         );
-        if is_hdr {
-            self.render_state.queue.write_buffer(
-                &self.hdr_uniform_buffer,
-                0,
-                bytemuck::cast_slice(&[self.hdr_uniform]),
-            );
-        } else {
-            self.render_state.queue.write_buffer(
-                &self.hdr_uniform_buffer,
-                0,
-                bytemuck::cast_slice(&[self.sdr_uniform]),
-            );
+        match transfer_characteristic {
+            TransferCharacteristic::SMPTE2084 => {
+                self.render_state.queue.write_buffer(
+                    &self.hdr_uniform_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.pq_uniform]),
+                );
+            }
+            TransferCharacteristic::ARIB_STD_B67 => {
+                self.render_state.queue.write_buffer(
+                    &self.hdr_uniform_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.hlg_uniform]),
+                );
+            }
+            _ => {
+                self.render_state.queue.write_buffer(
+                    &self.hdr_uniform_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.sdr_uniform]),
+                );
+            }
         }
         let texture_y = if pixel_format != Pixel::P010LE
             && pixel_format != Pixel::YUV420P10

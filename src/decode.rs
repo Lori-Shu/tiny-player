@@ -12,7 +12,6 @@ use anyhow::Context;
 use derive_builder::Builder;
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream, codec,
-    color::TransferCharacteristic,
     ffi::{
         AV_CHANNEL_LAYOUT_STEREO, AV_NOPTS_VALUE, AVCodecContext, AVHWDeviceType, AVPixelFormat,
         AVSEEK_FLAG_BACKWARD, AVSampleFormat, SwrContext, av_hwdevice_ctx_create,
@@ -386,16 +385,11 @@ impl TinyDecoder {
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
             let video_decoder = self.enable_decoder_hwacc_with_fallback(codec_ctx).await?;
             {
-                let is_hdr = match video_decoder.color_transfer_characteristic() {
-                    TransferCharacteristic::SMPTE2084 | TransferCharacteristic::SMPTE428 => true,
-                    TransferCharacteristic::BT709 => false,
-                    _ => false,
-                };
                 let mut color_space_converter = self.color_space_converter.write().await;
                 color_space_converter.set_params_for_space(
                     video_decoder.color_space(),
                     video_decoder.format(),
-                    is_hdr,
+                    video_decoder.color_transfer_characteristic(),
                     [video_decoder.width(), video_decoder.height()],
                 );
             }
