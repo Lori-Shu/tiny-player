@@ -41,7 +41,7 @@ Currently, `tiny-player` is optimized for **Windows**.
 ### How to Use
 1. Click the **File** button on the main interface.
 2. Select a media file (standard formats like `.mp4` or `.mkv` are recommended).
-3. Click **Open**, then hit the **Play** button.
+3. Click **Open**, then hit the **Play** button (there are more ways to open a media file).
 4. Use the on-screen **Control Widgets** to manage playback progress and volume.
 
 ---
