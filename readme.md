@@ -62,4 +62,4 @@ This project is licensed under the GPLv2 License. See the [LICENSE](./LICENSE) f
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check the issues page if you want to help. If you find this project useful, please give it a **Star**! 🌟
+Contributions, issues, and feature requests are welcome! Feel free to check the issues page if you want to help. PR is always welcome. If you find this project useful, please give it a **Star**! 🌟
