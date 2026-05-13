@@ -28,3 +28,6 @@ jobs:
         uses: pullfrog/pullfrog@v0
         with:
           prompt: ${{ inputs.prompt }}
+env:
+    PULLFROG_RETRY_COUNT: 3
+    PULLFROG_RETRY_DELAY: 2s
