@@ -68,7 +68,7 @@ impl PlayListUI {
                                             if ui.add(player_text_button).clicked() {
                                                 let mut ctx = ctx.clone();
                                                 ctx.path = des.path.clone();
-                                                if AppUI::change_format_input(ctx).is_ok() {
+                                                if AppUI::reset_media_input(ctx).is_ok() {
                                                     live_mode.store(
                                                         false,
                                                         std::sync::atomic::Ordering::Relaxed,
@@ -83,7 +83,7 @@ impl PlayListUI {
                                             if ui.add(player_text_button).clicked() {
                                                 let mut ctx = ctx.clone();
                                                 ctx.path = des.path.clone();
-                                                if AppUI::change_format_input(ctx).is_ok() {
+                                                if AppUI::reset_media_input(ctx).is_ok() {
                                                     live_mode.store(
                                                         false,
                                                         std::sync::atomic::Ordering::Relaxed,

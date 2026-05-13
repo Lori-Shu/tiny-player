@@ -11,7 +11,6 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
     let x = f32(i32(in_vertex_index) / 2 % 2) * 2.0 - 1.0;
     let y = f32(i32(in_vertex_index) % 2) * 2.0 - 1.0;
 
-
     var pos = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 1.0, -1.0),
@@ -23,7 +22,6 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 
     let current_pos = pos[in_vertex_index];
     out.clip_position = vec4<f32>(current_pos, 0.0, 1.0);
-
 
     out.tex_coords = vec2<f32>(
         current_pos.x * 0.5 + 0.5,
@@ -90,7 +88,6 @@ fn pq_to_sdr(color:vec3<f32>)->vec3<f32>{
     let rgb_scene = rgb_linear_abs / 203.0;
     let rgb_linear_bt709 = bt2020_to_bt709(rgb_scene);
 
-
     let rgb_tonemapped = aces_tonemap(rgb_linear_bt709);
     let rgb_safe_for_gamma = max(rgb_tonemapped, vec3<f32>(0.0));
 
@@ -147,7 +144,6 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
 
     let yuv_input = vec3<f32>(y, u, v);
 
-
     let yuv_adjusted = yuv_input + cs_params.yuv_offset.xyz;
     if hdr_flag.flag.r==1{
         let final_color=pq_to_sdr(yuv_adjusted);
@@ -159,6 +155,4 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
         let final_color = (cs_params.yuv2rgb_matrix * vec4<f32>(yuv_adjusted, 1.0)).rgb;
         return vec4<f32>(final_color, 1.0);
     }
-
-
 }
