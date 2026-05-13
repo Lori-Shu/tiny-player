@@ -56,7 +56,7 @@ If you are using a laptop and experience low frame rates:
 
 ## 📄 License
 
-This project is licensed under the GPLv2 License. See the [LICENSE](./LICENSE) file for more details. This license is chosen for balance.
+This project is licensed under the GPLv2 License. See the [LICENSE](./LICENSE) file for more details. This license is chosen for balance and justice.
 
 ---
 
