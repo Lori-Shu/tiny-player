@@ -101,7 +101,7 @@ fn hlg_inverse_oetf(v: f32) -> f32 {
     let hlg_a: f32 = 0.1788;
     let hlg_b: f32 = 0.2847; 
     let hlg_c: f32 = 0.5599; 
-    if (v <= 0.5) {
+    if v <= 0.5 {
         return (v * v) / 3.0;
     } else {
         return (exp((v - hlg_c) / hlg_a) + hlg_b) / 12.0;
@@ -117,7 +117,7 @@ fn hlg_to_sdr(hlg_color: vec3<f32>) -> vec3<f32> {
     );
 
     let luminance = dot(linear_rgb, vec3<f32>(0.2627, 0.6780, 0.0593)); 
-    if (luminance > 0.0) {
+    if luminance > 0.0 {
         linear_rgb = linear_rgb * pow(luminance, 1.2 - 1.0);
     }
 
@@ -144,13 +144,13 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
 
     let yuv_adjusted = yuv_input + cs_params.yuv_offset.xyz;
 
-    if hdr_flag.flag.r==1{
+    if hdr_flag.flag.r==1 {
         let final_color=pq_to_sdr(yuv_adjusted);
         return vec4<f32>(final_color, 1.0);
-    }else if hdr_flag.flag.g==1{
+    } else if hdr_flag.flag.g==1 {
         let final_color=hlg_to_sdr(yuv_adjusted);
         return vec4<f32>(final_color, 1.0);
-    }else{
+    } else {
         let final_color = (cs_params.yuv2rgb_matrix * vec4<f32>(yuv_adjusted, 1.0)).rgb;
         return vec4<f32>(final_color, 1.0);
     }
