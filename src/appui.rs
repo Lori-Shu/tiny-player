@@ -130,7 +130,7 @@ impl eframe::App for AppUI {
                         .pause_flag
                         .load(std::sync::atomic::Ordering::Relaxed)
                     {
-                        if self.check_play_end() {
+                        if self.is_play_end() {
                             self.ui_flags
                                 .pause_flag
                                 .store(true, std::sync::atomic::Ordering::Release);
@@ -648,7 +648,7 @@ impl AppUI {
             if let Some(p) = file_path {
                 let mut ctx = self.change_input_context.clone();
                 ctx.path = p.clone();
-                if Self::change_format_input(ctx).is_ok() {
+                if Self::reset_media_input(ctx).is_ok() {
                     if let Some(p_str) = p.to_str() {
                         self.ui_flags
                             .live_mode
@@ -814,7 +814,7 @@ impl AppUI {
             ui.add(date_time_button);
         });
     }
-    fn check_play_end(&self) -> bool {
+    fn is_play_end(&self) -> bool {
         if !self
             .ui_flags
             .live_mode
@@ -835,7 +835,7 @@ impl AppUI {
         false
     }
 
-    async fn reset_main_color_img_to_bg(
+    async fn reset_main_colorimg_to_bg(
         bg_dyn_img: Arc<DynamicImage>,
         video_rect: &[u32; 2],
         main_color_image: Arc<RwLock<ColorImage>>,
@@ -863,7 +863,7 @@ impl AppUI {
         let mut main_color_image = main_color_image.write().await;
         *main_color_image = bg_color_img;
     }
-    async fn reset_main_color_img_to_cover(
+    async fn reset_main_colorimg_to_cover(
         tiny_decoder: &TinyDecoder,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
@@ -892,7 +892,7 @@ impl AppUI {
             }
         }
     }
-    pub fn change_format_input(context: ChangeInputContext) -> PlayerResult<()> {
+    pub fn reset_media_input(context: ChangeInputContext) -> PlayerResult<()> {
         info!("in change format input");
         context.runtime_handle.spawn(async move {
             context
@@ -917,17 +917,14 @@ impl AppUI {
                 }
                 context.audio_player.clear();
                 let video_rect = tiny_decoder.video_frame_rect;
-                Self::reset_main_color_img_to_bg(
+                Self::reset_main_colorimg_to_bg(
                     context.bg_dyn_img,
                     &video_rect,
                     context.main_color_image.clone(),
                 )
                 .await;
-                Self::reset_main_color_img_to_cover(
-                    &tiny_decoder,
-                    context.main_color_image.clone(),
-                )
-                .await;
+                Self::reset_main_colorimg_to_cover(&tiny_decoder, context.main_color_image.clone())
+                    .await;
 
                 if let Err(e) = Self::update_video_texture(
                     context.main_color_image,
@@ -1008,7 +1005,7 @@ impl AppUI {
         if let Some(path_buf) = detected {
             let mut ctx = self.change_input_context.clone();
             ctx.path = path_buf.clone();
-            if Self::change_format_input(ctx).is_ok() {
+            if Self::reset_media_input(ctx).is_ok() {
                 if let Some(p_str) = path_buf.to_str() {
                     warn!("filepath{}", p_str);
                 }
