@@ -67,7 +67,7 @@ impl PresentDataManager {
                     {
                         if let Some(pts) = audio_frame.pts() {
                             audio_cur_ts = Some(pts);
-                            if let Err(e) = AudioPlayer::play_raw_data_from_audio_frame(
+                            if let Err(e) = AudioPlayer::append_source_data(
                                 &data_manage_context.audio_sink,
                                 audio_frame.clone(),
                             )
