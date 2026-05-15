@@ -31,7 +31,7 @@
 
 ## 🚀 Getting Started
 
-Currently, `tiny-player` is optimized for **Windows**.
+Currently, `tiny-player` is optimized for **Windows**. Other platforms are not optimized but should be able to compile.
 
 ### Installation
 1. Download the latest `tiny-player-setup.exe` from the Releases page.
