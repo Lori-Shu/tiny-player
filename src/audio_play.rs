@@ -36,7 +36,7 @@ impl AudioPlayer {
         })
     }
 
-    pub async fn play_raw_data_from_audio_frame(
+    pub async fn append_source_data(
         sink: &Player,
         audio_frame: ffmpeg_the_third::frame::Audio,
     ) -> PlayerResult<()> {
@@ -58,7 +58,7 @@ impl AudioPlayer {
     pub fn change_volumn(&self, volumn: f32) {
         self.sink.set_volume(volumn);
     }
-    pub fn source_queue_skip_to_end(&self) {
+    pub fn clear_source_queue(&self) {
         self.sink.clear();
     }
     pub fn pause(&self) {

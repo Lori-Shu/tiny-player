@@ -2,7 +2,7 @@
 
 > **A lightweight, high-performance multimedia player built with Rust.**
 
-`tiny-player` is a multimedia player designed for simplicity and efficiency. By combining the memory safety of Rust, the robust decoding power of FFmpeg, and high-speed GPU rendering, it provides a fluid and seamless playback experience with a minimal footprint.
+`tiny-player` is a multimedia player designed for simplicity and efficiency. By combining the memory safety of Rust, the robust decoding power of FFmpeg, and high-speed GPU rendering, it provides a fluid and seamless playback experience with a minimal footprint. Designed for those who are tired of players which are full of annoying ads.
 
 ![App Screenshot](./screenshot.png)
 
@@ -31,7 +31,7 @@
 
 ## 🚀 Getting Started
 
-Currently, `tiny-player` is optimized for **Windows**.
+Currently, `tiny-player` is optimized for **Windows**. Other platforms are not optimized but should be able to compile.
 
 ### Installation
 1. Download the latest `tiny-player-setup.exe` from the Releases page.

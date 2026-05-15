@@ -138,7 +138,7 @@ impl ControlBarUI {
                     tiny_decoder.seek_timestamp_to_decode(ts).await;
                 });
 
-                audio_player.source_queue_skip_to_end();
+                audio_player.clear_source_queue();
                 if !self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
                     audio_player.play();
                 }
