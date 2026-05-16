@@ -87,7 +87,7 @@ impl PresentDataManager {
                 }
 
                 PresentDataManager::update_current_timestamp(
-                    data_manage_context.main_stream_current_timestamp.clone(),
+                    data_manage_context.current_main_stream_timestamp.clone(),
                     audio_cur_ts,
                     mainstream,
                     data_manage_context.current_video_timestamp.clone(),
@@ -117,7 +117,7 @@ impl PresentDataManager {
                     main_stream.clone(),
                     audio_time_base,
                     video_time_base,
-                    data_manage_context.main_stream_current_timestamp.clone(),
+                    data_manage_context.current_main_stream_timestamp.clone(),
                     data_manage_context.current_video_timestamp.clone(),
                 )
                 .await
@@ -279,7 +279,7 @@ pub struct DataManageContext {
     // used_model: Arc<RwLock<UsedModel>>,
     // ai_subtitle: Arc<RwLock<AISubTitle>>,
     audio_sink: Arc<Player>,
-    main_stream_current_timestamp: Arc<AtomicI64>,
+    current_main_stream_timestamp: Arc<AtomicI64>,
     runtime_handle: Handle,
     current_video_timestamp: Arc<AtomicI64>,
     video_texture: Arc<RwLock<Texture>>,
