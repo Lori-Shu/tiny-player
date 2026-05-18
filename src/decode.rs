@@ -870,17 +870,19 @@ impl TinyDecoder {
                 if res != 0 {
                     info!("seek err num:{res}");
                 }
+                self.audio_packet_cache_queue.1.drain();
+                self.video_packet_cache_queue.1.drain();
+                self.audio_frame_cache_queue.1.drain();
+                self.video_frame_cache_queue.1.drain();
+                self.current_video_timestamp
+                    .store(0, std::sync::atomic::Ordering::Release);
+                
                 self.flush_decoders().await;
             }
+            info!("seek finished!");
         }
 
-        self.audio_packet_cache_queue.1.drain();
-        self.video_packet_cache_queue.1.drain();
-        self.audio_frame_cache_queue.1.drain();
-        self.video_frame_cache_queue.1.drain();
-        self.current_video_timestamp
-            .store(0, std::sync::atomic::Ordering::Release);
-        info!("seek finished!");
+        
     }
     /// use the file detail to compute the video duration and make str to inform the user
     async fn compute_end_time_str(&mut self, end_ts: i64) {
