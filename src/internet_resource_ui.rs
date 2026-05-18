@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     PlayerResult,
-    appui::{AppUI, ChangeInputContext},
+    appui::{AppUI, ResetInputContext},
 };
 const ENGLISH_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/eng.m3u";
 const CHINESE_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/zho.m3u";
@@ -35,13 +35,13 @@ pub struct InternetResourceUI {
     available_resource_map: Arc<RwLock<HashMap<LanguageCategory, VecDeque<MediaResource>>>>,
     current_category: Arc<RwLock<LanguageCategory>>,
     web_client: Client,
-    change_input_ctx: Arc<RwLock<ChangeInputContext>>,
+    change_input_ctx: Arc<RwLock<ResetInputContext>>,
     internet_list_window_flag: Arc<AtomicBool>,
 }
 
 impl InternetResourceUI {
     pub fn new(
-        change_input_ctx: ChangeInputContext,
+        change_input_ctx: ResetInputContext,
         internet_list_window_flag: Arc<AtomicBool>,
     ) -> Self {
         let mut available_resource_map = HashMap::new();

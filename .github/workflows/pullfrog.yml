@@ -28,7 +28,3 @@ jobs:
         uses: pullfrog/pullfrog@v0
         with:
           prompt: ${{ inputs.prompt }}
-          model: openrouter/auto
-env:
-    PULLFROG_RETRY_COUNT: 3
-    PULLFROG_RETRY_DELAY: 6s

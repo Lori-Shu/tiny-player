@@ -5,11 +5,11 @@ use egui_file::FileDialog;
 use tokio::{runtime::Handle, sync::RwLock};
 use tracing::info;
 
-use crate::appui::{AppUI, ChangeInputContext, VideoDes};
+use crate::appui::{AppUI, ResetInputContext, VideoDes};
 
 pub struct PlayListUI {
     video_des: Arc<RwLock<Vec<VideoDes>>>,
-    change_input_context: ChangeInputContext,
+    reset_input_context: ResetInputContext,
     live_mode: Arc<AtomicBool>,
     scan_folder_dialog: Arc<RwLock<FileDialog>>,
     runtime_handle: Handle,
@@ -17,7 +17,7 @@ pub struct PlayListUI {
 }
 impl PlayListUI {
     pub fn new(
-        change_input_context: ChangeInputContext,
+        reset_input_context: ResetInputContext,
         live_mode: Arc<AtomicBool>,
         runtime_handle: Handle,
         playlist_window_flag: Arc<AtomicBool>,
@@ -26,7 +26,7 @@ impl PlayListUI {
         let scan_folder_dialog = Arc::new(RwLock::new(FileDialog::select_folder()));
         Self {
             video_des,
-            change_input_context,
+            reset_input_context,
             live_mode,
             scan_folder_dialog,
             runtime_handle,
@@ -42,7 +42,7 @@ impl PlayListUI {
 
         let viewport_builder = ViewportBuilder::default();
         let video_des = self.video_des.clone();
-        let ctx = self.change_input_context.clone();
+        let ctx = self.reset_input_context.clone();
         let live_mode = self.live_mode.clone();
         let scan_folder_dialog = self.scan_folder_dialog.clone();
         let runtime_handle = self.runtime_handle.clone();

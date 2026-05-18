@@ -72,7 +72,7 @@ pub static THEME_COLOR: LazyLock<Color32> = LazyLock::new(|| {
 /// the main struct stores all the vars which are related to ui
 struct UIFlags {
     pause_flag: Arc<AtomicBool>,
-    tip_window_flag: bool,
+    tip_window_flag: Arc<AtomicBool>,
     playlist_window_flag: Arc<AtomicBool>,
     visible_flag: Arc<AtomicBool>,
     media_source_flag: Arc<AtomicBool>,
@@ -90,7 +90,7 @@ pub struct AppUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     ui_flags: UIFlags,
     play_time: time::Time,
-    tip_window_msg: String,
+    tip_window_msg: Arc<RwLock<String>>,
     open_file_dialog: FileDialog,
     // _subtitle: Arc<RwLock<AISubTitle>>,
     // subtitle_text: String,
@@ -100,7 +100,7 @@ pub struct AppUI {
     wgpu_render_state: Arc<RenderState>,
     end_ts: Arc<AtomicI64>,
     internet_resource_ui: InternetResourceUI,
-    change_input_context: ChangeInputContext,
+    change_input_context: ResetInputContext,
     playlist_ui: PlayListUI,
     time_formatter: OwnedFormatItem,
     keep_awake: Option<KeepAwake>,
@@ -250,6 +250,8 @@ impl AppUI {
         let video_frame_cache_queue = flume::bounded(32);
         let audio_decode_thread_notify = Arc::new(Notify::new());
         let video_decode_thread_notify = Arc::new(Notify::new());
+        let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
+        let current_video_timestamp = Arc::new(AtomicI64::new(0));
         let tiny_decoder = crate::decode::TinyDecoder::new(
             rt.clone(),
             media_source_flag.clone(),
@@ -260,15 +262,15 @@ impl AppUI {
             video_frame_cache_queue.clone(),
             audio_decode_thread_notify.clone(),
             video_decode_thread_notify.clone(),
+            current_video_timestamp.clone(),
         )?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
         // let subtitle_channel = mpsc::channel(10);
         // let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
         let audio_player = Arc::new(crate::audio_play::AudioPlayer::new()?);
-        let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
+
         let pause_flag = Arc::new(AtomicBool::new(false));
-        let current_video_timestamp = Arc::new(AtomicI64::new(0));
 
         let (video_texture_id, video_texture) =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
@@ -278,7 +280,7 @@ impl AppUI {
             // .ai_subtitle(subtitle.clone())
             .video_texture(video_texture.clone())
             .audio_sink(audio_player.sink())
-            .main_stream_current_timestamp(current_main_stream_timestamp.clone())
+            .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .runtime_handle(rt.clone())
             .pause_flag(pause_flag.clone())
@@ -294,7 +296,9 @@ impl AppUI {
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
         let live_mode = Arc::new(AtomicBool::new(false));
-        let change_input_context = ChangeInputContextBuilder::default()
+        let tip_window_flag = Arc::new(AtomicBool::new(false));
+        let tip_window_msg = Arc::new(RwLock::new("empty msg".to_string()));
+        let change_input_context = ResetInputContextBuilder::default()
             .audio_player(audio_player.sink())
             .bg_dyn_img(bg_dyn_img.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
@@ -310,6 +314,8 @@ impl AppUI {
             .video_texture_id(video_texture_id.clone())
             .live_mode(live_mode.clone())
             .present_data_manager(present_data_manager.clone())
+            .tip_window_flag(tip_window_flag.clone())
+            .tip_window_msg(tip_window_msg.clone())
             .build()?;
         let internet_list_window_flag = Arc::new(AtomicBool::new(false));
         let internet_resource_ui = InternetResourceUI::new(
@@ -336,7 +342,6 @@ impl AppUI {
             audio_player.clone(),
             tiny_decoder.clone(),
             rt.clone(),
-            pause_flag.clone(),
             visible_num.clone(),
         );
         let last_fps_update_instant = Instant::now();
@@ -352,7 +357,7 @@ impl AppUI {
             play_time,
             ui_flags: UIFlags {
                 pause_flag,
-                tip_window_flag: false,
+                tip_window_flag,
                 playlist_window_flag,
                 visible_flag,
                 media_source_flag,
@@ -360,7 +365,7 @@ impl AppUI {
                 live_mode,
             },
             // used_model,
-            tip_window_msg: String::new(),
+            tip_window_msg,
             open_file_dialog: f_dialog,
             // _subtitle: subtitle,
             // subtitle_text: String::new(),
@@ -657,8 +662,12 @@ impl AppUI {
                     warn!("accept file path{}", p_str);
                 }
             } else {
-                self.tip_window_msg = "please choose a valid video or audio file !!!".to_string();
-                self.ui_flags.tip_window_flag = true;
+                if let Ok(mut tip_window_msg) = self.tip_window_msg.try_write() {
+                    *tip_window_msg = "please choose a valid video or audio file !!!".to_string();
+                }
+                self.ui_flags
+                    .tip_window_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
     }
@@ -886,7 +895,7 @@ impl AppUI {
             }
         }
     }
-    pub fn reset_media_input(context: ChangeInputContext) -> PlayerResult<()> {
+    pub fn reset_media_input(context: ResetInputContext) -> PlayerResult<()> {
         info!("in change format input");
         context.runtime_handle.spawn(async move {
             context
@@ -901,13 +910,23 @@ impl AppUI {
             {
                 let mut present_data_manager = context.present_data_manager.write().await;
                 if let Err(e) = present_data_manager.stop_present_tasks() {
-                    warn!("{:?}", e);
+                    let stop_err_msg = format!("stop_present_tasks error:{}", e.to_string());
+                    warn!("stop_present_tasks error:{:?}", e);
+                    *context.tip_window_msg.write().await = stop_err_msg;
+                    context
+                        .tip_window_flag
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
 
                 let mut tiny_decoder = context.tiny_decoder.write().await;
 
                 if let Err(e) = tiny_decoder.reset_input(&context.path).await {
-                    warn!("{}", e);
+                    let reset_input_err_msg = format!("reset_input error:{}", e.to_string());
+                    warn!("reset_input error:{:?}", e);
+                    *context.tip_window_msg.write().await = reset_input_err_msg;
+                    context
+                        .tip_window_flag
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
                 context.audio_player.clear();
                 let video_rect = tiny_decoder.video_frame_rect;
@@ -929,7 +948,13 @@ impl AppUI {
                 )
                 .await
                 {
-                    warn!("{}", e);
+                    let update_video_texture_err_msg =
+                        format!("update_video_texture error:{}", e.to_string());
+                    warn!("update_video_texture error:{:?}", e);
+                    *context.tip_window_msg.write().await = update_video_texture_err_msg;
+                    context
+                        .tip_window_flag
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
                 info!("reset video texture success");
                 present_data_manager.start_present_tasks();
@@ -1007,8 +1032,12 @@ impl AppUI {
                     .live_mode
                     .store(false, std::sync::atomic::Ordering::Relaxed);
             } else {
-                self.tip_window_msg = "please choose a valid video or audio file !!!".to_string();
-                self.ui_flags.tip_window_flag = true;
+                if let Ok(mut tip_window_msg) = self.tip_window_msg.try_write() {
+                    *tip_window_msg = "please choose a valid video or audio file !!!".to_string();
+                }
+                self.ui_flags
+                    .tip_window_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
     }
@@ -1179,14 +1208,23 @@ impl AppUI {
     }
 
     fn paint_tip_window(&mut self, ctx: &egui::Context) {
-        if self.ui_flags.tip_window_flag {
+        if self
+            .ui_flags
+            .tip_window_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             let tip_window = egui::Window::new("tip window");
             tip_window.show(ctx, |ui| {
-                let tip_text = RichText::new(&self.tip_window_msg).size(20.0);
-
+                let tip_text = if let Ok(tip_window_msg) = self.tip_window_msg.try_read() {
+                    RichText::new(&*tip_window_msg).size(20.0)
+                } else {
+                    RichText::new("try read err msg failed")
+                };
                 ui.add(Button::new(tip_text));
                 if ui.button("close").clicked() {
-                    self.ui_flags.tip_window_flag = false;
+                    self.ui_flags
+                        .tip_window_flag
+                        .store(false, std::sync::atomic::Ordering::Release);
                 }
             });
         }
@@ -1238,7 +1276,7 @@ pub struct VideoDes {
     pub texture_handle: TextureHandle,
 }
 #[derive(Clone, Builder)]
-pub struct ChangeInputContext {
+pub struct ResetInputContext {
     pause_flag: Arc<AtomicBool>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
@@ -1254,4 +1292,6 @@ pub struct ChangeInputContext {
     pub runtime_handle: Handle,
     pub live_mode: Arc<AtomicBool>,
     present_data_manager: Arc<RwLock<PresentDataManager>>,
+    tip_window_flag: Arc<AtomicBool>,
+    tip_window_msg: Arc<RwLock<String>>,
 }

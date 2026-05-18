@@ -116,6 +116,7 @@ pub struct TinyDecoder {
     video_decode_thread_notify: Arc<Notify>,
     color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
     media_source_flag: Arc<AtomicBool>,
+    current_video_timestamp: Arc<AtomicI64>,
 }
 impl TinyDecoder {
     /// init Decoder and new Struct
@@ -136,6 +137,7 @@ impl TinyDecoder {
         ),
         audio_decode_thread_notify: Arc<Notify>,
         video_decode_thread_notify: Arc<Notify>,
+        current_video_timestamp: Arc<AtomicI64>,
     ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let resampler = Arc::new(RwLock::new(None));
@@ -171,6 +173,7 @@ impl TinyDecoder {
             color_space_converter,
             resampler,
             media_source_flag,
+            current_video_timestamp,
         })
     }
     /// reset all fields to the initial state
@@ -867,15 +870,19 @@ impl TinyDecoder {
                 if res != 0 {
                     info!("seek err num:{res}");
                 }
+                self.audio_packet_cache_queue.1.drain();
+                self.video_packet_cache_queue.1.drain();
+                self.audio_frame_cache_queue.1.drain();
+                self.video_frame_cache_queue.1.drain();
+                self.current_video_timestamp
+                    .store(0, std::sync::atomic::Ordering::Release);
+                
                 self.flush_decoders().await;
             }
+            info!("seek finished!");
         }
 
-        self.audio_packet_cache_queue.1.drain();
-        self.video_packet_cache_queue.1.drain();
-        self.audio_frame_cache_queue.1.drain();
-        self.video_frame_cache_queue.1.drain();
-        info!("seek finished!");
+        
     }
     /// use the file detail to compute the video duration and make str to inform the user
     async fn compute_end_time_str(&mut self, end_ts: i64) {

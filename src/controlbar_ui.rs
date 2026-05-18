@@ -25,7 +25,6 @@ pub struct ControlBarUI {
     audio_player: Arc<AudioPlayer>,
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     async_rt: Handle,
-    pause_flag: Arc<AtomicBool>,
     show_subtitle_options_flag: bool,
     visible_num: Arc<AtomicU32>,
     audio_volume: f32,
@@ -42,7 +41,6 @@ impl ControlBarUI {
         audio_player: Arc<AudioPlayer>,
         tiny_decoder: Arc<RwLock<TinyDecoder>>,
         async_rt: Handle,
-        pause_flag: Arc<AtomicBool>,
         visible_num: Arc<AtomicU32>,
     ) -> Self {
         let time_text = String::new();
@@ -60,7 +58,6 @@ impl ControlBarUI {
             audio_player,
             tiny_decoder,
             async_rt,
-            pause_flag,
             show_subtitle_options_flag,
             visible_num,
             audio_volume,
@@ -131,21 +128,15 @@ impl ControlBarUI {
             }
             if slider_response.drag_stopped() {
                 info!("slider dragged!");
-                let audio_player = &mut self.audio_player;
+                let audio_player = self.audio_player.clone();
                 let tiny_decoder = self.tiny_decoder.clone();
                 self.async_rt.spawn(async move {
                     let tiny_decoder = tiny_decoder.read().await;
                     tiny_decoder.seek_timestamp_to_decode(ts).await;
-                });
-
-                audio_player.clear_source_queue();
-                if !self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    audio_player.clear_source_queue();
                     audio_player.play();
-                }
+                });
             }
-
-            self.current_main_stream_timestamp
-                .store(ts, std::sync::atomic::Ordering::Release);
         });
     }
     fn paint_caption_button(&mut self, ui: &mut Ui) {
