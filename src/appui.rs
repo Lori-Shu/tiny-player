@@ -291,7 +291,7 @@ impl AppUI {
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .build()?;
         let mut present_data_manager = PresentDataManager::new(data_manage_context);
-        present_data_manager.start_present_tasks();
+        present_data_manager.spawn_present_tasks();
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
@@ -909,7 +909,7 @@ impl AppUI {
                 .store(0, std::sync::atomic::Ordering::Release);
             {
                 let mut present_data_manager = context.present_data_manager.write().await;
-                if let Err(e) = present_data_manager.stop_present_tasks() {
+                if let Err(e) = present_data_manager.abort_present_tasks() {
                     let stop_err_msg = format!("stop_present_tasks error:{}", e.to_string());
                     warn!("stop_present_tasks error:{:?}", e);
                     *context.tip_window_msg.write().await = stop_err_msg;
@@ -957,7 +957,7 @@ impl AppUI {
                         .store(true, std::sync::atomic::Ordering::Release);
                 }
                 info!("reset video texture success");
-                present_data_manager.start_present_tasks();
+                present_data_manager.spawn_present_tasks();
             }
         });
 
