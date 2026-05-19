@@ -251,7 +251,7 @@ impl PresentDataManager {
 
         false
     }
-    pub fn stop_present_tasks(&self) -> PlayerResult<()> {
+    pub fn abort_present_tasks(&self) -> PlayerResult<()> {
         let audio_task_join_handle = self
             .audio_thread_handle
             .as_ref()
@@ -264,7 +264,7 @@ impl PresentDataManager {
         video_task_join_handle.abort();
         Ok(())
     }
-    pub fn start_present_tasks(&mut self) {
+    pub fn spawn_present_tasks(&mut self) {
         let runtime_handle = self.data_manage_context.runtime_handle.clone();
         self.audio_thread_handle =
             Some(runtime_handle.spawn(Self::play_audio_task(self.data_manage_context.clone())));

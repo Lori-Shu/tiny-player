@@ -217,7 +217,7 @@ impl TinyDecoder {
     pub async fn reset_input(&mut self, path: &Path) -> PlayerResult<()> {
         info!("ffmpeg version{}", ffmpeg_the_third::format::version());
         if self.demux_task_handle.is_some() {
-            self.stop_background_tasks().await;
+            self.abort_process_tasks().await;
             self.reset_states().await;
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
@@ -410,7 +410,7 @@ impl TinyDecoder {
             *input = Some(ManualProtectedInput(format_input));
         }
         info!("par init finished!!!");
-        self.start_process_input().await;
+        self.spawn_process_tasks().await;
         self.media_source_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
@@ -535,7 +535,7 @@ impl TinyDecoder {
         video_frame_tmp
     }
     /// the loop of decoding demuxed packet
-    async fn video_frame_decode_process(decode_context: VideoDecodeContext) -> PlayerResult<()> {
+    async fn decode_video_frame(decode_context: VideoDecodeContext) -> PlayerResult<()> {
         info!("enter decode");
         // let mut p = PathBuf::new();
         // let mut graph = Graph::new();
@@ -717,7 +717,7 @@ impl TinyDecoder {
         }
         Ok(())
     }
-    async fn audio_frame_decode_process(decode_context: AudioDecodeContext) -> PlayerResult<()> {
+    async fn decode_audio_frame(decode_context: AudioDecodeContext) -> PlayerResult<()> {
         loop {
             if decode_context
                 .decode_exit_flag
@@ -775,7 +775,7 @@ impl TinyDecoder {
         Ok(())
     }
     /// start the demux and decode task
-    async fn start_process_input(&mut self) {
+    async fn spawn_process_tasks(&mut self) {
         if let Ok(demux_context) = DemuxContextBuilder::default()
             .audio_stream_index(self.audio_stream_index)
             .video_stream_index(self.video_stream_index)
@@ -814,7 +814,7 @@ impl TinyDecoder {
             self.video_decode_task_handle = Some(self.runtime_handle.spawn(async move {
                 let span = span!(Level::INFO, "decode");
                 let _entered = span.enter();
-                Self::video_frame_decode_process(decode_context)
+                Self::decode_video_frame(decode_context)
                     .in_current_span()
                     .await
             }));
@@ -834,7 +834,7 @@ impl TinyDecoder {
             self.audio_decode_task_handle = Some(self.runtime_handle.spawn(async move {
                 let span = span!(Level::INFO, "decode");
                 let _entered = span.enter();
-                Self::audio_frame_decode_process(decode_context)
+                Self::decode_audio_frame(decode_context)
                     .in_current_span()
                     .await
             }));
@@ -876,13 +876,11 @@ impl TinyDecoder {
                 self.video_frame_cache_queue.1.drain();
                 self.current_video_timestamp
                     .store(0, std::sync::atomic::Ordering::Release);
-                
+
                 self.flush_decoders().await;
             }
             info!("seek finished!");
         }
-
-        
     }
     /// use the file detail to compute the video duration and make str to inform the user
     async fn compute_end_time_str(&mut self, end_ts: i64) {
@@ -913,7 +911,7 @@ impl TinyDecoder {
     }
 
     /// stop demux and decode
-    async fn stop_background_tasks(&mut self) {
+    async fn abort_process_tasks(&mut self) {
         self.demux_exit_flag
             .store(true, std::sync::atomic::Ordering::Release);
         self.demux_thread_notify.notify_one();

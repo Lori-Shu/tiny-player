@@ -55,7 +55,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn change_volumn(&self, volumn: f32) {
+    pub fn adjust_volume(&self, volumn: f32) {
         self.sink.set_volume(volumn);
     }
     pub fn clear_source_queue(&self) {

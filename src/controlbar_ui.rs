@@ -238,7 +238,7 @@ impl ControlBarUI {
                         }
                         if slider_response.drag_stopped() {
                             info!("volumn slider dragged!");
-                            audio_player.change_volumn(self.audio_volume);
+                            audio_player.adjust_volume(self.audio_volume);
                         }
                     });
                 });
