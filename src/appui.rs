@@ -827,10 +827,7 @@ impl AppUI {
                 .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
             let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Relaxed);
-            if pts >= end_ts
-            // tiny_decoder.end_audio_ts() * audio_time_base.numerator() as i64
-            //     / audio_time_base.denominator() as i64
-            {
+            if pts >= end_ts {
                 warn!("play end! end_ts:{end_ts},current_ts:{pts} ");
                 return true;
             }
@@ -964,53 +961,6 @@ impl AppUI {
         Ok(())
     }
 
-    // fn map_video_data_to_texture(&mut self, ctx: &Context, frame: &mut Frame) {
-    //     if let Ok(current_video_frame) = self.video_frame_recv.try_recv() {
-    //         // info!("new frame received");
-    //         if let Some(pts) = current_video_frame.pts() {
-    //             if pts > 0 {
-    //                 self.current_video_timestamp
-    //                     .store(pts, std::sync::atomic::Ordering::Release);
-    //             }
-    //         }
-    //         if let Some(v_tex) = &mut self.video_texture {
-    //             if current_video_frame.pts().is_some() {
-    //                 if let Some(wgpu_render_state) = frame.wgpu_render_state() {
-    //                     let renderer = wgpu_render_state.renderer.read();
-    //                     if let Some(wgpu_texture) = renderer.texture(&v_tex.id) {
-    //                         if let Some(texture) = &wgpu_texture.texture {
-    //                             let texel_copy_info = TexelCopyTextureInfo {
-    //                                 texture,
-    //                                 mip_level: 0,
-    //                                 origin: Origin3d::ZERO,
-    //                                 aspect: TextureAspect::All,
-    //                             };
-    //                             unsafe {
-    //                                 wgpu_render_state.queue.write_texture(
-    //                                     texel_copy_info,
-    //                                     current_video_frame.data(0),
-    //                                     TexelCopyBufferLayout {
-    //                                         offset: 0,
-    //                                         bytes_per_row: Some(
-    //                                             (*current_video_frame.as_ptr()).linesize[0] as u32,
-    //                                         ),
-    //                                         rows_per_image: None,
-    //                                     },
-    //                                     Extent3d {
-    //                                         width: current_video_frame.width(),
-    //                                         height: current_video_frame.height(),
-    //                                         depth_or_array_layers: 1,
-    //                                     },
-    //                                 );
-    //                             }
-    //                             ctx.request_repaint();
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
     fn detect_file_drag(&mut self, ui: &mut Ui) {
         let mut detected = None;
         ui.input(|input| {
