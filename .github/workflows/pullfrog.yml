@@ -28,5 +28,4 @@ jobs:
         uses: pullfrog/pullfrog@v0
         with:
           prompt: ${{ inputs.prompt }}
-          max-steps: 3
-          max-tokens: 512
+          model: "gemini-3.5-flash"
