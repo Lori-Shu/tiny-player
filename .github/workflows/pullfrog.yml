@@ -28,4 +28,3 @@ jobs:
         uses: pullfrog/pullfrog@v0
         with:
           prompt: ${{ inputs.prompt }}
-          model: "gemini-3.5-flash"
