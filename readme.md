@@ -54,6 +54,14 @@ If you are using a laptop and experience low frame rates:
 
 ---
 
+## Future Plan
+
+1. Supporting Linux
+2. Better UI
+3. Better performance(some of rust's rigorous language features can be passed to deliver higher performance in multithread code)
+
+---
+
 ## 📄 License
 
 This project is licensed under the GPLv2 License. See the [LICENSE](./LICENSE) file for more details. This license is chosen for balance and justice.
