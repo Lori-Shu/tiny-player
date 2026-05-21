@@ -167,18 +167,14 @@ impl InternetResourceUI {
         let mut reader =
             quick_m3u8::Reader::from_bytes(&buf[0..read_size], ParsingOptions::default());
         if let Some(queue) = map.get_mut(&current_category) {
-            loop {
-                if let Ok(Some(hls_line)) = reader.read_line() {
-                    match hls_line {
-                        quick_m3u8::HlsLine::Uri(uri) => {
-                            queue.push_back(MediaResource {
-                                name: uri.to_string(),
-                            });
-                        }
-                        _ => {}
+            while let Ok(Some(hls_line)) = reader.read_line() {
+                match hls_line {
+                    quick_m3u8::HlsLine::Uri(uri) => {
+                        queue.push_back(MediaResource {
+                            name: uri.to_string(),
+                        });
                     }
-                } else {
-                    break;
+                    _ => {}
                 }
             }
         }
