@@ -408,7 +408,7 @@ impl TinyDecoder {
         Ok(())
     }
     /// the loop of demuxing video file
-    async fn packet_demux_process(demux_context: DemuxContext) -> PlayerResult<()> {
+    async fn demux_input(demux_context: DemuxContext) -> PlayerResult<()> {
         info!("enter demux");
         loop {
             /*
@@ -744,9 +744,7 @@ impl TinyDecoder {
             self.demux_task_handle = Some(self.runtime_handle.spawn(async move {
                 let demux_span = span!(Level::INFO, "demux");
                 let _demux_entered = demux_span.enter();
-                Self::packet_demux_process(demux_context)
-                    .in_current_span()
-                    .await
+                Self::demux_input(demux_context).in_current_span().await
             }));
         } else {
             warn!("build demux context error!");
