@@ -103,8 +103,6 @@ pub struct TinyDecoder {
         Sender<ffmpeg_the_third::packet::Packet>,
         Receiver<ffmpeg_the_third::packet::Packet>,
     ),
-    demux_exit_flag: Arc<AtomicBool>,
-    decode_exit_flag: Arc<AtomicBool>,
     demux_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     video_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     audio_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
@@ -159,8 +157,6 @@ impl TinyDecoder {
             audio_frame_cache_queue,
             audio_packet_cache_queue: flume::bounded(512),
             video_packet_cache_queue: flume::bounded(512),
-            demux_exit_flag: Arc::new(AtomicBool::new(false)),
-            decode_exit_flag: Arc::new(AtomicBool::new(false)),
             demux_task_handle: None,
             video_decode_task_handle: None,
             audio_decode_task_handle: None,
@@ -190,11 +186,7 @@ impl TinyDecoder {
         self.cover_pic_data = Arc::new(RwLock::new(None));
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
-        self.decode_exit_flag
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.demux_task_handle = None;
-        self.demux_exit_flag
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.end_time_formatted_string = String::new();
         self.end_timestamp
             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -419,12 +411,6 @@ impl TinyDecoder {
     async fn packet_demux_process(demux_context: DemuxContext) -> PlayerResult<()> {
         info!("enter demux");
         loop {
-            if demux_context
-                .demux_exit_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                break;
-            }
             /*
             choose to lock the packet vec first stick this in other functions
              */
@@ -485,7 +471,6 @@ impl TinyDecoder {
                 demux_context.demux_thread_notify.notified().await;
             }
         }
-        Ok(())
     }
     ///convert the hardware output frame to middle format YUV420P
     async fn convert_hardware_frame(
@@ -662,12 +647,6 @@ impl TinyDecoder {
         // let hardware_frame_converter = Arc::new(RwLock::new(None));
 
         loop {
-            if decode_context
-                .decode_exit_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                break;
-            }
             if decode_context.video_frame_sender.len() < 15 {
                 if let Ok(packet) = decode_context.video_packet_recv.recv_async().await {
                     if decode_context.video_packet_recv.len() < 200 {
@@ -677,28 +656,13 @@ impl TinyDecoder {
                     // info!("video frame vec len{}", frames.len());
                     if let Some(decoder) = &mut *v_decoder {
                         if decoder.0.send_packet(&packet).is_ok() {
-                            loop {
-                                let mut video_frame_tmp = ffmpeg_the_third::frame::Video::empty();
-
-                                if decoder.0.receive_frame(&mut video_frame_tmp).is_err() {
-                                    break;
-                                }
+                            let mut video_frame_tmp = ffmpeg_the_third::frame::Video::empty();
+                            while decoder.0.receive_frame(&mut video_frame_tmp).is_ok() {
                                 let video_frame = TinyDecoder::convert_hardware_frame(
                                     decode_context.hardware_config_flag.clone(),
                                     video_frame_tmp,
                                 )
                                 .await;
-                                // if let Some(mut ctx) = graph.get("buffersrc") {
-                                //     if ctx.source().add(&video_frame).is_ok() {
-                                //         let mut filtered_frame =
-                                //             ffmpeg_the_third::frame::Video::empty();
-                                //         if let Some(mut ctx) = graph.get("sink") {
-                                //             if ctx.sink().frame(&mut filtered_frame).is_ok() {
-                                //                 filter_frame = Some(filtered_frame);
-                                //             }
-                                //         }
-                                //     }
-                                // }
 
                                 if let Err(e) = decode_context
                                     .video_frame_sender
@@ -707,6 +671,7 @@ impl TinyDecoder {
                                 {
                                     warn!("{}", e);
                                 }
+                                video_frame_tmp = Video::empty();
                             }
                         }
                     }
@@ -715,16 +680,9 @@ impl TinyDecoder {
                 decode_context.video_decode_thread_notify.notified().await;
             }
         }
-        Ok(())
     }
     async fn decode_audio_frame(decode_context: AudioDecodeContext) -> PlayerResult<()> {
         loop {
-            if decode_context
-                .decode_exit_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                break;
-            }
             if decode_context.audio_frame_sender.len() < 30 {
                 if let Ok(packet) = decode_context.audio_packet_recv.recv_async().await {
                     if decode_context.audio_packet_recv.len() < 200 {
@@ -735,12 +693,8 @@ impl TinyDecoder {
                         if decoder.0.send_packet(&packet).is_ok() {
                             let mut resampler = decode_context.resampler.write().await;
                             let resampler = resampler.as_mut().context("no resampler allocated")?;
-                            loop {
-                                let mut audio_frame_tmp = ffmpeg_the_third::frame::Audio::empty();
-
-                                if decoder.0.receive_frame(&mut audio_frame_tmp).is_err() {
-                                    break;
-                                }
+                            let mut audio_frame_tmp = ffmpeg_the_third::frame::Audio::empty();
+                            while decoder.0.receive_frame(&mut audio_frame_tmp).is_ok() {
                                 let mut resampled_frame = Audio::empty();
                                 resampled_frame.set_ch_layout(ChannelLayout::STEREO);
                                 resampled_frame.set_rate(AUDIO_SAMPLE_RATE);
@@ -764,6 +718,7 @@ impl TinyDecoder {
                                 {
                                     warn!("{}", e);
                                 }
+                                audio_frame_tmp = Audio::empty();
                             }
                         }
                     }
@@ -772,7 +727,6 @@ impl TinyDecoder {
                 decode_context.audio_decode_thread_notify.notified().await;
             }
         }
-        Ok(())
     }
     /// start the demux and decode task
     async fn spawn_process_tasks(&mut self) {
@@ -784,7 +738,6 @@ impl TinyDecoder {
             .video_packet_sender(self.video_packet_cache_queue.0.clone())
             .cover_stream_index(self.cover_stream_index)
             .cover_image_data(self.cover_pic_data.clone())
-            .demux_exit_flag(self.demux_exit_flag.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .build()
         {
@@ -804,9 +757,6 @@ impl TinyDecoder {
             .video_frame_sender(self.video_frame_cache_queue.0.clone())
             .video_packet_recv(self.video_packet_cache_queue.1.clone())
             .hardware_config_flag(self.hardware_config_flag.clone())
-            .decode_exit_flag(self.decode_exit_flag.clone())
-            ._video_time_base(self.video_time_base)
-            ._video_frame_rect(self.video_frame_rect)
             .video_decode_thread_notify(self.video_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .build()
@@ -825,7 +775,6 @@ impl TinyDecoder {
             .audio_decoder(self.audio_decoder.clone())
             .audio_frame_sender(self.audio_frame_cache_queue.0.clone())
             .audio_packet_recv(self.audio_packet_cache_queue.1.clone())
-            .decode_exit_flag(self.decode_exit_flag.clone())
             .audio_decode_thread_notify(self.audio_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .resampler(self.resampler.clone())
@@ -912,8 +861,6 @@ impl TinyDecoder {
 
     /// stop demux and decode
     async fn abort_process_tasks(&mut self) {
-        self.demux_exit_flag
-            .store(true, std::sync::atomic::Ordering::Release);
         self.demux_thread_notify.notify_one();
 
         if let Some(handle) = &mut self.demux_task_handle {
@@ -924,8 +871,6 @@ impl TinyDecoder {
             info!("demux thread aborted");
         }
 
-        self.decode_exit_flag
-            .store(true, std::sync::atomic::Ordering::Release);
         self.video_decode_thread_notify.notify_one();
         if let Some(handle) = &mut self.video_decode_task_handle {
             // if handle.await.is_ok() {
@@ -1059,16 +1004,13 @@ unsafe extern "C" fn get_format_callback(
 ) -> AVPixelFormat {
     unsafe {
         let mut i = 0;
-        loop {
-            if *fmt.add(i) != AVPixelFormat::NONE {
-                let current_fmt = *fmt.add(i);
+        while *fmt.add(i) != AVPixelFormat::NONE {
+            let current_fmt = *fmt.add(i);
 
-                if current_fmt == AVPixelFormat::VULKAN {
-                    return current_fmt;
-                }
-            } else {
-                break;
+            if current_fmt == AVPixelFormat::VULKAN {
+                return current_fmt;
             }
+
             i += 1;
         }
 
@@ -1078,10 +1020,6 @@ unsafe extern "C" fn get_format_callback(
 impl Drop for TinyDecoder {
     /// handle some struct that have to be free manually
     fn drop(&mut self) {
-        self.demux_exit_flag
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.decode_exit_flag
-            .store(true, std::sync::atomic::Ordering::Release);
         self.demux_thread_notify.notify_waiters();
         self.audio_decode_thread_notify.notify_waiters();
         self.video_decode_thread_notify.notify_waiters();
@@ -1113,7 +1051,6 @@ struct DemuxContext {
     pub audio_packet_sender: Sender<Packet>,
     pub video_packet_sender: Sender<Packet>,
     pub cover_image_data: Arc<RwLock<Option<Vec<u8>>>>,
-    pub demux_exit_flag: Arc<AtomicBool>,
     pub demux_thread_notify: Arc<Notify>,
 }
 
@@ -1123,9 +1060,6 @@ struct VideoDecodeContext {
     pub video_packet_recv: Receiver<Packet>,
     pub video_frame_sender: Sender<Video>,
     pub hardware_config_flag: Arc<AtomicBool>,
-    pub decode_exit_flag: Arc<AtomicBool>,
-    pub _video_time_base: Rational,
-    pub _video_frame_rect: [u32; 2],
     pub demux_thread_notify: Arc<Notify>,
     pub video_decode_thread_notify: Arc<Notify>,
 }
@@ -1134,7 +1068,6 @@ struct AudioDecodeContext {
     pub audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
     pub audio_packet_recv: Receiver<Packet>,
     pub audio_frame_sender: Sender<Audio>,
-    pub decode_exit_flag: Arc<AtomicBool>,
     pub demux_thread_notify: Arc<Notify>,
     pub audio_decode_thread_notify: Arc<Notify>,
     pub resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
