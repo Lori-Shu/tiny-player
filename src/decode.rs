@@ -26,10 +26,12 @@ use flume::{Receiver, Sender};
 use time::format_description;
 use tokio::{
     runtime::Handle,
+    select,
     sync::{Notify, RwLock},
     task::JoinHandle,
     time::sleep,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Level, info, span, warn};
 
 use crate::{PlayerResult, audio_play::AUDIO_SAMPLE_RATE, gpu_post_process::ColorSpaceConverter};
@@ -115,6 +117,7 @@ pub struct TinyDecoder {
     color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
     media_source_flag: Arc<AtomicBool>,
     current_video_timestamp: Arc<AtomicI64>,
+    cancellation_token: Arc<CancellationToken>,
 }
 impl TinyDecoder {
     /// init Decoder and new Struct
@@ -139,6 +142,7 @@ impl TinyDecoder {
     ) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let resampler = Arc::new(RwLock::new(None));
+        let cancellation_token = Arc::new(CancellationToken::new());
         Ok(Self {
             video_stream_index: usize::MAX,
             audio_stream_index: usize::MAX,
@@ -170,6 +174,7 @@ impl TinyDecoder {
             resampler,
             media_source_flag,
             current_video_timestamp,
+            cancellation_token,
         })
     }
     /// reset all fields to the initial state
@@ -184,6 +189,7 @@ impl TinyDecoder {
         self.audio_time_base = Rational::new(1, 1);
         self.free_swr_ctx_async().await;
         self.cover_pic_data = Arc::new(RwLock::new(None));
+        self.cancellation_token = Arc::new(CancellationToken::new());
         self.video_decode_task_handle = None;
         self.audio_decode_task_handle = None;
         self.demux_task_handle = None;
@@ -209,7 +215,7 @@ impl TinyDecoder {
     pub async fn reset_input(&mut self, path: &Path) -> PlayerResult<()> {
         info!("ffmpeg version{}", ffmpeg_the_third::format::version());
         if self.demux_task_handle.is_some() {
-            self.abort_process_tasks().await;
+            self.cancel_process_tasks().await?;
             self.reset_states().await;
         }
         let format_input = ffmpeg_the_third::format::input(path)?;
@@ -410,7 +416,7 @@ impl TinyDecoder {
     /// the loop of demuxing video file
     async fn demux_input(demux_context: DemuxContext) -> PlayerResult<()> {
         info!("enter demux");
-        loop {
+        while !demux_context.cancellation_token.is_cancelled() {
             /*
             choose to lock the packet vec first stick this in other functions
              */
@@ -447,16 +453,24 @@ impl TinyDecoder {
                                     *cover_pic_data = Some(d.to_vec());
                                 }
                             } else if stream_idx == audio_stream_idx {
-                                if let Err(e) =
-                                    demux_context.audio_packet_sender.send_async(packet).await
+                                if let Err(e) = demux_context
+                                    .audio_packet_sender
+                                    .send_async(packet)
+                                    .with_cancellation(&demux_context.cancellation_token)
+                                    .await
                                 {
                                     warn!("{}", e);
+                                    return Ok(());
                                 }
                             } else if stream_idx == video_stream_idx {
-                                if let Err(e) =
-                                    demux_context.video_packet_sender.send_async(packet).await
+                                if let Err(e) = demux_context
+                                    .video_packet_sender
+                                    .send_async(packet)
+                                    .with_cancellation(&demux_context.cancellation_token)
+                                    .await
                                 {
                                     warn!("{}", e);
+                                    return Ok(());
                                 }
                             }
                         }
@@ -471,6 +485,7 @@ impl TinyDecoder {
                 demux_context.demux_thread_notify.notified().await;
             }
         }
+        Ok(())
     }
     ///convert the hardware output frame to middle format YUV420P
     async fn convert_hardware_frame(
@@ -646,9 +661,14 @@ impl TinyDecoder {
         // }
         // let hardware_frame_converter = Arc::new(RwLock::new(None));
 
-        loop {
+        while !decode_context.cancellation_token.is_cancelled() {
             if decode_context.video_frame_sender.len() < 15 {
-                if let Ok(packet) = decode_context.video_packet_recv.recv_async().await {
+                if let Ok(Ok(packet)) = decode_context
+                    .video_packet_recv
+                    .recv_async()
+                    .with_cancellation(&decode_context.cancellation_token)
+                    .await
+                {
                     if decode_context.video_packet_recv.len() < 200 {
                         decode_context.demux_thread_notify.notify_one();
                     }
@@ -667,24 +687,34 @@ impl TinyDecoder {
                                 if let Err(e) = decode_context
                                     .video_frame_sender
                                     .send_async(video_frame)
+                                    .with_cancellation(&decode_context.cancellation_token)
                                     .await
                                 {
                                     warn!("{}", e);
+                                    return Ok(());
                                 }
                                 video_frame_tmp = Video::empty();
                             }
                         }
                     }
+                } else {
+                    return Ok(());
                 }
             } else {
                 decode_context.video_decode_thread_notify.notified().await;
             }
         }
+        Ok(())
     }
     async fn decode_audio_frame(decode_context: AudioDecodeContext) -> PlayerResult<()> {
-        loop {
+        while !decode_context.cancellation_token.is_cancelled() {
             if decode_context.audio_frame_sender.len() < 30 {
-                if let Ok(packet) = decode_context.audio_packet_recv.recv_async().await {
+                if let Ok(Ok(packet)) = decode_context
+                    .audio_packet_recv
+                    .recv_async()
+                    .with_cancellation(&decode_context.cancellation_token)
+                    .await
+                {
                     if decode_context.audio_packet_recv.len() < 200 {
                         decode_context.demux_thread_notify.notify_one();
                     }
@@ -714,19 +744,24 @@ impl TinyDecoder {
                                 if let Err(e) = decode_context
                                     .audio_frame_sender
                                     .send_async(resampled_frame)
+                                    .with_cancellation(&decode_context.cancellation_token)
                                     .await
                                 {
                                     warn!("{}", e);
+                                    return Ok(());
                                 }
                                 audio_frame_tmp = Audio::empty();
                             }
                         }
                     }
+                } else {
+                    return Ok(());
                 }
             } else {
                 decode_context.audio_decode_thread_notify.notified().await;
             }
         }
+        Ok(())
     }
     /// start the demux and decode task
     async fn spawn_process_tasks(&mut self) {
@@ -739,6 +774,7 @@ impl TinyDecoder {
             .cover_stream_index(self.cover_stream_index)
             .cover_image_data(self.cover_pic_data.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
+            .cancellation_token(self.cancellation_token.clone())
             .build()
         {
             self.demux_task_handle = Some(self.runtime_handle.spawn(async move {
@@ -757,6 +793,7 @@ impl TinyDecoder {
             .hardware_config_flag(self.hardware_config_flag.clone())
             .video_decode_thread_notify(self.video_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
+            .cancellation_token(self.cancellation_token.clone())
             .build()
         {
             self.video_decode_task_handle = Some(self.runtime_handle.spawn(async move {
@@ -776,6 +813,7 @@ impl TinyDecoder {
             .audio_decode_thread_notify(self.audio_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .resampler(self.resampler.clone())
+            .cancellation_token(self.cancellation_token.clone())
             .build()
         {
             self.audio_decode_task_handle = Some(self.runtime_handle.spawn(async move {
@@ -858,31 +896,36 @@ impl TinyDecoder {
     }
 
     /// stop demux and decode
-    async fn abort_process_tasks(&mut self) {
-        self.demux_thread_notify.notify_one();
+    async fn cancel_process_tasks(&mut self) -> PlayerResult<()> {
+        self.cancellation_token.cancel();
 
         if let Some(handle) = &mut self.demux_task_handle {
             // if handle.await.is_ok() {
             //     info!("demux thread join success");
             // }
-            handle.abort();
-            info!("demux thread aborted");
+            self.demux_thread_notify.notify_one();
+            handle.await??;
+            info!("demux thread joined");
         }
 
-        self.video_decode_thread_notify.notify_one();
         if let Some(handle) = &mut self.video_decode_task_handle {
             // if handle.await.is_ok() {
             //     info!("decode thread join success");
             // }
-            handle.abort();
+            self.video_decode_thread_notify.notify_one();
+            handle.await??;
+            info!("video decode thread joined");
         }
-        self.audio_decode_thread_notify.notify_one();
+
         if let Some(handle) = &mut self.audio_decode_task_handle {
             // if handle.await.is_ok() {
             //     info!("decode thread join success");
             // }
-            handle.abort();
+            self.audio_decode_thread_notify.notify_one();
+            handle.await??;
+            info!("audio decode thread joined");
         }
+        Ok(())
     }
     /// flush decoder , be called after seek file is done
     async fn flush_decoders(&self) {
@@ -1018,6 +1061,7 @@ unsafe extern "C" fn get_format_callback(
 impl Drop for TinyDecoder {
     /// handle some struct that have to be free manually
     fn drop(&mut self) {
+        self.cancellation_token.cancel();
         self.demux_thread_notify.notify_waiters();
         self.audio_decode_thread_notify.notify_waiters();
         self.video_decode_thread_notify.notify_waiters();
@@ -1050,6 +1094,7 @@ struct DemuxContext {
     pub video_packet_sender: Sender<Packet>,
     pub cover_image_data: Arc<RwLock<Option<Vec<u8>>>>,
     pub demux_thread_notify: Arc<Notify>,
+    pub cancellation_token: Arc<CancellationToken>,
 }
 
 #[derive(Builder)]
@@ -1060,6 +1105,7 @@ struct VideoDecodeContext {
     pub hardware_config_flag: Arc<AtomicBool>,
     pub demux_thread_notify: Arc<Notify>,
     pub video_decode_thread_notify: Arc<Notify>,
+    pub cancellation_token: Arc<CancellationToken>,
 }
 #[derive(Builder)]
 struct AudioDecodeContext {
@@ -1069,4 +1115,19 @@ struct AudioDecodeContext {
     pub demux_thread_notify: Arc<Notify>,
     pub audio_decode_thread_notify: Arc<Notify>,
     pub resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
+    pub cancellation_token: Arc<CancellationToken>,
+}
+pub trait Cancellable {
+    type Output;
+    async fn with_cancellation(self, token: &CancellationToken) -> PlayerResult<Self::Output>;
+}
+impl<R, T: Future<Output = R>> Cancellable for T {
+    type Output = R;
+
+    async fn with_cancellation(self, token: &CancellationToken) -> PlayerResult<Self::Output> {
+        select! {
+            result = self => Ok(result),
+            _ = token.cancelled() => Err(anyhow::Error::msg("cancel signal triggered the cancel operation")),
+        }
+    }
 }
