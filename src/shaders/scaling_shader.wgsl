@@ -80,18 +80,21 @@ fn adjust_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
     let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     return mix(vec3<f32>(luma), color, saturation);
 }
+const HDR_PEAK_NITS: f32 = 10000.0;
+const SDR_REFERENCE_WHITE: f32 = 203.0;
+const DISPLAY_GAMMA: f32 = 2.4;
 fn pq_to_sdr(color:vec3<f32>)->vec3<f32>{
     let rgb_hdr_pq = (cs_params.yuv2rgb_matrix * vec4<f32>(color, 1.0)).rgb;
-
-    let rgb_linear_abs = pq_to_linear(rgb_hdr_pq) * 10000.0;
-
-    let rgb_scene = rgb_linear_abs / 203.0;
+    
+    let rgb_linear_abs = pq_to_linear(rgb_hdr_pq) * HDR_PEAK_NITS;
+    
+    let rgb_scene = rgb_linear_abs / SDR_REFERENCE_WHITE;
     let rgb_linear_bt709 = bt2020_to_bt709(rgb_scene);
 
     let rgb_tonemapped = aces_tonemap(rgb_linear_bt709);
     let rgb_safe_for_gamma = max(rgb_tonemapped, vec3<f32>(0.0));
-
-    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / 2.4));
+    
+    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / DISPLAY_GAMMA));
 
     let final_color = adjust_saturation(rgb_final, 0.85);
     return final_color;
@@ -109,7 +112,7 @@ fn hlg_inverse_oetf(v: f32) -> f32 {
     }
 }
 
-
+const REC2020_LUMA_COEFFS=vec3<f32>(0.2627, 0.6780, 0.0593);
 fn hlg_to_sdr(hlg_color: vec3<f32>) -> vec3<f32> {
     var linear_rgb = vec3<f32>(
         hlg_inverse_oetf(hlg_color.r),
@@ -117,21 +120,17 @@ fn hlg_to_sdr(hlg_color: vec3<f32>) -> vec3<f32> {
         hlg_inverse_oetf(hlg_color.b)
     );
 
-    let luminance = dot(linear_rgb, vec3<f32>(0.2627, 0.6780, 0.0593));
+    let luminance = dot(linear_rgb, REC2020_LUMA_COEFFS);
     if luminance > 0.0 {
         linear_rgb = linear_rgb * pow(luminance, 1.2 - 1.0);
     }
 
 
-    let sdr_rgb = vec3<f32>(
-        dot(linear_rgb, vec3<f32>( 1.6605, -0.5876, -0.0728)),
-        dot(linear_rgb, vec3<f32>(-0.1246,  1.8760,  0.0486)),
-        dot(linear_rgb, vec3<f32>( 0.0182, -0.1006,  1.0824))
-    );
+    let sdr_rgb = bt2020_to_bt709(linear_rgb);
     let rgb_tonemapped = aces_tonemap(sdr_rgb);
     let rgb_safe_for_gamma = max(rgb_tonemapped, vec3<f32>(0.0));
 
-    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / 2.4));
+    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / DISPLAY_GAMMA));
     return rgb_final;
 }
 @fragment
