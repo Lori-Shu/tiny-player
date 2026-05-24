@@ -118,13 +118,12 @@ impl InternetResourceUI {
                                             if let Ok(mut context) = change_input_ctx.try_write() {
                                                 context.path = PathBuf::from(&resource.name);
 
-                                                if AppUI::reset_media_input(context.clone()).is_ok()
-                                                {
-                                                    context.live_mode.store(
-                                                        true,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
-                                                }
+                                                AppUI::reset_media_input(context.clone());
+
+                                                context.live_mode.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
                                             }
                                         }
                                     }

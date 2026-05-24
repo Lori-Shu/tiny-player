@@ -68,13 +68,12 @@ impl PlayListUI {
                                             if ui.add(player_text_button).clicked() {
                                                 let mut ctx = ctx.clone();
                                                 ctx.path = des.path.clone();
-                                                if AppUI::reset_media_input(ctx).is_ok() {
-                                                    live_mode.store(
-                                                        false,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
-                                                    info!("change_format_input success");
-                                                }
+                                                AppUI::reset_media_input(ctx);
+                                                live_mode.store(
+                                                    false,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                                info!("change_format_input success");
                                             }
                                         });
                                     } else {
@@ -83,13 +82,12 @@ impl PlayListUI {
                                             if ui.add(player_text_button).clicked() {
                                                 let mut ctx = ctx.clone();
                                                 ctx.path = des.path.clone();
-                                                if AppUI::reset_media_input(ctx).is_ok() {
-                                                    live_mode.store(
-                                                        false,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
-                                                    info!("change_format_input success");
-                                                }
+                                                AppUI::reset_media_input(ctx);
+                                                live_mode.store(
+                                                    false,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                                info!("change_format_input success");
                                             }
                                         });
                                     }

@@ -654,20 +654,12 @@ impl AppUI {
         if let Some(p) = file_path {
             let mut ctx = self.change_input_context.clone();
             ctx.path = p.clone();
-            if Self::reset_media_input(ctx).is_ok() {
-                if let Some(p_str) = p.to_str() {
-                    self.ui_flags
-                        .live_mode
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    warn!("accept file path{}", p_str);
-                }
-            } else {
-                if let Ok(mut tip_window_msg) = self.tip_window_msg.try_write() {
-                    *tip_window_msg = "please choose a valid video or audio file !!!".to_string();
-                }
+            Self::reset_media_input(ctx);
+            if let Some(p_str) = p.to_str() {
                 self.ui_flags
-                    .tip_window_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
+                    .live_mode
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                warn!("accept file path{}", p_str);
             }
         }
     }
@@ -892,7 +884,7 @@ impl AppUI {
             }
         }
     }
-    pub fn reset_media_input(context: ResetInputContext) -> PlayerResult<()> {
+    pub fn reset_media_input(context: ResetInputContext) {
         info!("in change format input");
         context.runtime_handle.spawn(async move {
             context
@@ -913,6 +905,7 @@ impl AppUI {
                     context
                         .tip_window_flag
                         .store(true, std::sync::atomic::Ordering::Release);
+                    return;
                 }
 
                 let mut tiny_decoder = context.tiny_decoder.write().await;
@@ -924,6 +917,7 @@ impl AppUI {
                     context
                         .tip_window_flag
                         .store(true, std::sync::atomic::Ordering::Release);
+                    return;
                 }
                 context.audio_player.clear();
                 let video_rect = tiny_decoder.video_frame_rect;
@@ -952,13 +946,12 @@ impl AppUI {
                     context
                         .tip_window_flag
                         .store(true, std::sync::atomic::Ordering::Release);
+                    return;
                 }
                 info!("reset video texture success");
                 present_data_manager.spawn_present_tasks();
             }
         });
-
-        Ok(())
     }
 
     fn detect_file_drag(&mut self, ui: &mut Ui) {
@@ -974,21 +967,13 @@ impl AppUI {
         if let Some(path_buf) = detected {
             let mut ctx = self.change_input_context.clone();
             ctx.path = path_buf.clone();
-            if Self::reset_media_input(ctx).is_ok() {
-                if let Some(p_str) = path_buf.to_str() {
-                    warn!("filepath{}", p_str);
-                }
-                self.ui_flags
-                    .live_mode
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                if let Ok(mut tip_window_msg) = self.tip_window_msg.try_write() {
-                    *tip_window_msg = "please choose a valid video or audio file !!!".to_string();
-                }
-                self.ui_flags
-                    .tip_window_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
+            Self::reset_media_input(ctx);
+            if let Some(p_str) = path_buf.to_str() {
+                warn!("filepath{}", p_str);
             }
+            self.ui_flags
+                .live_mode
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
     fn paint_playlist_button(&mut self, ui: &mut Ui) {
@@ -1180,16 +1165,25 @@ impl AppUI {
         }
     }
     fn visiable_anime(&mut self, ui: &mut Ui) {
-        let visible_id = ui.make_persistent_id("visiable_num");
-        let visible_num = ui.ctx().animate_bool_with_time(
-            visible_id,
-            self.ui_flags
-                .visible_flag
-                .load(std::sync::atomic::Ordering::Relaxed),
-            4.0,
-        );
-        self.visible_num
-            .store(visible_num.to_bits(), std::sync::atomic::Ordering::Release);
+        if !self
+            .ui_flags
+            .pause_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let visible_id = ui.make_persistent_id("visiable_num");
+            let visible_num = ui.ctx().animate_bool_with_time(
+                visible_id,
+                self.ui_flags
+                    .visible_flag
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2.0,
+            );
+            self.visible_num
+                .store(visible_num.to_bits(), std::sync::atomic::Ordering::Release);
+        } else {
+            self.visible_num
+                .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Release);
+        }
     }
     fn manage_keepawake(&mut self) -> PlayerResult<()> {
         if !self
