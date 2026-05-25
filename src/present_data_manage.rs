@@ -21,6 +21,7 @@ use tokio::{
     task::JoinHandle,
     time::sleep,
 };
+use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::warn;
 
 use crate::{
@@ -34,18 +35,21 @@ pub struct PresentDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
     data_manage_context: DataManageContext,
+    pub is_running: bool,
 }
 impl PresentDataManager {
     pub fn new(data_manage_context: DataManageContext) -> Self {
+        let is_running = false;
         Self {
             audio_thread_handle: None,
             video_thread_handle: None,
             data_manage_context,
+            is_running,
         }
     }
     async fn play_audio_task(data_manage_context: DataManageContext) {
         let mut audio_cur_ts = None;
-        loop {
+        while !data_manage_context.cancellation_token.is_cancelled() {
             /*
             add audio frame data to the audio player
              */
@@ -62,8 +66,11 @@ impl PresentDataManager {
                     if data_manage_context.audio_frame_receiver.len() < 5 {
                         data_manage_context.audio_decode_thread_notify.notify_one();
                     }
-                    if let Ok(audio_frame) =
-                        data_manage_context.audio_frame_receiver.recv_async().await
+                    if let Some(Ok(audio_frame)) = data_manage_context
+                        .audio_frame_receiver
+                        .recv_async()
+                        .with_cancellation_token(&data_manage_context.cancellation_token)
+                        .await
                     {
                         if let Some(pts) = audio_frame.pts() {
                             audio_cur_ts = Some(pts);
@@ -99,7 +106,7 @@ impl PresentDataManager {
     }
     async fn play_video_task(data_manage_context: DataManageContext) {
         let mut change_instant = Instant::now();
-        loop {
+        while !data_manage_context.cancellation_token.is_cancelled() {
             if !data_manage_context
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -129,8 +136,13 @@ impl PresentDataManager {
                     let frame_result = match &main_stream {
                         MainStream::Video => {
                             if ins_now.checked_duration_since(change_instant).is_some() {
-                                if let Ok(frame) =
-                                    data_manage_context.video_frame_receiver.recv_async().await
+                                if let Some(Ok(frame)) = data_manage_context
+                                    .video_frame_receiver
+                                    .recv_async()
+                                    .with_cancellation_token(
+                                        &data_manage_context.cancellation_token,
+                                    )
+                                    .await
                                 {
                                     if let Some(f_pts) = frame.pts() {
                                         let cur_pts = data_manage_context
@@ -173,8 +185,11 @@ impl PresentDataManager {
                             }
                         }
                         MainStream::Audio => {
-                            if let Ok(frame) =
-                                data_manage_context.video_frame_receiver.recv_async().await
+                            if let Some(Ok(frame)) = data_manage_context
+                                .video_frame_receiver
+                                .recv_async()
+                                .with_cancellation_token(&data_manage_context.cancellation_token)
+                                .await
                             {
                                 if let Some(pts) = frame.pts() {
                                     data_manage_context
@@ -251,26 +266,30 @@ impl PresentDataManager {
 
         false
     }
-    pub fn abort_present_tasks(&self) -> PlayerResult<()> {
+    pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
+        self.data_manage_context.cancellation_token.cancel();
         let audio_task_join_handle = self
             .audio_thread_handle
-            .as_ref()
+            .as_mut()
             .context("no audio play task running")?;
-        audio_task_join_handle.abort();
+        audio_task_join_handle.await?;
         let video_task_join_handle = self
             .video_thread_handle
-            .as_ref()
+            .as_mut()
             .context("no video play task running")?;
-        video_task_join_handle.abort();
+        video_task_join_handle.await?;
+        self.is_running = false;
         Ok(())
     }
     pub fn spawn_present_tasks(&mut self) {
+        self.data_manage_context.cancellation_token = Arc::new(CancellationToken::new());
         let runtime_handle = self.data_manage_context.runtime_handle.clone();
         self.audio_thread_handle =
             Some(runtime_handle.spawn(Self::play_audio_task(self.data_manage_context.clone())));
 
         self.video_thread_handle =
             Some(runtime_handle.spawn(Self::play_video_task(self.data_manage_context.clone())));
+        self.is_running = true;
     }
 }
 #[derive(Builder, Clone)]
@@ -289,4 +308,5 @@ pub struct DataManageContext {
     video_frame_receiver: Receiver<Video>,
     audio_decode_thread_notify: Arc<Notify>,
     video_decode_thread_notify: Arc<Notify>,
+    cancellation_token: Arc<CancellationToken>,
 }
