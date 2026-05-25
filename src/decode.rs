@@ -26,12 +26,11 @@ use flume::{Receiver, Sender};
 use time::format_description;
 use tokio::{
     runtime::Handle,
-    select,
     sync::{Notify, RwLock},
     task::JoinHandle,
     time::sleep,
 };
-use tokio_util::sync::CancellationToken;
+use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{Instrument, Level, info, span, warn};
 
 use crate::{PlayerResult, audio_play::AUDIO_SAMPLE_RATE, gpu_post_process::ColorSpaceConverter};
@@ -453,23 +452,23 @@ impl TinyDecoder {
                                     *cover_pic_data = Some(d.to_vec());
                                 }
                             } else if stream_idx == audio_stream_idx {
-                                if let Err(e) = demux_context
+                                if demux_context
                                     .audio_packet_sender
                                     .send_async(packet)
-                                    .with_cancellation(&demux_context.cancellation_token)
+                                    .with_cancellation_token(&demux_context.cancellation_token)
                                     .await
+                                    .is_none()
                                 {
-                                    warn!("{}", e);
                                     return Ok(());
                                 }
                             } else if stream_idx == video_stream_idx {
-                                if let Err(e) = demux_context
+                                if demux_context
                                     .video_packet_sender
                                     .send_async(packet)
-                                    .with_cancellation(&demux_context.cancellation_token)
+                                    .with_cancellation_token(&demux_context.cancellation_token)
                                     .await
+                                    .is_none()
                                 {
-                                    warn!("{}", e);
                                     return Ok(());
                                 }
                             }
@@ -663,10 +662,10 @@ impl TinyDecoder {
 
         while !decode_context.cancellation_token.is_cancelled() {
             if decode_context.video_frame_sender.len() < 15 {
-                if let Ok(Ok(packet)) = decode_context
+                if let Some(Ok(packet)) = decode_context
                     .video_packet_recv
                     .recv_async()
-                    .with_cancellation(&decode_context.cancellation_token)
+                    .with_cancellation_token(&decode_context.cancellation_token)
                     .await
                 {
                     if decode_context.video_packet_recv.len() < 200 {
@@ -684,13 +683,13 @@ impl TinyDecoder {
                                 )
                                 .await;
 
-                                if let Err(e) = decode_context
+                                if decode_context
                                     .video_frame_sender
                                     .send_async(video_frame)
-                                    .with_cancellation(&decode_context.cancellation_token)
+                                    .with_cancellation_token(&decode_context.cancellation_token)
                                     .await
+                                    .is_none()
                                 {
-                                    warn!("{}", e);
                                     return Ok(());
                                 }
                                 video_frame_tmp = Video::empty();
@@ -709,10 +708,10 @@ impl TinyDecoder {
     async fn decode_audio_frame(decode_context: AudioDecodeContext) -> PlayerResult<()> {
         while !decode_context.cancellation_token.is_cancelled() {
             if decode_context.audio_frame_sender.len() < 30 {
-                if let Ok(Ok(packet)) = decode_context
+                if let Some(Ok(packet)) = decode_context
                     .audio_packet_recv
                     .recv_async()
-                    .with_cancellation(&decode_context.cancellation_token)
+                    .with_cancellation_token(&decode_context.cancellation_token)
                     .await
                 {
                     if decode_context.audio_packet_recv.len() < 200 {
@@ -741,13 +740,13 @@ impl TinyDecoder {
                                         return Err(anyhow::Error::msg("convert audio frame err"));
                                     }
                                 }
-                                if let Err(e) = decode_context
+                                if decode_context
                                     .audio_frame_sender
                                     .send_async(resampled_frame)
-                                    .with_cancellation(&decode_context.cancellation_token)
+                                    .with_cancellation_token(&decode_context.cancellation_token)
                                     .await
+                                    .is_none()
                                 {
-                                    warn!("{}", e);
                                     return Ok(());
                                 }
                                 audio_frame_tmp = Audio::empty();
@@ -1116,18 +1115,4 @@ struct AudioDecodeContext {
     pub audio_decode_thread_notify: Arc<Notify>,
     pub resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
     pub cancellation_token: Arc<CancellationToken>,
-}
-pub trait Cancellable {
-    type Output;
-    async fn with_cancellation(self, token: &CancellationToken) -> PlayerResult<Self::Output>;
-}
-impl<R, T: Future<Output = R>> Cancellable for T {
-    type Output = R;
-
-    async fn with_cancellation(self, token: &CancellationToken) -> PlayerResult<Self::Output> {
-        select! {
-            result = self => Ok(result),
-            _ = token.cancelled() => Err(anyhow::Error::msg("cancel signal triggered the cancel operation")),
-        }
-    }
 }

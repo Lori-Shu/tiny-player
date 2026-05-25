@@ -35,6 +35,7 @@ use tokio::{
     runtime::{Handle, Runtime},
     sync::{Notify, RwLock},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
@@ -274,6 +275,7 @@ impl AppUI {
 
         let (video_texture_id, video_texture) =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
+        let present_data_task_cancellation_token = Arc::new(CancellationToken::new());
         let data_manage_context = DataManageContextBuilder::default()
             .tiny_decoder(tiny_decoder.clone())
             // .used_model(used_model.clone())
@@ -289,9 +291,9 @@ impl AppUI {
             .video_frame_receiver(video_frame_cache_queue.1.clone())
             .audio_decode_thread_notify(audio_decode_thread_notify.clone())
             .video_decode_thread_notify(video_decode_thread_notify.clone())
+            .cancellation_token(present_data_task_cancellation_token)
             .build()?;
-        let mut present_data_manager = PresentDataManager::new(data_manage_context);
-        present_data_manager.spawn_present_tasks();
+        let present_data_manager = PresentDataManager::new(data_manage_context);
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
@@ -898,7 +900,10 @@ impl AppUI {
                 .store(0, std::sync::atomic::Ordering::Release);
             {
                 let mut present_data_manager = context.present_data_manager.write().await;
-                if let Err(e) = present_data_manager.abort_present_tasks() {
+
+                if present_data_manager.is_running
+                    && let Err(e) = present_data_manager.cancel_present_tasks().await
+                {
                     let stop_err_msg = format!("stop_present_tasks error:{}", e.to_string());
                     warn!("stop_present_tasks error:{:?}", e);
                     *context.tip_window_msg.write().await = stop_err_msg;
