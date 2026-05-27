@@ -108,6 +108,7 @@ pub struct AppUI {
     controlbar_ui: ControlBarUI,
     last_fps_update_instant: Instant,
     fps_text_str: String,
+    play_tasks_notify: Arc<Notify>,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -276,6 +277,7 @@ impl AppUI {
         let (video_texture_id, video_texture) =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
         let present_data_task_cancellation_token = Arc::new(CancellationToken::new());
+        let play_tasks_notify = Arc::new(Notify::new());
         let data_manage_context = DataManageContextBuilder::default()
             .tiny_decoder(tiny_decoder.clone())
             // .used_model(used_model.clone())
@@ -292,6 +294,7 @@ impl AppUI {
             .audio_decode_thread_notify(audio_decode_thread_notify.clone())
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .cancellation_token(present_data_task_cancellation_token)
+            .play_tasks_notify(play_tasks_notify.clone())
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
@@ -382,6 +385,7 @@ impl AppUI {
             controlbar_ui,
             last_fps_update_instant,
             fps_text_str,
+            play_tasks_notify,
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -724,6 +728,7 @@ impl AppUI {
                             audio_player.pause();
                         } else {
                             audio_player.play();
+                            self.play_tasks_notify.notify_waiters();
                         }
                     }
                 });
