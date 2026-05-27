@@ -56,50 +56,53 @@ impl PresentDataManager {
             if !data_manage_context
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Acquire)
-                && data_manage_context.audio_sink.len() < 10
             {
-                let mainstream = {
-                    let tiny_decoder = data_manage_context.tiny_decoder.read().await;
-                    tiny_decoder.main_stream.clone()
-                };
-                if let MainStream::Audio = &mainstream {
-                    if data_manage_context.audio_frame_receiver.len() < 5 {
-                        data_manage_context.audio_decode_thread_notify.notify_one();
-                    }
-                    if let Some(Ok(audio_frame)) = data_manage_context
-                        .audio_frame_receiver
-                        .recv_async()
-                        .with_cancellation_token(&data_manage_context.cancellation_token)
-                        .await
-                    {
-                        if let Some(pts) = audio_frame.pts() {
-                            audio_cur_ts = Some(pts);
-                            if let Err(e) = AudioPlayer::append_source_data(
-                                &data_manage_context.audio_sink,
-                                audio_frame.clone(),
-                            )
+                if data_manage_context.audio_sink.len() < 10 {
+                    let mainstream = {
+                        let tiny_decoder = data_manage_context.tiny_decoder.read().await;
+                        tiny_decoder.main_stream.clone()
+                    };
+                    if let MainStream::Audio = &mainstream {
+                        if data_manage_context.audio_frame_receiver.len() < 5 {
+                            data_manage_context.audio_decode_thread_notify.notify_one();
+                        }
+                        if let Some(Ok(audio_frame)) = data_manage_context
+                            .audio_frame_receiver
+                            .recv_async()
+                            .with_cancellation_token(&data_manage_context.cancellation_token)
                             .await
-                            {
-                                warn!("{}", e);
+                        {
+                            if let Some(pts) = audio_frame.pts() {
+                                audio_cur_ts = Some(pts);
+                                if let Err(e) = AudioPlayer::append_source_data(
+                                    &data_manage_context.audio_sink,
+                                    audio_frame.clone(),
+                                )
+                                .await
+                                {
+                                    warn!("{}", e);
+                                }
+                                // let used_model = data_manage_context.used_model.read().await;
+                                // let used_model_ref = &*used_model;
+                                // if UsedModel::Empty != *used_model_ref {
+                                //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
+                                //     let used_model = used_model_ref.clone();
+                                //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
+                                // }
                             }
-                            // let used_model = data_manage_context.used_model.read().await;
-                            // let used_model_ref = &*used_model;
-                            // if UsedModel::Empty != *used_model_ref {
-                            //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
-                            //     let used_model = used_model_ref.clone();
-                            //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
-                            // }
                         }
                     }
-                }
 
-                PresentDataManager::update_current_timestamp(
-                    data_manage_context.current_main_stream_timestamp.clone(),
-                    audio_cur_ts,
-                    mainstream,
-                    data_manage_context.current_video_timestamp.clone(),
-                )
-                .await;
+                    PresentDataManager::update_current_timestamp(
+                        data_manage_context.current_main_stream_timestamp.clone(),
+                        audio_cur_ts,
+                        mainstream,
+                        data_manage_context.current_video_timestamp.clone(),
+                    )
+                    .await;
+                }
+            } else {
+                data_manage_context.play_tasks_notify.notified().await;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -214,6 +217,8 @@ impl PresentDataManager {
                         }
                     }
                 }
+            } else {
+                data_manage_context.play_tasks_notify.notified().await;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -309,4 +314,5 @@ pub struct DataManageContext {
     audio_decode_thread_notify: Arc<Notify>,
     video_decode_thread_notify: Arc<Notify>,
     cancellation_token: Arc<CancellationToken>,
+    play_tasks_notify: Arc<Notify>,
 }
