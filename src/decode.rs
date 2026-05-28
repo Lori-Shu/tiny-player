@@ -121,24 +121,7 @@ pub struct TinyDecoder {
 impl TinyDecoder {
     /// init Decoder and new Struct
     /// `runtime_handle` is the handle of the tokio runtime in async_context
-    pub fn new(
-        runtime_handle: Handle,
-        media_source_flag: Arc<AtomicBool>,
-        end_timestamp: Arc<AtomicI64>,
-        hardware_config_flag: Arc<AtomicBool>,
-        color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
-        audio_frame_cache_queue: (
-            Sender<ffmpeg_the_third::frame::Audio>,
-            Receiver<ffmpeg_the_third::frame::Audio>,
-        ),
-        video_frame_cache_queue: (
-            Sender<ffmpeg_the_third::frame::Video>,
-            Receiver<ffmpeg_the_third::frame::Video>,
-        ),
-        audio_decode_thread_notify: Arc<Notify>,
-        video_decode_thread_notify: Arc<Notify>,
-        current_video_timestamp: Arc<AtomicI64>,
-    ) -> PlayerResult<Self> {
+    pub fn new(tiny_decoder_creation_args: TinyDecoderCreationArgs) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let resampler = Arc::new(RwLock::new(None));
         let cancellation_token = Arc::new(CancellationToken::new());
@@ -151,28 +134,28 @@ impl TinyDecoder {
             audio_time_base: Rational::new(1, 1),
             video_frame_rect: [0, 0],
             format_duration: 0,
-            end_timestamp,
+            end_timestamp: tiny_decoder_creation_args.end_timestamp,
             end_time_formatted_string: String::new(),
             format_input: Arc::new(RwLock::new(None)),
             video_decoder: Arc::new(RwLock::new(None)),
             audio_decoder: Arc::new(RwLock::new(None)),
-            video_frame_cache_queue,
-            audio_frame_cache_queue,
+            video_frame_cache_queue: tiny_decoder_creation_args.video_frame_cache_queue,
+            audio_frame_cache_queue: tiny_decoder_creation_args.audio_frame_cache_queue,
             audio_packet_cache_queue: flume::bounded(512),
             video_packet_cache_queue: flume::bounded(512),
             demux_task_handle: None,
             video_decode_task_handle: None,
             audio_decode_task_handle: None,
-            hardware_config_flag,
+            hardware_config_flag: tiny_decoder_creation_args.hardware_config_flag,
             cover_pic_data: Arc::new(RwLock::new(None)),
-            runtime_handle,
+            runtime_handle: tiny_decoder_creation_args.runtime_handle,
             demux_thread_notify: Arc::new(Notify::new()),
-            audio_decode_thread_notify,
-            video_decode_thread_notify,
-            color_space_converter,
+            audio_decode_thread_notify: tiny_decoder_creation_args.audio_decode_thread_notify,
+            video_decode_thread_notify: tiny_decoder_creation_args.video_decode_thread_notify,
+            color_space_converter: tiny_decoder_creation_args.color_space_converter,
             resampler,
-            media_source_flag,
-            current_video_timestamp,
+            media_source_flag: tiny_decoder_creation_args.media_source_flag,
+            current_video_timestamp: tiny_decoder_creation_args.current_video_timestamp,
             cancellation_token,
         })
     }
@@ -461,16 +444,15 @@ impl TinyDecoder {
                                 {
                                     return Ok(());
                                 }
-                            } else if stream_idx == video_stream_idx {
-                                if demux_context
+                            } else if stream_idx == video_stream_idx
+                                && demux_context
                                     .video_packet_sender
                                     .send_async(packet)
                                     .with_cancellation_token(&demux_context.cancellation_token)
                                     .await
                                     .is_none()
-                                {
-                                    return Ok(());
-                                }
+                            {
+                                return Ok(());
                             }
                         }
                         Err(e) => {
@@ -673,27 +655,27 @@ impl TinyDecoder {
                     }
                     let mut v_decoder = decode_context.video_decoder.write().await;
                     // info!("video frame vec len{}", frames.len());
-                    if let Some(decoder) = &mut *v_decoder {
-                        if decoder.0.send_packet(&packet).is_ok() {
-                            let mut video_frame_tmp = ffmpeg_the_third::frame::Video::empty();
-                            while decoder.0.receive_frame(&mut video_frame_tmp).is_ok() {
-                                let video_frame = TinyDecoder::convert_hardware_frame(
-                                    decode_context.hardware_config_flag.clone(),
-                                    video_frame_tmp,
-                                )
-                                .await;
+                    if let Some(decoder) = &mut *v_decoder
+                        && decoder.0.send_packet(&packet).is_ok()
+                    {
+                        let mut video_frame_tmp = ffmpeg_the_third::frame::Video::empty();
+                        while decoder.0.receive_frame(&mut video_frame_tmp).is_ok() {
+                            let video_frame = TinyDecoder::convert_hardware_frame(
+                                decode_context.hardware_config_flag.clone(),
+                                video_frame_tmp,
+                            )
+                            .await;
 
-                                if decode_context
-                                    .video_frame_sender
-                                    .send_async(video_frame)
-                                    .with_cancellation_token(&decode_context.cancellation_token)
-                                    .await
-                                    .is_none()
-                                {
-                                    return Ok(());
-                                }
-                                video_frame_tmp = Video::empty();
+                            if decode_context
+                                .video_frame_sender
+                                .send_async(video_frame)
+                                .with_cancellation_token(&decode_context.cancellation_token)
+                                .await
+                                .is_none()
+                            {
+                                return Ok(());
                             }
+                            video_frame_tmp = Video::empty();
                         }
                     }
                 } else {
@@ -718,39 +700,39 @@ impl TinyDecoder {
                         decode_context.demux_thread_notify.notify_one();
                     }
                     let mut audio_decoder = decode_context.audio_decoder.write().await;
-                    if let Some(decoder) = &mut *audio_decoder {
-                        if decoder.0.send_packet(&packet).is_ok() {
-                            let mut resampler = decode_context.resampler.write().await;
-                            let resampler = resampler.as_mut().context("no resampler allocated")?;
-                            let mut audio_frame_tmp = ffmpeg_the_third::frame::Audio::empty();
-                            while decoder.0.receive_frame(&mut audio_frame_tmp).is_ok() {
-                                let mut resampled_frame = Audio::empty();
-                                resampled_frame.set_ch_layout(ChannelLayout::STEREO);
-                                resampled_frame.set_rate(AUDIO_SAMPLE_RATE);
-                                resampled_frame.set_format(Sample::F32(Type::Packed));
-                                resampled_frame.set_pts(audio_frame_tmp.pts());
-                                unsafe {
-                                    if swr_convert_frame(
-                                        resampler.0,
-                                        resampled_frame.as_mut_ptr(),
-                                        audio_frame_tmp.as_ptr(),
-                                    ) != 0
-                                    {
-                                        warn!("convert audio frame err, but still in decoding!!!");
-                                        return Err(anyhow::Error::msg("convert audio frame err"));
-                                    }
-                                }
-                                if decode_context
-                                    .audio_frame_sender
-                                    .send_async(resampled_frame)
-                                    .with_cancellation_token(&decode_context.cancellation_token)
-                                    .await
-                                    .is_none()
+                    if let Some(decoder) = &mut *audio_decoder
+                        && decoder.0.send_packet(&packet).is_ok()
+                    {
+                        let mut resampler = decode_context.resampler.write().await;
+                        let resampler = resampler.as_mut().context("no resampler allocated")?;
+                        let mut audio_frame_tmp = ffmpeg_the_third::frame::Audio::empty();
+                        while decoder.0.receive_frame(&mut audio_frame_tmp).is_ok() {
+                            let mut resampled_frame = Audio::empty();
+                            resampled_frame.set_ch_layout(ChannelLayout::STEREO);
+                            resampled_frame.set_rate(AUDIO_SAMPLE_RATE);
+                            resampled_frame.set_format(Sample::F32(Type::Packed));
+                            resampled_frame.set_pts(audio_frame_tmp.pts());
+                            unsafe {
+                                if swr_convert_frame(
+                                    resampler.0,
+                                    resampled_frame.as_mut_ptr(),
+                                    audio_frame_tmp.as_ptr(),
+                                ) != 0
                                 {
-                                    return Ok(());
+                                    warn!("convert audio frame err, but still in decoding!!!");
+                                    return Err(anyhow::Error::msg("convert audio frame err"));
                                 }
-                                audio_frame_tmp = Audio::empty();
                             }
+                            if decode_context
+                                .audio_frame_sender
+                                .send_async(resampled_frame)
+                                .with_cancellation_token(&decode_context.cancellation_token)
+                                .await
+                                .is_none()
+                            {
+                                return Ok(());
+                            }
+                            audio_frame_tmp = Audio::empty();
                         }
                     }
                 } else {
@@ -884,10 +866,10 @@ impl TinyDecoder {
         let hour = hour_num as u8;
         info!("hour{},min{},sec{}", hour, min, sec);
         if let Ok(time) = time::Time::from_hms(hour, min, sec) {
-            if let Ok(formatter) = format_description::parse("[hour]:[minute]:[second]") {
-                if let Ok(s) = time.format(&formatter) {
-                    self.end_time_formatted_string = s;
-                }
+            if let Ok(formatter) = format_description::parse("[hour]:[minute]:[second]")
+                && let Ok(s) = time.format(&formatter)
+            {
+                self.end_time_formatted_string = s;
             }
         } else {
             info!("end_time_err");
@@ -1082,6 +1064,25 @@ impl Drop for TinyDecoder {
         });
         self.free_swr_ctx();
     }
+}
+#[derive(Builder)]
+pub struct TinyDecoderCreationArgs {
+    runtime_handle: Handle,
+    media_source_flag: Arc<AtomicBool>,
+    end_timestamp: Arc<AtomicI64>,
+    hardware_config_flag: Arc<AtomicBool>,
+    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
+    audio_frame_cache_queue: (
+        Sender<ffmpeg_the_third::frame::Audio>,
+        Receiver<ffmpeg_the_third::frame::Audio>,
+    ),
+    video_frame_cache_queue: (
+        Sender<ffmpeg_the_third::frame::Video>,
+        Receiver<ffmpeg_the_third::frame::Video>,
+    ),
+    audio_decode_thread_notify: Arc<Notify>,
+    video_decode_thread_notify: Arc<Notify>,
+    current_video_timestamp: Arc<AtomicI64>,
 }
 #[derive(Builder)]
 struct DemuxContext {
