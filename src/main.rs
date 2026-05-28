@@ -85,14 +85,14 @@ fn main() {
         },
         ..Default::default()
     };
-    if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON {
-        if let Ok(img) = image::load_from_memory(&bytes) {
-            options.viewport.icon = Some(Arc::new(IconData {
-                width: img.width(),
-                height: img.height(),
-                rgba: img.as_bytes().to_vec(),
-            }));
-        }
+    if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON
+        && let Ok(img) = image::load_from_memory(&bytes)
+    {
+        options.viewport.icon = Some(Arc::new(IconData {
+            width: img.width(),
+            height: img.height(),
+            rgba: img.as_bytes().to_vec(),
+        }));
     }
     options.centered = true;
     options.viewport.inner_size = Some(Vec2::new(1280.0, 720.0));

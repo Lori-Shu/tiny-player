@@ -71,25 +71,24 @@ impl PresentDataManager {
                             .recv_async()
                             .with_cancellation_token(&data_manage_context.cancellation_token)
                             .await
+                            && let Some(pts) = audio_frame.pts()
                         {
-                            if let Some(pts) = audio_frame.pts() {
-                                audio_cur_ts = Some(pts);
-                                if let Err(e) = AudioPlayer::append_source_data(
-                                    &data_manage_context.audio_sink,
-                                    audio_frame.clone(),
-                                )
-                                .await
-                                {
-                                    warn!("{}", e);
-                                }
-                                // let used_model = data_manage_context.used_model.read().await;
-                                // let used_model_ref = &*used_model;
-                                // if UsedModel::Empty != *used_model_ref {
-                                //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
-                                //     let used_model = used_model_ref.clone();
-                                //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
-                                // }
+                            audio_cur_ts = Some(pts);
+                            if let Err(e) = AudioPlayer::append_source_data(
+                                &data_manage_context.audio_sink,
+                                audio_frame.clone(),
+                            )
+                            .await
+                            {
+                                warn!("{}", e);
                             }
+                            // let used_model = data_manage_context.used_model.read().await;
+                            // let used_model_ref = &*used_model;
+                            // if UsedModel::Empty != *used_model_ref {
+                            //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
+                            //     let used_model = used_model_ref.clone();
+                            //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
+                            // }
                         }
                     }
 

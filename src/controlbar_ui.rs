@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI64, AtomicU32},
 };
 
+use derive_builder::Builder;
 use egui::{
     AtomExt, Button, Color32, CornerRadius, Image, Layout, RichText, Stroke, Ui, Vec2, WidgetText,
 };
@@ -14,7 +15,7 @@ use crate::{
     audio_play::AudioPlayer,
     decode::TinyDecoder,
 };
-
+#[derive(Builder)]
 pub struct ControlBarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
@@ -32,39 +33,6 @@ pub struct ControlBarUI {
     show_volume_slider_flag: bool,
 }
 impl ControlBarUI {
-    pub fn new(
-        current_main_stream_timestamp: Arc<AtomicI64>,
-        media_source_flag: Arc<AtomicBool>,
-        visible_flag: Arc<AtomicBool>,
-        live_mode: Arc<AtomicBool>,
-        end_ts: Arc<AtomicI64>,
-        audio_player: Arc<AudioPlayer>,
-        tiny_decoder: Arc<RwLock<TinyDecoder>>,
-        async_rt: Handle,
-        visible_num: Arc<AtomicU32>,
-    ) -> Self {
-        let time_text = String::new();
-        let audio_volume = 1.0_f32;
-        let fullscreen_flag = false;
-        let show_volume_slider_flag = false;
-        let show_subtitle_options_flag = false;
-        Self {
-            current_main_stream_timestamp,
-            media_source_flag,
-            visible_flag,
-            live_mode,
-            end_ts,
-            time_text,
-            audio_player,
-            tiny_decoder,
-            async_rt,
-            show_subtitle_options_flag,
-            visible_num,
-            audio_volume,
-            fullscreen_flag,
-            show_volume_slider_flag,
-        }
-    }
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self

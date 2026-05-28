@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, VecDeque},
-    io::ErrorKind,
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -93,39 +92,35 @@ impl InternetResourceUI {
                             .inner;
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
-                            if *current_category != LanguageCategory::None {
-                                if let Ok(map) = available_resource_map.try_read() {
-                                    let queue = &map[&*current_category];
-                                    if selectable_area_res {
-                                        if queue.is_empty() {
-                                            if let Ok(change_input_ctx) =
-                                                change_input_ctx.try_read()
-                                            {
-                                                change_input_ctx.runtime_handle.spawn(
-                                                    Self::request_playlist(
-                                                        available_resource_map.clone(),
-                                                        current_category.clone(),
-                                                        web_client.clone(),
-                                                    ),
-                                                );
-                                            }
-                                        }
-                                    }
+                            if *current_category != LanguageCategory::None
+                                && let Ok(map) = available_resource_map.try_read()
+                            {
+                                let queue = &map[&*current_category];
+                                if selectable_area_res
+                                    && queue.is_empty()
+                                    && let Ok(change_input_ctx) = change_input_ctx.try_read()
+                                {
+                                    change_input_ctx
+                                        .runtime_handle
+                                        .spawn(Self::request_playlist(
+                                            available_resource_map.clone(),
+                                            current_category.clone(),
+                                            web_client.clone(),
+                                        ));
+                                }
 
-                                    for resource in queue {
-                                        let btn_response = ui.add(Button::new(&resource.name));
-                                        if btn_response.clicked() {
-                                            if let Ok(mut context) = change_input_ctx.try_write() {
-                                                context.path = PathBuf::from(&resource.name);
+                                for resource in queue {
+                                    let btn_response = ui.add(Button::new(&resource.name));
+                                    if btn_response.clicked()
+                                        && let Ok(mut context) = change_input_ctx.try_write()
+                                    {
+                                        context.path = PathBuf::from(&resource.name);
 
-                                                AppUI::reset_media_input(context.clone());
+                                        AppUI::reset_media_input(context.clone());
 
-                                                context.live_mode.store(
-                                                    true,
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            }
-                                        }
+                                        context
+                                            .live_mode
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -158,7 +153,7 @@ impl InternetResourceUI {
         let response = web_client.get(url).send().await?;
         let bytes_stream = response
             .bytes_stream()
-            .map(|item| item.map_err(|e| std::io::Error::new(ErrorKind::Other, e)));
+            .map(|item| item.map_err(std::io::Error::other));
 
         let mut buf_reader = BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
         let mut buf = vec![0; 1024 * 32];
@@ -167,13 +162,10 @@ impl InternetResourceUI {
             quick_m3u8::Reader::from_bytes(&buf[0..read_size], ParsingOptions::default());
         if let Some(queue) = map.get_mut(&current_category) {
             while let Ok(Some(hls_line)) = reader.read_line() {
-                match hls_line {
-                    quick_m3u8::HlsLine::Uri(uri) => {
-                        queue.push_back(MediaResource {
-                            name: uri.to_string(),
-                        });
-                    }
-                    _ => {}
+                if let quick_m3u8::HlsLine::Uri(uri) = hls_line {
+                    queue.push_back(MediaResource {
+                        name: uri.to_string(),
+                    });
                 }
             }
         }

@@ -40,8 +40,8 @@ use tracing::{info, warn};
 
 use crate::{
     PlayerResult,
-    controlbar_ui::ControlBarUI,
-    decode::{MainStream, TinyDecoder},
+    controlbar_ui::{ControlBarUI, ControlBarUIBuilder},
+    decode::{MainStream, TinyDecoder, TinyDecoderCreationArgsBuilder},
     gpu_post_process::ColorSpaceConverter,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
@@ -126,18 +126,15 @@ impl eframe::App for AppUI {
                     .ui_flags
                     .media_source_flag
                     .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    if !self
+                    && !self
                         .ui_flags
                         .pause_flag
                         .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        if self.is_play_end() {
-                            self.ui_flags
-                                .pause_flag
-                                .store(true, std::sync::atomic::Ordering::Release);
-                        }
-                    }
+                    && self.is_play_end()
+                {
+                    self.ui_flags
+                        .pause_flag
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
 
                 self.clear_garbage_texture();
@@ -254,18 +251,19 @@ impl AppUI {
         let video_decode_thread_notify = Arc::new(Notify::new());
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let tiny_decoder = crate::decode::TinyDecoder::new(
-            rt.clone(),
-            media_source_flag.clone(),
-            end_ts.clone(),
-            hardware_config_flag.clone(),
-            colorspace_converter.clone(),
-            audio_frame_cache_queue.clone(),
-            video_frame_cache_queue.clone(),
-            audio_decode_thread_notify.clone(),
-            video_decode_thread_notify.clone(),
-            current_video_timestamp.clone(),
-        )?;
+        let tiny_decoder_creation_args = TinyDecoderCreationArgsBuilder::default()
+            .runtime_handle(rt.clone())
+            .media_source_flag(media_source_flag.clone())
+            .end_timestamp(end_ts.clone())
+            .hardware_config_flag(hardware_config_flag.clone())
+            .color_space_converter(colorspace_converter.clone())
+            .audio_frame_cache_queue(audio_frame_cache_queue.clone())
+            .video_frame_cache_queue(video_frame_cache_queue.clone())
+            .audio_decode_thread_notify(audio_decode_thread_notify.clone())
+            .video_decode_thread_notify(video_decode_thread_notify.clone())
+            .current_video_timestamp(current_video_timestamp.clone())
+            .build()?;
+        let tiny_decoder = crate::decode::TinyDecoder::new(tiny_decoder_creation_args)?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
         // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
         // let subtitle_channel = mpsc::channel(10);
@@ -338,17 +336,27 @@ impl AppUI {
         let keep_awake = None;
         let visible_flag = Arc::new(AtomicBool::new(false));
         let visible_num = Arc::new(AtomicU32::new(1));
-        let controlbar_ui = ControlBarUI::new(
-            current_main_stream_timestamp.clone(),
-            media_source_flag.clone(),
-            visible_flag.clone(),
-            live_mode.clone(),
-            end_ts.clone(),
-            audio_player.clone(),
-            tiny_decoder.clone(),
-            rt.clone(),
-            visible_num.clone(),
-        );
+        let time_text = String::new();
+        let audio_volume = 1.0_f32;
+        let fullscreen_flag = false;
+        let show_volume_slider_flag = false;
+        let show_subtitle_options_flag = false;
+        let controlbar_ui = ControlBarUIBuilder::default()
+            .current_main_stream_timestamp(current_main_stream_timestamp.clone())
+            .media_source_flag(media_source_flag.clone())
+            .visible_flag(visible_flag.clone())
+            .live_mode(live_mode.clone())
+            .end_ts(end_ts.clone())
+            .audio_player(audio_player.clone())
+            .tiny_decoder(tiny_decoder.clone())
+            .async_rt(rt.clone())
+            .visible_num(visible_num.clone())
+            .time_text(time_text)
+            .audio_volume(audio_volume)
+            .fullscreen_flag(fullscreen_flag)
+            .show_volume_slider_flag(show_volume_slider_flag)
+            .show_subtitle_options_flag(show_subtitle_options_flag)
+            .build()?;
         let last_fps_update_instant = Instant::now();
         let fps_text_str = String::new();
         Ok(Self {
@@ -409,55 +417,51 @@ impl AppUI {
         }
     }
     fn update_time(&mut self) {
-        if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-            if self
+        if let Ok(tiny_decoder) = self.tiny_decoder.try_read()
+            && self
                 .ui_flags
                 .media_source_flag
                 .load(std::sync::atomic::Ordering::Acquire)
-            {
-                if !self
-                    .ui_flags
-                    .live_mode
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    let play_ts = self
-                        .current_main_stream_timestamp
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    let sec_num = {
-                        if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                            let audio_time_base = tiny_decoder.audio_time_base;
-                            play_ts * audio_time_base.numerator() as i64
-                                / audio_time_base.denominator() as i64
-                        } else {
-                            let v_time_base = tiny_decoder.video_time_base;
+            && !self
+                .ui_flags
+                .live_mode
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let play_ts = self
+                .current_main_stream_timestamp
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let sec_num = {
+                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                    let audio_time_base = tiny_decoder.audio_time_base;
+                    play_ts * audio_time_base.numerator() as i64
+                        / audio_time_base.denominator() as i64
+                } else {
+                    let v_time_base = tiny_decoder.video_time_base;
 
-                            play_ts * v_time_base.numerator() as i64
-                                / v_time_base.denominator() as i64
-                        }
-                    };
-                    let sec = (sec_num % 60) as u8;
-                    let min_num = sec_num / 60;
-                    let min = (min_num % 60) as u8;
-                    let hour_num = min_num / 60;
-                    let hour = hour_num as u8;
-                    if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                        if cur_time != self.play_time {
-                            self.play_time = cur_time;
-                        }
-                    } else {
-                        warn!("update time err!");
-                    }
+                    play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
                 }
+            };
+            let sec = (sec_num % 60) as u8;
+            let min_num = sec_num / 60;
+            let min = (min_num % 60) as u8;
+            let hour_num = min_num / 60;
+            let hour = hour_num as u8;
+            if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
+                if cur_time != self.play_time {
+                    self.play_time = cur_time;
+                }
+            } else {
+                warn!("update time err!");
             }
         }
     }
     fn update_time_text(&mut self) {
-        if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
-            if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-                now_str.push('|');
-                now_str.push_str(&tiny_decoder.end_time_formatted_string);
-                self.controlbar_ui.time_text = now_str;
-            }
+        if let Ok(mut now_str) = self.play_time.format(&self.time_formatter)
+            && let Ok(tiny_decoder) = self.tiny_decoder.try_read()
+        {
+            now_str.push('|');
+            now_str.push_str(&tiny_decoder.end_time_formatted_string);
+            self.controlbar_ui.time_text = now_str;
         }
     }
     fn alloc_texture(
@@ -650,11 +654,11 @@ impl AppUI {
         let mut file_path = None;
 
         self.open_file_dialog.show(ui.ctx());
-        if self.open_file_dialog.selected() {
-            if let Some(p) = self.open_file_dialog.path() {
-                warn!("path selected{:#?}", p);
-                file_path = Some(p.to_path_buf())
-            }
+        if self.open_file_dialog.selected()
+            && let Some(p) = self.open_file_dialog.path()
+        {
+            warn!("path selected{:#?}", p);
+            file_path = Some(p.to_path_buf())
         }
 
         if let Some(p) = file_path {
@@ -775,12 +779,12 @@ impl AppUI {
             let mut orange_color = Color32::ORANGE.to_srgba_unmultiplied();
             orange_color[3] = 100;
             let now_ins = Instant::now();
-            if let Some(dur) = now_ins.checked_duration_since(self.last_fps_update_instant) {
-                if dur.as_secs() > 0 {
-                    let fps = ui.input(|input| 1.0 / input.stable_dt.min(0.1));
-                    self.fps_text_str = format!("fps:{}", fps as i32);
-                    self.last_fps_update_instant = now_ins;
-                }
+            if let Some(dur) = now_ins.checked_duration_since(self.last_fps_update_instant)
+                && dur.as_secs() > 0
+            {
+                let fps = ui.input(|input| 1.0 / input.stable_dt.min(0.1));
+                self.fps_text_str = format!("fps:{}", fps as i32);
+                self.last_fps_update_instant = now_ins;
             }
             let rich_text = egui::RichText::new(&self.fps_text_str)
                 .color(Color32::from_rgba_unmultiplied(
@@ -796,12 +800,10 @@ impl AppUI {
             let mut date_time_str = "date-time：".to_string();
             if let Ok(formatter) =
                 time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+                && let Ok(local_date_time) = time::OffsetDateTime::now_local()
+                && let Ok(formatted_date_time_str) = local_date_time.format(&formatter)
             {
-                if let Ok(local_date_time) = time::OffsetDateTime::now_local() {
-                    if let Ok(formatted_date_time_str) = local_date_time.format(&formatter) {
-                        date_time_str.push_str(formatted_date_time_str.as_str());
-                    }
-                }
+                date_time_str.push_str(formatted_date_time_str.as_str());
             }
             let rich_text = egui::RichText::new(date_time_str)
                 .color(Color32::from_rgba_unmultiplied(
@@ -868,27 +870,27 @@ impl AppUI {
     ) {
         let cover_pic_data = tiny_decoder.cover_pic_data.clone();
         let cover_data = cover_pic_data.read().await;
-        if let Some(data_vec) = &*cover_data {
-            if let Ok(img) = image::load_from_memory(data_vec) {
-                let video_frame_rect = tiny_decoder.video_frame_rect;
-                let rgba8_img = if video_frame_rect[0] != 0 {
-                    img.resize(
-                        video_frame_rect[0],
-                        video_frame_rect[1],
-                        image::imageops::FilterType::Triangle,
-                    )
-                    .to_rgba8()
-                } else {
-                    img.to_rgba8()
-                };
-                let cover_color_img = ColorImage::from_rgba_unmultiplied(
-                    [rgba8_img.width() as usize, rgba8_img.height() as usize],
-                    &rgba8_img,
-                );
-                info!("set cover img!");
-                let mut main_color_image = main_color_image.write().await;
-                *main_color_image = cover_color_img;
-            }
+        if let Some(data_vec) = &*cover_data
+            && let Ok(img) = image::load_from_memory(data_vec)
+        {
+            let video_frame_rect = tiny_decoder.video_frame_rect;
+            let rgba8_img = if video_frame_rect[0] != 0 {
+                img.resize(
+                    video_frame_rect[0],
+                    video_frame_rect[1],
+                    image::imageops::FilterType::Triangle,
+                )
+                .to_rgba8()
+            } else {
+                img.to_rgba8()
+            };
+            let cover_color_img = ColorImage::from_rgba_unmultiplied(
+                [rgba8_img.width() as usize, rgba8_img.height() as usize],
+                &rgba8_img,
+            );
+            info!("set cover img!");
+            let mut main_color_image = main_color_image.write().await;
+            *main_color_image = cover_color_img;
         }
     }
     pub fn reset_media_input(context: ResetInputContext) {
@@ -909,7 +911,7 @@ impl AppUI {
                 if present_data_manager.is_running
                     && let Err(e) = present_data_manager.cancel_present_tasks().await
                 {
-                    let stop_err_msg = format!("stop_present_tasks error:{}", e.to_string());
+                    let stop_err_msg = format!("stop_present_tasks error:{}", e);
                     warn!("stop_present_tasks error:{:?}", e);
                     *context.tip_window_msg.write().await = stop_err_msg;
                     context
@@ -921,7 +923,7 @@ impl AppUI {
                 let mut tiny_decoder = context.tiny_decoder.write().await;
 
                 if let Err(e) = tiny_decoder.reset_input(&context.path).await {
-                    let reset_input_err_msg = format!("reset_input error:{}", e.to_string());
+                    let reset_input_err_msg = format!("reset_input error:{}", e);
                     warn!("reset_input error:{:?}", e);
                     *context.tip_window_msg.write().await = reset_input_err_msg;
                     context
@@ -949,8 +951,7 @@ impl AppUI {
                 )
                 .await
                 {
-                    let update_video_texture_err_msg =
-                        format!("update_video_texture error:{}", e.to_string());
+                    let update_video_texture_err_msg = format!("update_video_texture error:{}", e);
                     warn!("update_video_texture error:{:?}", e);
                     *context.tip_window_msg.write().await = update_video_texture_err_msg;
                     context
@@ -968,10 +969,10 @@ impl AppUI {
         let mut detected = None;
         ui.input(|input| {
             let dropped_files = &input.raw.dropped_files;
-            if !dropped_files.is_empty() {
-                if let Some(path) = &dropped_files[0].path {
-                    detected = Some(path.to_path_buf());
-                }
+            if !dropped_files.is_empty()
+                && let Some(path) = &dropped_files[0].path
+            {
+                detected = Some(path.to_path_buf());
             }
         });
         if let Some(path_buf) = detected {
@@ -1071,31 +1072,18 @@ impl AppUI {
         if let Ok(ite) = path.read_dir() {
             for entry in ite {
                 if let Ok(en) = entry {
-                    if let Ok(t) = en.file_type() {
-                        if t.is_file() {
-                            if let Some(file_name) = en.file_name().to_str() {
-                                if file_name.ends_with(".ts")
-                                    || file_name.ends_with(".mp4")
-                                    || file_name.ends_with(".mkv")
-                                    || file_name.ends_with(".flac")
-                                    || file_name.ends_with(".mp3")
-                                    || file_name.ends_with(".m4a")
-                                    || file_name.ends_with(".wav")
-                                    || file_name.ends_with(".ogg")
-                                    || file_name.ends_with(".opus")
-                                {
-                                    let media_path = en.path().clone();
-                                    let cover = Self::load_file_cover(&media_path).await;
-                                    let texture_handle =
-                                        Self::load_cover_texture(&ctx, &cover, file_name).await;
-                                    video_targets.push(VideoDes {
-                                        name: file_name.to_string(),
-                                        path: media_path,
-                                        texture_handle,
-                                    });
-                                }
-                            }
-                        }
+                    if let Ok(t) = en.file_type()
+                        && let Some(file_name) = en.file_name().to_str()
+                        && t.is_file()
+                        && let Ok(cover) = Self::load_file_cover(&en.path()).await
+                    {
+                        let texture_handle =
+                            Self::load_cover_texture(&ctx, &cover, file_name).await;
+                        video_targets.push(VideoDes {
+                            name: file_name.to_string(),
+                            path: en.path(),
+                            texture_handle,
+                        });
                     }
                 } else {
                     warn!("read dir element err");
@@ -1103,38 +1091,42 @@ impl AppUI {
             }
         }
     }
-    async fn load_file_cover(file_path: &Path) -> RgbaImage {
+    async fn load_file_cover(file_path: &Path) -> PlayerResult<RgbaImage> {
         if let Ok(input) = &mut ffmpeg_the_third::format::input(file_path) {
+            if input.duration() < 5_000_000 {
+                return Err(anyhow::Error::msg("not a valid media file"));
+            }
             let mut cover_idx = None;
 
             for stream in input.streams() {
-                if let Type::Video = stream.parameters().medium() {
-                    if let Disposition::ATTACHED_PIC = stream.disposition() {
-                        cover_idx = Some(stream.index());
-                        break;
-                    }
+                if let Type::Video = stream.parameters().medium()
+                    && let Disposition::ATTACHED_PIC = stream.disposition()
+                {
+                    cover_idx = Some(stream.index());
+                    break;
                 }
             }
             if let Some(idx) = cover_idx {
                 for packet in input.packets() {
-                    if let Ok((stream, p)) = &packet {
-                        if stream.index() == idx {
-                            if let Some(cover_data) = p.data() {
-                                if let Ok(dyn_img) = image::load_from_memory(cover_data) {
-                                    return dyn_img.to_rgba8();
-                                }
-                            }
-                        }
+                    if let Ok((stream, p)) = &packet
+                        && stream.index() == idx
+                        && let Some(cover_data) = p.data()
+                        && let Ok(dyn_img) = image::load_from_memory(cover_data)
+                    {
+                        return Ok(dyn_img.to_rgba8());
                     }
                 }
             }
+        } else {
+            return Err(anyhow::Error::msg("not a valid media file"));
         }
-        if let ImageSource::Bytes { bytes, .. } = PLAY_IMG {
-            if let Ok(dyn_img) = image::load_from_memory(bytes.as_bytes()) {
-                return dyn_img.to_rgba8();
-            }
+        if let ImageSource::Bytes { bytes, .. } = PLAY_IMG
+            && let Ok(dyn_img) = image::load_from_memory(bytes.as_bytes())
+        {
+            Ok(dyn_img.to_rgba8())
+        } else {
+            Err(anyhow::Error::msg("load PLAY_IMG failed"))
         }
-        RgbaImage::new(1920, 1080)
     }
     async fn load_cover_texture(
         ctx: &egui::Context,
