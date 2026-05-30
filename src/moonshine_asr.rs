@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::{
     ffi::{CStr, CString, c_char, c_float, c_int, c_uint, c_ulonglong, c_void},
     ptr::{null, null_mut},
@@ -114,7 +115,8 @@ pub struct Transcriber {
     audio_resampler: ManualProtectedResampler,
 }
 impl Transcriber {
-    pub fn new(subtitle_sender: Sender<String>) -> PlayerResult<Self> {
+    pub fn new() -> PlayerResult<Self> {
+        let subtitle_sender=flume::bounded(5).0;
         let exe_path = CURRENT_EXE_PATH
             .as_ref()
             .map_err(|_e| anyhow::Error::msg("exe_path_as_ref err"))?;

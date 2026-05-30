@@ -23,6 +23,7 @@ use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // mod ai_sub_title;
+mod moonshine_asr;
 mod appui;
 mod audio_play;
 mod controlbar_ui;

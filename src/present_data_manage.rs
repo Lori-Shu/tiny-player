@@ -28,7 +28,7 @@ use crate::{
     PlayerResult,
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
-    gpu_post_process::ColorSpaceConverter,
+    gpu_post_process::ColorSpaceConverter, moonshine_asr::{Transcriber, UsedModel},
 };
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct PresentDataManager {
@@ -47,7 +47,7 @@ impl PresentDataManager {
             is_running,
         }
     }
-    async fn play_audio_task(mut data_manage_context: DataManageContext) {
+    async fn play_audio_task(data_manage_context: DataManageContext) {
         let mut audio_cur_ts = None;
         while !data_manage_context.cancellation_token.is_cancelled() {
             /*
@@ -299,7 +299,9 @@ impl PresentDataManager {
 #[derive(Builder, Clone)]
 pub struct DataManageContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    #[allow(unused)]
     used_model: Arc<RwLock<UsedModel>>,
+    #[allow(unused)]
     transcriber: Transcriber,
     audio_sink: Arc<Player>,
     current_main_stream_timestamp: Arc<AtomicI64>,

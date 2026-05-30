@@ -39,13 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    PlayerResult,
-    controlbar_ui::{ControlBarUI, ControlBarUIBuilder},
-    decode::{MainStream, TinyDecoder, TinyDecoderCreationArgsBuilder},
-    gpu_post_process::ColorSpaceConverter,
-    internet_resource_ui::InternetResourceUI,
-    playlist_ui::PlayListUI,
-    present_data_manage::{DataManageContextBuilder, PresentDataManager},
+    PlayerResult, controlbar_ui::{ControlBarUI, ControlBarUIBuilder}, decode::{MainStream, TinyDecoder, TinyDecoderCreationArgsBuilder}, gpu_post_process::ColorSpaceConverter, internet_resource_ui::InternetResourceUI, moonshine_asr::{Transcriber, UsedModel}, playlist_ui::PlayListUI, present_data_manage::{DataManageContextBuilder, PresentDataManager}
 };
 
 const VIDEO_FILE_IMG: ImageSource = include_image!("../resources/file-play.png");
@@ -293,6 +287,8 @@ impl AppUI {
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .cancellation_token(present_data_task_cancellation_token)
             .play_tasks_notify(play_tasks_notify.clone())
+            .used_model(Arc::new(RwLock::new(UsedModel::None)))
+            .transcriber(Transcriber::new()?)
             .build()?;
         let present_data_manager = PresentDataManager::new(data_manage_context);
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
