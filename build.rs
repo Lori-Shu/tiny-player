@@ -35,18 +35,14 @@ fn main() {
     // .unwrap();
 
     println!(
-        "cargo:rustc-link-search=D:/rustprojects/tiny-player/clib/moonshine-voice-windows-x86_64/lib"
+        "cargo:rustc-link-search=D:/rustprojects/tiny-player/clib"
     );
 
     println!("cargo:rustc-link-lib=static=moonshine");
     println!("cargo:rustc-link-lib=static=moonshine-utils");
     println!("cargo:rustc-link-lib=static=bin-tokenizer");
-    println!("cargo:rustc-link-lib=static=moonshine_tts_ort");
     println!("cargo:rustc-link-lib=static=ort-utils");
-    println!("cargo:rustc-link-lib=static=moonshine_tts_core");
-    println!("cargo:rustc-link-lib=static=moonshine_tts_utf8proc");
     println!("cargo:rustc-link-lib=dylib=onnxruntime");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
 
     if std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap() == "windows" {
         let mut res = winresource::WindowsResource::new();
