@@ -1,10 +1,13 @@
-/resources
+/resources/dlls
+/resources/model
+/resources/moonshine_tiny_streaming
+/resources/whisper_tiny
+/resources/translate_key
 /target
-/tiny_installer
 Cargo.lock
 debug.log
 tmp_font.ttf
-/test
+/tests
 /.cargo
 /.vscode
 /.zed

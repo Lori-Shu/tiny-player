@@ -1,0 +1,17 @@
+# --- 阶段 1: 依赖预构建 (Planner) ---
+FROM rust:1.95 AS builder
+RUN apt-get update && apt-get install -y \
+pkg-config \
+libasound2-dev \
+libavdevice-dev \
+libavcodec-dev \
+libavformat-dev \
+libavutil-dev \
+libswscale-dev \
+libswresample-dev \
+clang
+WORKDIR /app
+
+COPY . .
+# 这里才是真正的业务代码编译，因为依赖已经缓存，这一步极快
+RUN cargo build

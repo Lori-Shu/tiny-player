@@ -24,7 +24,7 @@
 //                 "content-type",
 //                 HeaderValue::from_str("application/x-www-form-urlencoded")?,
 //             )
-//             .ok_or(anyhow::Error::msg("insert reqwest header failed!"))?;
+//             .context(anyhow::Error::msg("insert reqwest header failed!"))?;
 //         let client = Client::builder().default_headers(header).build()?;
 //         Ok(Self {
 //             client,

@@ -25,9 +25,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // mod ai_sub_title;
 mod appui;
 mod audio_play;
+mod controlbar_ui;
 mod decode;
 mod gpu_post_process;
-mod moonshine_asr;
+mod internet_resource_ui;
+mod playlist_ui;
 mod present_data_manage;
 // mod translate;
 
@@ -83,24 +85,24 @@ fn main() {
         },
         ..Default::default()
     };
-    if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON {
-        if let Ok(img) = image::load_from_memory(&bytes) {
-            options.viewport.icon = Some(Arc::new(IconData {
-                width: img.width(),
-                height: img.height(),
-                rgba: img.as_bytes().to_vec(),
-            }));
-        }
+    if let ImageSource::Bytes { bytes, .. } = WINDOW_ICON
+        && let Ok(img) = image::load_from_memory(&bytes)
+    {
+        options.viewport.icon = Some(Arc::new(IconData {
+            width: img.width(),
+            height: img.height(),
+            rgba: img.as_bytes().to_vec(),
+        }));
     }
     options.centered = true;
-    options.viewport.inner_size = Some(Vec2::new(900.0, 700.0));
+    options.viewport.inner_size = Some(Vec2::new(1280.0, 720.0));
 
     if let Err(e) = eframe::run_native(
         "tiny player",
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            match appui::AppUi::new(cc) {
+            match appui::AppUI::new(cc) {
                 Ok(tiny_app_ui) => {
                     tiny_app_ui.replace_fonts(&cc.egui_ctx);
                     Ok(Box::new(tiny_app_ui))
