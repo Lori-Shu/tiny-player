@@ -3,19 +3,23 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI64, AtomicU32},
 };
 
-use derive_builder::Builder;
 use egui::{
     AtomExt, Button, Color32, CornerRadius, Image, Layout, RichText, Stroke, Ui, Vec2, WidgetText,
 };
-use tokio::{runtime::Handle, sync::RwLock};
+use tokio::{
+    runtime::Handle,
+    sync::{Notify, RwLock},
+};
 use tracing::info;
+use typed_builder::TypedBuilder;
 
 use crate::{
     appui::{FULLSCREEN_IMG, SUBTITLE_IMG, THEME_COLOR, VOLUME_IMG},
     audio_play::AudioPlayer,
     decode::TinyDecoder,
+    whispercpp_transcriber::UsedModel,
 };
-#[derive(Builder)]
+#[derive(TypedBuilder, Clone)]
 pub struct ControlBarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
@@ -31,6 +35,8 @@ pub struct ControlBarUI {
     audio_volume: f32,
     fullscreen_flag: bool,
     show_volume_slider_flag: bool,
+    used_model: Arc<RwLock<UsedModel>>,
+    transcribe_task_notify: Arc<Notify>,
 }
 impl ControlBarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
@@ -136,13 +142,23 @@ impl ControlBarUI {
                 self.show_subtitle_options_flag = !self.show_subtitle_options_flag;
             }
 
-            // let used_model = self.used_model.clone();
-            // let mut used_model = self.async_rt.block_on(used_model.write());
-            // if self.ui_flags.show_subtitle_options_flag {
-            //     ui.radio_value(&mut *used_model, UsedModel::Empty, "closed");
-            //     ui.radio_value(&mut *used_model, UsedModel::Chinese, "中文");
-            //     ui.radio_value(&mut *used_model, UsedModel::English, "English");
-            // }
+            if self.show_subtitle_options_flag {
+                if let Ok(mut used_model) = self.used_model.try_write() {
+                    ui.radio_value(&mut *used_model, UsedModel::None, "closed");
+                    if ui
+                        .radio_value(&mut *used_model, UsedModel::Chinese, "中文")
+                        .clicked()
+                    {
+                        self.transcribe_task_notify.notify_one();
+                    }
+                    if ui
+                        .radio_value(&mut *used_model, UsedModel::English, "English")
+                        .clicked()
+                    {
+                        self.transcribe_task_notify.notify_one();
+                    }
+                }
+            }
         });
     }
     fn paint_volume_button(&mut self, ui: &mut Ui) {

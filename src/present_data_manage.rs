@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::Context;
-use derive_builder::Builder;
 use eframe::wgpu::Texture;
 use ffmpeg_the_third::{
     Rational,
@@ -23,12 +22,14 @@ use tokio::{
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::warn;
+use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult,
     audio_play::AudioPlayer,
     decode::{MainStream, TinyDecoder},
-    gpu_post_process::ColorSpaceConverter, moonshine_asr::{Transcriber, UsedModel},
+    gpu_post_process::ColorSpaceConverter,
+    whispercpp_transcriber::{Transcriber, UsedModel},
 };
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct PresentDataManager {
@@ -82,13 +83,19 @@ impl PresentDataManager {
                             {
                                 warn!("{}", e);
                             }
-                            // let used_model = data_manage_context.used_model.read().await;
-                            // let used_model_ref = &*used_model;
-                            // if UsedModel::Empty != *used_model_ref {
-                            //     let mut ai_subtitle = data_manage_context.ai_subtitle.write().await;
-                            //     let used_model = used_model_ref.clone();
-                            //     ai_subtitle.push_frame_data(audio_frame, used_model).await;
-                            // }
+                            let used_model = data_manage_context.used_model.read().await;
+                            let used_model_ref = &*used_model;
+                            if UsedModel::None != *used_model_ref {
+                                if let Err(e) = data_manage_context
+                                    .transcriber
+                                    .write()
+                                    .await
+                                    .push_audio_frame(audio_frame)
+                                    .await
+                                {
+                                    warn!("transcribe err:{:?}", e);
+                                }
+                            }
                         }
                     }
 
@@ -272,16 +279,15 @@ impl PresentDataManager {
     }
     pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
         self.data_manage_context.cancellation_token.cancel();
-        let audio_task_join_handle = self
-            .audio_thread_handle
-            .as_mut()
-            .context("no audio play task running")?;
-        audio_task_join_handle.await?;
-        let video_task_join_handle = self
-            .video_thread_handle
-            .as_mut()
-            .context("no video play task running")?;
-        video_task_join_handle.await?;
+        Self::join_tasks(
+            self.data_manage_context.runtime_handle.clone(),
+            self.audio_thread_handle
+                .take()
+                .context("get audio_thread_handle err")?,
+            self.video_thread_handle
+                .take()
+                .context("get audio_thread_handle err")?,
+        );
         self.is_running = false;
         Ok(())
     }
@@ -295,14 +301,40 @@ impl PresentDataManager {
             Some(runtime_handle.spawn(Self::play_video_task(self.data_manage_context.clone())));
         self.is_running = true;
     }
+    fn join_tasks(
+        runtime: Handle,
+        audio_task_join_handle: JoinHandle<()>,
+        video_task_join_handle: JoinHandle<()>,
+    ) {
+        runtime.spawn(async move {
+            audio_task_join_handle.await?;
+            video_task_join_handle.await?;
+            PlayerResult::Ok(())
+        });
+    }
 }
-#[derive(Builder, Clone)]
+impl Drop for PresentDataManager {
+    fn drop(&mut self) {
+        if self.is_running {
+            self.data_manage_context.cancellation_token.cancel();
+            if let Some(audio_handle) = self.audio_thread_handle.take()
+                && let Some(video_handle) = self.video_thread_handle.take()
+            {
+                Self::join_tasks(
+                    self.data_manage_context.runtime_handle.clone(),
+                    audio_handle,
+                    video_handle,
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, TypedBuilder)]
 pub struct DataManageContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
-    #[allow(unused)]
     used_model: Arc<RwLock<UsedModel>>,
-    #[allow(unused)]
-    transcriber: Transcriber,
+    transcriber: Arc<RwLock<Transcriber>>,
     audio_sink: Arc<Player>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     runtime_handle: Handle,

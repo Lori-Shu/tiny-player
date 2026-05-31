@@ -32,17 +32,6 @@ fn main() {
     // )
     // .unwrap();
 
-    println!(
-        "cargo:rustc-link-search=D:/rustprojects/tiny-player/clib"
-    );
-    println!("cargo:rustc-link-lib=static=bin-tokenizer");
-    println!("cargo:rustc-link-lib=static=ort-utils");
-    println!("cargo:rustc-link-lib=dylib=onnxruntime");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
-    println!("cargo:rustc-link-lib=static=moonshine");
-    println!("cargo:rustc-link-lib=static=moonshine-utils");
-    
-
     if std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap() == "windows" {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("resources/play.ico");

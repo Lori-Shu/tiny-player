@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
-use derive_builder::Builder;
+
 use eframe::{
     CreationContext,
     egui_wgpu::RenderState,
@@ -37,9 +37,17 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use typed_builder::TypedBuilder;
 
 use crate::{
-    PlayerResult, controlbar_ui::{ControlBarUI, ControlBarUIBuilder}, decode::{MainStream, TinyDecoder, TinyDecoderCreationArgsBuilder}, gpu_post_process::ColorSpaceConverter, internet_resource_ui::InternetResourceUI, moonshine_asr::{Transcriber, UsedModel}, playlist_ui::PlayListUI, present_data_manage::{DataManageContextBuilder, PresentDataManager}
+    PlayerResult,
+    controlbar_ui::ControlBarUI,
+    decode::{MainStream, TinyDecoder, TinyDecoderCreationArgs},
+    gpu_post_process::ColorSpaceConverter,
+    internet_resource_ui::InternetResourceUI,
+    playlist_ui::PlayListUI,
+    present_data_manage::{DataManageContext, PresentDataManager},
+    whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
 };
 
 const VIDEO_FILE_IMG: ImageSource = include_image!("../resources/file-play.png");
@@ -87,10 +95,8 @@ pub struct AppUI {
     play_time: time::Time,
     tip_window_msg: Arc<RwLock<String>>,
     open_file_dialog: FileDialog,
-    // _subtitle: Arc<RwLock<AISubTitle>>,
-    // subtitle_text: String,
-    // subtitle_text_receiver: mpsc::Receiver<String>,
-    // used_model: Arc<RwLock<UsedModel>>,
+    subtitle_text_receiver: Receiver<String>,
+    subtitle_str: String,
     visible_num: Arc<AtomicU32>,
     wgpu_render_state: Arc<RenderState>,
     end_ts: Arc<AtomicI64>,
@@ -103,6 +109,7 @@ pub struct AppUI {
     last_fps_update_instant: Instant,
     fps_text_str: String,
     play_tasks_notify: Arc<Notify>,
+    transcribe_task_notify:Arc<Notify>
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -157,7 +164,7 @@ impl eframe::App for AppUI {
                     self.update_time();
                     self.update_time_text();
                     self.controlbar_ui.paint_controlbar(ui);
-                    // self.paint_subtitle(ui, ctx);
+                    self.paint_subtitle(ui);
                 });
 
                 self.detect_file_drag(ui);
@@ -245,7 +252,7 @@ impl AppUI {
         let video_decode_thread_notify = Arc::new(Notify::new());
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let tiny_decoder_creation_args = TinyDecoderCreationArgsBuilder::default()
+        let tiny_decoder_creation_args = TinyDecoderCreationArgs::builder()
             .runtime_handle(rt.clone())
             .media_source_flag(media_source_flag.clone())
             .end_timestamp(end_ts.clone())
@@ -256,12 +263,11 @@ impl AppUI {
             .audio_decode_thread_notify(audio_decode_thread_notify.clone())
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .current_video_timestamp(current_video_timestamp.clone())
-            .build()?;
+            .build();
         let tiny_decoder = crate::decode::TinyDecoder::new(tiny_decoder_creation_args)?;
         let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
-        // let used_model = Arc::new(RwLock::new(UsedModel::Empty));
-        // let subtitle_channel = mpsc::channel(10);
-        // let subtitle = Arc::new(RwLock::new(AISubTitle::new(subtitle_channel.0)?));
+        let used_model = Arc::new(RwLock::new(UsedModel::None));
+        let subtitle_channel = flume::bounded(10);
         let audio_player = Arc::new(crate::audio_play::AudioPlayer::new()?);
 
         let pause_flag = Arc::new(AtomicBool::new(false));
@@ -270,10 +276,18 @@ impl AppUI {
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
         let present_data_task_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
-        let data_manage_context = DataManageContextBuilder::default()
+        let transcribe_task_notify = Arc::new(Notify::new());
+        let transcriber_args = TranscriberArgs::builder()
+            .async_runtime(rt.clone())
+            .subtitle_sender(subtitle_channel.0)
+            .pause_flag(pause_flag.clone())
+            .used_model(used_model.clone())
+            .transcribe_task_notify(transcribe_task_notify.clone())
+            .build();
+        let transcriber = Transcriber::new(transcriber_args)?;
+        let data_manage_context = DataManageContext::builder()
             .tiny_decoder(tiny_decoder.clone())
-            // .used_model(used_model.clone())
-            // .ai_subtitle(subtitle.clone())
+            .used_model(used_model.clone())
             .video_texture(video_texture.clone())
             .audio_sink(audio_player.sink())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
@@ -287,9 +301,8 @@ impl AppUI {
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .cancellation_token(present_data_task_cancellation_token)
             .play_tasks_notify(play_tasks_notify.clone())
-            .used_model(Arc::new(RwLock::new(UsedModel::None)))
-            .transcriber(Transcriber::new()?)
-            .build()?;
+            .transcriber(Arc::new(RwLock::new(transcriber)))
+            .build();
         let present_data_manager = PresentDataManager::new(data_manage_context);
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
@@ -297,7 +310,7 @@ impl AppUI {
         let live_mode = Arc::new(AtomicBool::new(false));
         let tip_window_flag = Arc::new(AtomicBool::new(false));
         let tip_window_msg = Arc::new(RwLock::new("empty msg".to_string()));
-        let change_input_context = ResetInputContextBuilder::default()
+        let change_input_context = ResetInputContext::builder()
             .audio_player(audio_player.sink())
             .bg_dyn_img(bg_dyn_img.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
@@ -315,7 +328,7 @@ impl AppUI {
             .present_data_manager(present_data_manager.clone())
             .tip_window_flag(tip_window_flag.clone())
             .tip_window_msg(tip_window_msg.clone())
-            .build()?;
+            .build();
         let internet_list_window_flag = Arc::new(AtomicBool::new(false));
         let internet_resource_ui = InternetResourceUI::new(
             change_input_context.clone(),
@@ -337,7 +350,7 @@ impl AppUI {
         let fullscreen_flag = false;
         let show_volume_slider_flag = false;
         let show_subtitle_options_flag = false;
-        let controlbar_ui = ControlBarUIBuilder::default()
+        let controlbar_ui = ControlBarUI::builder()
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .media_source_flag(media_source_flag.clone())
             .visible_flag(visible_flag.clone())
@@ -352,13 +365,16 @@ impl AppUI {
             .fullscreen_flag(fullscreen_flag)
             .show_volume_slider_flag(show_volume_slider_flag)
             .show_subtitle_options_flag(show_subtitle_options_flag)
-            .build()?;
+            .used_model(used_model.clone())
+            .transcribe_task_notify(transcribe_task_notify.clone())
+            .build();
         let last_fps_update_instant = Instant::now();
         let fps_text_str = String::new();
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
-            // subtitle_text_receiver: subtitle_channel.1,
+            subtitle_text_receiver: subtitle_channel.1,
+            subtitle_str: String::new(),
             video_texture_id,
             tiny_decoder,
             audio_player,
@@ -373,11 +389,8 @@ impl AppUI {
                 internet_list_window_flag,
                 live_mode,
             },
-            // used_model,
             tip_window_msg,
             open_file_dialog: f_dialog,
-            // _subtitle: subtitle,
-            // subtitle_text: String::new(),
             visible_num,
             wgpu_render_state,
             end_ts,
@@ -390,6 +403,7 @@ impl AppUI {
             last_fps_update_instant,
             fps_text_str,
             play_tasks_notify,
+            transcribe_task_notify
         })
     }
     fn paint_video_image(&mut self, ui: &mut Ui) {
@@ -729,46 +743,35 @@ impl AppUI {
                         } else {
                             audio_player.play();
                             self.play_tasks_notify.notify_waiters();
+                            self.transcribe_task_notify.notify_one();
                         }
                     }
                 });
         }
     }
 
-    // fn paint_subtitle(&mut self, ui: &mut Ui, ctx: &Context) {
-    //     ui.horizontal(|ui| {
-    //         if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
-    //             if self.async_rt.block_on(tiny_decoder.is_input_exist()) {
-    //                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-    //                     if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
-    //                         self.subtitle_text.push_str(&generated_str);
-    //                     }
-    //                     if self.subtitle_text.len() > 50 {
-    //                         self.subtitle_text.remove(0);
-    //                     }
-    //                     if let Ok(used_model) = self.used_model.try_read() {
-    //                         if let UsedModel::Empty = &*used_model
-    //                             && !self.subtitle_text.is_empty()
-    //                         {
-    //                             self.subtitle_text.clear();
-    //                         }
-    //                     }
-    //                     let subtitle_text_button = egui::Button::new(
-    //                         RichText::new(self.subtitle_text.clone())
-    //                             .size(50.0)
-    //                             .color(*THEME_COLOR)
-    //                             .atom_size(Vec2::new(ctx.content_rect().width(), 10.0)),
-    //                     )
-    //                     .frame(false);
-    //                     let be_opacity = ui.opacity();
-    //                     ui.set_opacity(1.0);
-    //                     ui.add(subtitle_text_button);
-    //                     ui.set_opacity(be_opacity);
-    //                 });
-    //             }
-    //         }
-    //     });
-    // }
+    fn paint_subtitle(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if self
+                .ui_flags
+                .media_source_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+                    if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
+                        self.subtitle_str = generated_str;
+                    }
+                    let subtitle_text_button = egui::Button::new(
+                        RichText::new(&self.subtitle_str)
+                            .size(50.0)
+                            .color(*THEME_COLOR)
+                            .atom_size(Vec2::new(ui.content_rect().width(), 10.0)),
+                    );
+                    ui.add(subtitle_text_button);
+                });
+            }
+        });
+    }
 
     fn paint_frame_info_text(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
@@ -1217,7 +1220,7 @@ pub struct VideoDes {
     pub path: PathBuf,
     pub texture_handle: TextureHandle,
 }
-#[derive(Clone, Builder)]
+#[derive(Clone, TypedBuilder)]
 pub struct ResetInputContext {
     pause_flag: Arc<AtomicBool>,
     current_main_stream_timestamp: Arc<AtomicI64>,
