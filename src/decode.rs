@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
-use derive_builder::Builder;
+
 use ffmpeg_the_third::{
     ChannelLayout, Packet, Rational, Stream, codec,
     ffi::{
@@ -32,6 +32,7 @@ use tokio::{
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{Instrument, Level, info, span, warn};
+use typed_builder::TypedBuilder;
 
 use crate::{PlayerResult, audio_play::AUDIO_SAMPLE_RATE, gpu_post_process::ColorSpaceConverter};
 /// this wrapper type should be protected manually to
@@ -55,6 +56,7 @@ unsafe impl Sync for ManualProtectedAudioDecoder {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
+#[derive(Debug, Clone)]
 pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
@@ -746,7 +748,7 @@ impl TinyDecoder {
     }
     /// start the demux and decode task
     async fn spawn_process_tasks(&mut self) {
-        if let Ok(demux_context) = DemuxContextBuilder::default()
+        let demux_context = DemuxContext::builder()
             .audio_stream_index(self.audio_stream_index)
             .video_stream_index(self.video_stream_index)
             .format_input(self.format_input.clone())
@@ -756,18 +758,15 @@ impl TinyDecoder {
             .cover_image_data(self.cover_pic_data.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .cancellation_token(self.cancellation_token.clone())
-            .build()
-        {
-            self.demux_task_handle = Some(self.runtime_handle.spawn(async move {
-                let demux_span = span!(Level::INFO, "demux");
-                let _demux_entered = demux_span.enter();
-                Self::demux_input(demux_context).in_current_span().await
-            }));
-        } else {
-            warn!("build demux context error!");
-        }
+            .build();
 
-        if let Ok(decode_context) = VideoDecodeContextBuilder::default()
+        self.demux_task_handle = Some(self.runtime_handle.spawn(async move {
+            let demux_span = span!(Level::INFO, "demux");
+            let _demux_entered = demux_span.enter();
+            Self::demux_input(demux_context).in_current_span().await
+        }));
+
+        let decode_context = VideoDecodeContext::builder()
             .video_decoder(self.video_decoder.clone())
             .video_frame_sender(self.video_frame_cache_queue.0.clone())
             .video_packet_recv(self.video_packet_cache_queue.1.clone())
@@ -775,19 +774,17 @@ impl TinyDecoder {
             .video_decode_thread_notify(self.video_decode_thread_notify.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .cancellation_token(self.cancellation_token.clone())
-            .build()
-        {
-            self.video_decode_task_handle = Some(self.runtime_handle.spawn(async move {
-                let span = span!(Level::INFO, "decode");
-                let _entered = span.enter();
-                Self::decode_video_frame(decode_context)
-                    .in_current_span()
-                    .await
-            }));
-        } else {
-            warn!("build decode context error!");
-        }
-        if let Ok(decode_context) = AudioDecodeContextBuilder::default()
+            .build();
+
+        self.video_decode_task_handle = Some(self.runtime_handle.spawn(async move {
+            let span = span!(Level::INFO, "decode");
+            let _entered = span.enter();
+            Self::decode_video_frame(decode_context)
+                .in_current_span()
+                .await
+        }));
+
+        let decode_context = AudioDecodeContext::builder()
             .audio_decoder(self.audio_decoder.clone())
             .audio_frame_sender(self.audio_frame_cache_queue.0.clone())
             .audio_packet_recv(self.audio_packet_cache_queue.1.clone())
@@ -795,18 +792,15 @@ impl TinyDecoder {
             .demux_thread_notify(self.demux_thread_notify.clone())
             .resampler(self.resampler.clone())
             .cancellation_token(self.cancellation_token.clone())
-            .build()
-        {
-            self.audio_decode_task_handle = Some(self.runtime_handle.spawn(async move {
-                let span = span!(Level::INFO, "decode");
-                let _entered = span.enter();
-                Self::decode_audio_frame(decode_context)
-                    .in_current_span()
-                    .await
-            }));
-        } else {
-            warn!("build decode context error!");
-        }
+            .build();
+
+        self.audio_decode_task_handle = Some(self.runtime_handle.spawn(async move {
+            let span = span!(Level::INFO, "decode");
+            let _entered = span.enter();
+            Self::decode_audio_frame(decode_context)
+                .in_current_span()
+                .await
+        }));
     }
 
     /// seek the input to a selected timestamp
@@ -1065,7 +1059,7 @@ impl Drop for TinyDecoder {
         self.free_swr_ctx();
     }
 }
-#[derive(Builder)]
+#[derive(TypedBuilder)]
 pub struct TinyDecoderCreationArgs {
     runtime_handle: Handle,
     media_source_flag: Arc<AtomicBool>,
@@ -1084,7 +1078,8 @@ pub struct TinyDecoderCreationArgs {
     video_decode_thread_notify: Arc<Notify>,
     current_video_timestamp: Arc<AtomicI64>,
 }
-#[derive(Builder)]
+
+#[derive(TypedBuilder)]
 struct DemuxContext {
     pub audio_stream_index: usize,
     pub video_stream_index: usize,
@@ -1097,7 +1092,7 @@ struct DemuxContext {
     pub cancellation_token: Arc<CancellationToken>,
 }
 
-#[derive(Builder)]
+#[derive(TypedBuilder)]
 struct VideoDecodeContext {
     pub video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
     pub video_packet_recv: Receiver<Packet>,
@@ -1107,7 +1102,7 @@ struct VideoDecodeContext {
     pub video_decode_thread_notify: Arc<Notify>,
     pub cancellation_token: Arc<CancellationToken>,
 }
-#[derive(Builder)]
+#[derive(TypedBuilder)]
 struct AudioDecodeContext {
     pub audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
     pub audio_packet_recv: Receiver<Packet>,

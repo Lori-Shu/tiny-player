@@ -22,7 +22,6 @@ use egui::{IconData, ImageSource, Vec2, include_image};
 use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// mod ai_sub_title;
 mod appui;
 mod audio_play;
 mod controlbar_ui;
@@ -31,10 +30,10 @@ mod gpu_post_process;
 mod internet_resource_ui;
 mod playlist_ui;
 mod present_data_manage;
-// mod translate;
+mod whispercpp_transcriber;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");
-static _CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
+static CURRENT_EXE_PATH: LazyLock<PlayerResult<PathBuf>> = LazyLock::new(|| {
     let path = std::env::current_exe()?;
     Ok(path)
 });
