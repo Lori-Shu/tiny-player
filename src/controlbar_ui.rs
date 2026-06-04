@@ -142,21 +142,21 @@ impl ControlBarUI {
                 self.show_subtitle_options_flag = !self.show_subtitle_options_flag;
             }
 
-            if self.show_subtitle_options_flag {
-                if let Ok(mut used_model) = self.used_model.try_write() {
-                    ui.radio_value(&mut *used_model, UsedModel::None, "closed");
-                    if ui
-                        .radio_value(&mut *used_model, UsedModel::Chinese, "中文")
-                        .clicked()
-                    {
-                        self.transcribe_task_notify.notify_one();
-                    }
-                    if ui
-                        .radio_value(&mut *used_model, UsedModel::English, "English")
-                        .clicked()
-                    {
-                        self.transcribe_task_notify.notify_one();
-                    }
+            if self.show_subtitle_options_flag
+                && let Ok(mut used_model) = self.used_model.try_write()
+            {
+                ui.radio_value(&mut *used_model, UsedModel::None, "closed");
+                if ui
+                    .radio_value(&mut *used_model, UsedModel::Chinese, "中文")
+                    .clicked()
+                {
+                    self.transcribe_task_notify.notify_one();
+                }
+                if ui
+                    .radio_value(&mut *used_model, UsedModel::English, "English")
+                    .clicked()
+                {
+                    self.transcribe_task_notify.notify_one();
                 }
             }
         });

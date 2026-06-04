@@ -85,16 +85,15 @@ impl PresentDataManager {
                             }
                             let used_model = data_manage_context.used_model.read().await;
                             let used_model_ref = &*used_model;
-                            if UsedModel::None != *used_model_ref {
-                                if let Err(e) = data_manage_context
+                            if UsedModel::None != *used_model_ref
+                                && let Err(e) = data_manage_context
                                     .transcriber
                                     .write()
                                     .await
                                     .push_audio_frame(audio_frame)
                                     .await
-                                {
-                                    warn!("transcribe err:{:?}", e);
-                                }
+                            {
+                                warn!("transcribe err:{:?}", e);
                             }
                         }
                     }

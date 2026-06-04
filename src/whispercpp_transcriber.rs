@@ -53,7 +53,7 @@ impl Transcriber {
         let model_path = exe_dir.join("models");
         let path_str = model_path.to_str().context("to str failed")?;
         let mut path_str = path_str.to_string();
-        path_str.push('/');
+        path_str.push_str("/ggml-base-q8_0.bin");
         unsafe {
             let mut swr_ctx = null_mut();
             let r = swr_alloc_set_opts2(
@@ -81,7 +81,7 @@ impl Transcriber {
                     .arg("--language")
                     .arg("auto")
                     .arg("--model")
-                    .arg("models/ggml-base-q8_0.bin")
+                    .arg(path_str)
                     .arg("--port")
                     .arg("8187")
                     .spawn()?,
@@ -97,7 +97,7 @@ impl Transcriber {
             let transcribe_task_handle = Some(args.async_runtime.spawn(async move {
                 let mut buffer_queue = VecDeque::new();
                 while !transcribe_task_cancel_token_cloned.is_cancelled() {
-                    let used_model =  (*used_model.read().await).clone();
+                    let used_model = (*used_model.read().await).clone();
                     if !pause_flag.load(std::sync::atomic::Ordering::Relaxed)
                         && UsedModel::None != used_model
                     {
@@ -114,8 +114,10 @@ impl Transcriber {
                                 Self::send_request(&network_client, contiguous_slice, &used_model)
                                     .await
                             {
-                                if let Err(e) = subtitle_sender.send_async(audio_script).await {
-                                    warn!("subtitle_sender err:{:?}", e);
+                                for line in audio_script {
+                                    if let Err(e) = subtitle_sender.send_async(line).await {
+                                        warn!("subtitle_sender err:{:?}", e);
+                                    }
                                 }
                             }
                         } else {
@@ -125,8 +127,10 @@ impl Transcriber {
                             if let Ok(audio_script) =
                                 Self::send_request(&network_client, &data_bytes, &used_model).await
                             {
-                                if let Err(e) = subtitle_sender.send_async(audio_script).await {
-                                    warn!("subtitle_sender err:{:?}", e);
+                                for line in audio_script {
+                                    if let Err(e) = subtitle_sender.send_async(line).await {
+                                        warn!("subtitle_sender err:{:?}", e);
+                                    }
                                 }
                             }
                         }
@@ -185,8 +189,8 @@ impl Transcriber {
                 warn!(err_msg);
                 return Err(anyhow::Error::msg(err_msg));
             }
-            let data_vec = (&to_recognize_frame.data(0)
-                [0..(to_recognize_frame.samples() * size_of::<i16>())])
+            let data_vec = to_recognize_frame.data(0)
+                [0..(to_recognize_frame.samples() * size_of::<i16>())]
                 .to_vec();
             self.audio_frame_vec_sender.send_async(data_vec).await?;
         }
@@ -196,10 +200,10 @@ impl Transcriber {
         network_client: &Client,
         bytes: &[u8],
         used_model: &UsedModel,
-    ) -> PlayerResult<String> {
+    ) -> PlayerResult<Vec<String>> {
         let model_str = match used_model {
             UsedModel::None => {
-                return Ok(String::new());
+                return Ok(Vec::new());
             }
             UsedModel::English => String::from_str("en")?,
             UsedModel::Chinese => String::from_str("zh")?,
@@ -220,9 +224,14 @@ impl Transcriber {
             .send()
             .await?
             .json::<serde_json::Value>()
-            .await?
-            .to_string();
-        Ok(audio_scripts)
+            .await?["text"]
+            .as_str()
+            .context("parse serde_json::Value to str err!")?.to_string();
+        let mut res = vec![];
+        for line in audio_scripts.lines() {
+            res.push(line.to_string());
+        }
+        Ok(res)
     }
 }
 impl Drop for Transcriber {
