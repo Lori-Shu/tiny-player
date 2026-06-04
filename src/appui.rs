@@ -761,16 +761,15 @@ impl AppUI {
                     if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
                         self.subtitle_str = generated_str;
                     }
-                    let visible_num=f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+                    let visible_num =
+                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
                     let subtitle_text_button = egui::Button::new(
                         RichText::new(&self.subtitle_str)
-                            .size(30.0)
+                            .size(35.0)
                             .color(*THEME_COLOR)
-                            .atom_size(Vec2::new(ui.content_rect().width(), 30.0)),
+                            .atom_size(Vec2::new(ui.content_rect().width(), 35.0)),
                     )
-                    .fill(egui::Color32::from_white_alpha(
-                        (10.0 * visible_num) as u8,
-                    ))
+                    .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
                     .stroke(Stroke::new(
                         1.0,
                         Color32::from_black_alpha((10.0 * visible_num) as u8),

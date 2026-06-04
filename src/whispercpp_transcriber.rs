@@ -90,7 +90,7 @@ impl Transcriber {
             let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
             let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
             let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
-            let (audio_frame_vec_sender, audio_frame_vec_receiver) = flume::bounded(100);
+            let (audio_frame_vec_sender, audio_frame_vec_receiver) = flume::bounded(128);
             let used_model = args.used_model.clone();
             let pause_flag = args.pause_flag.clone();
             let subtitle_sender = args.subtitle_sender.clone();
@@ -226,7 +226,8 @@ impl Transcriber {
             .json::<serde_json::Value>()
             .await?["text"]
             .as_str()
-            .context("parse serde_json::Value to str err!")?.to_string();
+            .context("parse serde_json::Value to str err!")?
+            .to_string();
         let mut res = vec![];
         for line in audio_scripts.lines() {
             res.push(line.to_string());
