@@ -108,7 +108,7 @@ impl Transcriber {
                         buffer_queue.extend(data_vec);
                         const THREE_SEC_BYTES_LEN: usize =
                             (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_of::<i16>();
-                        if buffer_queue.len() < THREE_SEC_BYTES_LEN {
+                        if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
                             let contiguous_slice = buffer_queue.make_contiguous();
                             if let Ok(audio_script) =
                                 Self::send_request(&network_client, contiguous_slice, &used_model)
@@ -120,7 +120,7 @@ impl Transcriber {
                                     }
                                 }
                             }
-                        } else {
+                        } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
                             let data_bytes = buffer_queue
                                 .drain(0..THREE_SEC_BYTES_LEN)
                                 .collect::<Vec<u8>>();
