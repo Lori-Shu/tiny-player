@@ -36,6 +36,10 @@ use crate::{
 
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;
 const LOCAL_WHISPER_SERVER_URL: &str = "http://127.0.0.1:8187/inference";
+/*
+ * Transcriber type which handles audio normalization and
+ * communication with whisper server 
+ */
 #[derive(Debug)]
 pub struct Transcriber {
     async_runtime: Handle,
