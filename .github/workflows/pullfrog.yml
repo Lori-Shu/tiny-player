@@ -28,5 +28,6 @@ jobs:
         uses: pullfrog/pullfrog@v0
         with:
           prompt: ${{ inputs.prompt }}
+          model: google/gemini-flash-latest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
