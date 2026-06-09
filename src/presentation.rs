@@ -1,3 +1,4 @@
+//! The presentation module manages data synchronization and presentation
 use std::{
     sync::{
         Arc,
@@ -26,9 +27,9 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult,
-    audio_play::AudioPlayer,
-    decode::{MainStream, TinyDecoder},
-    gpu_post_process::ColorSpaceConverter,
+    audio_playback::AudioPlayer,
+    decode_engine::{MainStream, TinyDecoder},
+    post_process::ColorSpaceConverter,
     whispercpp_transcriber::{Transcriber, UsedModel},
 };
 pub const PLAY_SAMPLE_RATE: u32 = 48000;

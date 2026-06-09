@@ -13,11 +13,11 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 
     var pos = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0)
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0)
     );
 
     let current_pos = pos[in_vertex_index];
@@ -80,18 +80,21 @@ fn adjust_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
     let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     return mix(vec3<f32>(luma), color, saturation);
 }
-fn pq_to_sdr(color:vec3<f32>)->vec3<f32>{
+const HDR_PEAK_NITS: f32 = 10000.0;
+const SDR_REFERENCE_WHITE: f32 = 203.0;
+const DISPLAY_GAMMA: f32 = 2.4;
+fn pq_to_sdr(color: vec3<f32>) -> vec3<f32> {
     let rgb_hdr_pq = (cs_params.yuv2rgb_matrix * vec4<f32>(color, 1.0)).rgb;
 
-    let rgb_linear_abs = pq_to_linear(rgb_hdr_pq) * 10000.0;
+    let rgb_linear_abs = pq_to_linear(rgb_hdr_pq) * HDR_PEAK_NITS;
 
-    let rgb_scene = rgb_linear_abs / 203.0;
+    let rgb_scene = rgb_linear_abs / SDR_REFERENCE_WHITE;
     let rgb_linear_bt709 = bt2020_to_bt709(rgb_scene);
 
     let rgb_tonemapped = aces_tonemap(rgb_linear_bt709);
     let rgb_safe_for_gamma = max(rgb_tonemapped, vec3<f32>(0.0));
 
-    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / 2.2));
+    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / DISPLAY_GAMMA));
 
     let final_color = adjust_saturation(rgb_final, 0.85);
     return final_color;
@@ -99,8 +102,8 @@ fn pq_to_sdr(color:vec3<f32>)->vec3<f32>{
 
 fn hlg_inverse_oetf(v: f32) -> f32 {
     let hlg_a: f32 = 0.1788;
-    let hlg_b: f32 = 0.2847; 
-    let hlg_c: f32 = 0.5599; 
+    let hlg_b: f32 = 0.2847;
+    let hlg_c: f32 = 0.5599;
     if v <= 0.5 {
         return (v * v) / 3.0;
     } else {
@@ -108,7 +111,7 @@ fn hlg_inverse_oetf(v: f32) -> f32 {
     }
 }
 
-
+const REC2020_LUMA_COEFFS = vec3<f32>(0.2627, 0.6780, 0.0593);
 fn hlg_to_sdr(hlg_color: vec3<f32>) -> vec3<f32> {
     var linear_rgb = vec3<f32>(
         hlg_inverse_oetf(hlg_color.r),
@@ -116,21 +119,16 @@ fn hlg_to_sdr(hlg_color: vec3<f32>) -> vec3<f32> {
         hlg_inverse_oetf(hlg_color.b)
     );
 
-    let luminance = dot(linear_rgb, vec3<f32>(0.2627, 0.6780, 0.0593)); 
+    let luminance = dot(linear_rgb, REC2020_LUMA_COEFFS);
     if luminance > 0.0 {
         linear_rgb = linear_rgb * pow(luminance, 1.2 - 1.0);
     }
 
-
-    let sdr_rgb = vec3<f32>(
-        dot(linear_rgb, vec3<f32>( 1.6605, -0.5876, -0.0728)),
-        dot(linear_rgb, vec3<f32>(-0.1246,  1.8760,  0.0486)),
-        dot(linear_rgb, vec3<f32>( 0.0182, -0.1006,  1.0824))
-    );
+    let sdr_rgb = bt2020_to_bt709(linear_rgb);
     let rgb_tonemapped = aces_tonemap(sdr_rgb);
     let rgb_safe_for_gamma = max(rgb_tonemapped, vec3<f32>(0.0));
 
-    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / 2.4));
+    let rgb_final = pow(rgb_safe_for_gamma, vec3<f32>(1.0 / DISPLAY_GAMMA));
     return rgb_final;
 }
 @fragment
@@ -144,11 +142,11 @@ fn fs_main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
 
     let yuv_adjusted = yuv_input + cs_params.yuv_offset.xyz;
 
-    if hdr_flag.flag.r==1 {
-        let final_color=pq_to_sdr(yuv_adjusted);
+    if hdr_flag.flag.r == 1 {
+        let final_color = pq_to_sdr(yuv_adjusted);
         return vec4<f32>(final_color, 1.0);
-    } else if hdr_flag.flag.g==1 {
-        let final_color=hlg_to_sdr(yuv_adjusted);
+    } else if hdr_flag.flag.g == 1 {
+        let final_color = hlg_to_sdr(yuv_adjusted);
         return vec4<f32>(final_color, 1.0);
     } else {
         let final_color = (cs_params.yuv2rgb_matrix * vec4<f32>(yuv_adjusted, 1.0)).rgb;

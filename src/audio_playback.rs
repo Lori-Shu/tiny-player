@@ -1,3 +1,4 @@
+//! The audio_play module manages the audio playback
 use std::{num::NonZero, sync::Arc};
 
 use anyhow::Context;

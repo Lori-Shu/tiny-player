@@ -1,3 +1,5 @@
+//! The whispercpp_transcriber adds
+//! audio transcribing support for tiny-player
 use std::{
     collections::VecDeque,
     io::Cursor,
@@ -32,8 +34,8 @@ use tracing::warn;
 use typed_builder::TypedBuilder;
 
 use crate::{
-    CURRENT_EXE_PATH, PlayerResult, decode::ManualProtectedResampler,
-    present_data_manage::PLAY_SAMPLE_RATE,
+    CURRENT_EXE_PATH, PlayerResult, decode_engine::ManualProtectedResampler,
+    presentation::PLAY_SAMPLE_RATE,
 };
 
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;

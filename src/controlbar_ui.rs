@@ -1,3 +1,5 @@
+//! The controlbar_ui module manages a subarea of the user interface
+//! The subarea includes a few control widgets (e.g., progress slider)
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicI64, AtomicU32},
@@ -14,13 +16,13 @@ use tracing::info;
 use typed_builder::TypedBuilder;
 
 use crate::{
-    appui::{FULLSCREEN_IMG, SUBTITLE_IMG, THEME_COLOR, VOLUME_IMG},
-    audio_play::AudioPlayer,
-    decode::TinyDecoder,
+    audio_playback::AudioPlayer,
+    decode_engine::TinyDecoder,
+    resources::{FULLSCREEN_IMG, SUBTITLE_IMG, VOLUME_IMG},
     whispercpp_transcriber::UsedModel,
 };
 #[derive(TypedBuilder, Clone)]
-pub struct ControlBarUI {
+pub struct ControlbarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
     visible_flag: Arc<AtomicBool>,
@@ -38,7 +40,7 @@ pub struct ControlBarUI {
     used_model: Arc<RwLock<UsedModel>>,
     transcribe_task_notify: Arc<Notify>,
 }
-impl ControlBarUI {
+impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self
@@ -53,7 +55,7 @@ impl ControlBarUI {
         });
     }
     fn paint_progress_slider(&mut self, ui: &mut Ui) {
-        let mut slider_color = THEME_COLOR.to_srgba_unmultiplied();
+        let mut slider_color = Color32::ORANGE.to_srgba_unmultiplied();
         slider_color[3] = 255;
         ui.scope(|ui| {
             let visible_num =
@@ -145,15 +147,27 @@ impl ControlBarUI {
             if self.show_subtitle_options_flag
                 && let Ok(mut used_model) = self.used_model.try_write()
             {
-                ui.radio_value(&mut *used_model, UsedModel::None, "closed");
+                ui.radio_value(
+                    &mut *used_model,
+                    UsedModel::None,
+                    RichText::new("close").size(10.0).color(Color32::ORANGE),
+                );
                 if ui
-                    .radio_value(&mut *used_model, UsedModel::Chinese, "中文")
+                    .radio_value(
+                        &mut *used_model,
+                        UsedModel::Chinese,
+                        RichText::new("中文").size(10.0).color(Color32::ORANGE),
+                    )
                     .clicked()
                 {
                     self.transcribe_task_notify.notify_one();
                 }
                 if ui
-                    .radio_value(&mut *used_model, UsedModel::English, "English")
+                    .radio_value(
+                        &mut *used_model,
+                        UsedModel::English,
+                        RichText::new("English").size(10.0).color(Color32::ORANGE),
+                    )
                     .clicked()
                 {
                     self.transcribe_task_notify.notify_one();
@@ -238,15 +252,10 @@ impl ControlBarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_rgba_unmultiplied(
-                0,
-                0,
-                0,
-                (10.0 * visible_num) as u8,
-            ))
+            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
             .stroke(Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * visible_num) as u8),
+                Color32::from_white_alpha((10.0 * visible_num) as u8),
             ))
             .corner_radius(CornerRadius::from(30));
             let btn_response = ui.add(fullscreen_image_btn);
