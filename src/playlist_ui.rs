@@ -110,7 +110,7 @@ impl PlayListUI {
                                 let path = path.to_path_buf();
                                 let ctx = ui.ctx().clone();
                                 runtime_handle
-                                    .spawn(AppUI::read_video_folder(ctx, path, video_des));
+                                    .spawn(AppUI::scan_video_folder(ctx, path, video_des));
                             }
                         }
                     }

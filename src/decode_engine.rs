@@ -1,3 +1,4 @@
+//! The decode engine of tiny-player
 use std::{
     path::Path,
     ptr::{null, null_mut},
@@ -34,7 +35,7 @@ use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{Instrument, Level, info, span, warn};
 use typed_builder::TypedBuilder;
 
-use crate::{PlayerResult, audio_play::AUDIO_SAMPLE_RATE, gpu_post_process::ColorSpaceConverter};
+use crate::{PlayerResult, audio_playback::AUDIO_SAMPLE_RATE, post_process::ColorSpaceConverter};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads

@@ -23,13 +23,15 @@ use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod appui;
-mod audio_play;
+mod audio_playback;
 mod controlbar_ui;
-mod decode;
-mod gpu_post_process;
+mod decode_engine;
+mod headbar_ui;
 mod internet_resource_ui;
 mod playlist_ui;
-mod present_data_manage;
+mod post_process;
+mod presentation;
+mod resources;
 mod whispercpp_transcriber;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");

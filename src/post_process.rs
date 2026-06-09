@@ -1,3 +1,5 @@
+//! The post_process module manages the video post processing
+//! using wgpu and shaders declared by wgsl
 use std::sync::{Arc, atomic::AtomicBool};
 
 use eframe::{
