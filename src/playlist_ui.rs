@@ -1,3 +1,5 @@
+//! The playlist_ui module manages the ui of a seperate window
+//! The ui is with respect to the content of media sources from local disks
 use std::sync::{Arc, atomic::AtomicBool};
 
 use egui::{AtomExt, Button, Image, Ui, Vec2, ViewportBuilder, ViewportId};

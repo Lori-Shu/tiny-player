@@ -1,3 +1,5 @@
+//! The internet_resource_ui module manages the ui of a seperate window
+//! The ui is with respect to the content of online resources
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
