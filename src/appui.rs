@@ -29,7 +29,6 @@ use flume::{Receiver, Sender, bounded};
 use image::{DynamicImage, EncodableLayout, RgbaImage};
 
 use keepawake::KeepAwake;
-use rodio::Player;
 use time::format_description::{self, OwnedFormatItem};
 use tokio::{
     runtime::{Handle, Runtime},
@@ -41,13 +40,14 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult,
+    audio_playback::AudioPlayer,
     controlbar_ui::ControlbarUI,
     decode_engine::{MainStream, TinyDecoder, TinyDecoderCreationArgs},
     headbar_ui::HeadbarUI,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     post_process::ColorSpaceConverter,
-    presentation::{DataManageContext, PresentDataManager},
+    presentation::{AudioPlayContext, PresentDataManager, VideoPlayContext},
     resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT, PAUSE_IMG, PLAY_IMG},
     whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
 };
@@ -234,8 +234,9 @@ impl AppUI {
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .build();
-        let tiny_decoder = crate::decode_engine::TinyDecoder::new(tiny_decoder_creation_args)?;
-        let tiny_decoder = Arc::new(RwLock::new(tiny_decoder));
+        let tiny_decoder = Arc::new(RwLock::new(crate::decode_engine::TinyDecoder::new(
+            tiny_decoder_creation_args,
+        )?));
         let used_model = Arc::new(RwLock::new(UsedModel::None));
         let subtitle_channel = flume::bounded(10);
         let audio_player = Arc::new(crate::audio_playback::AudioPlayer::new()?);
@@ -244,7 +245,7 @@ impl AppUI {
 
         let (video_texture_id, video_texture) =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
-        let present_data_task_cancellation_token = Arc::new(CancellationToken::new());
+        let presentation_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
         let transcribe_task_notify = Arc::new(Notify::new());
         let transcriber_args = TranscriberArgs::builder()
@@ -254,26 +255,38 @@ impl AppUI {
             .used_model(used_model.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
             .build();
-        let transcriber = Transcriber::new(transcriber_args)?;
-        let data_manage_context = DataManageContext::builder()
-            .tiny_decoder(tiny_decoder.clone())
-            .used_model(used_model.clone())
-            .video_texture(video_texture.clone())
-            .audio_sink(audio_player.sink())
+        let transcriber = Arc::new(RwLock::new(Transcriber::new(transcriber_args)?));
+        let audio_play_context = AudioPlayContext::builder()
+            .audio_decode_thread_notify(audio_decode_thread_notify)
+            .audio_frame_receiver(audio_frame_cache_queue.1)
+            .audio_player(audio_player.clone())
+            .cancellation_token(presentation_cancellation_token.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
-            .runtime_handle(rt.clone())
             .pause_flag(pause_flag.clone())
-            .color_space_converter(colorspace_converter.clone())
-            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
-            .video_frame_receiver(video_frame_cache_queue.1.clone())
-            .audio_decode_thread_notify(audio_decode_thread_notify.clone())
-            .video_decode_thread_notify(video_decode_thread_notify.clone())
-            .cancellation_token(present_data_task_cancellation_token)
             .play_tasks_notify(play_tasks_notify.clone())
-            .transcriber(Arc::new(RwLock::new(transcriber)))
+            .tiny_decoder(tiny_decoder.clone())
+            .transcriber(transcriber)
+            .used_model(used_model.clone())
             .build();
-        let present_data_manager = PresentDataManager::new(data_manage_context);
+        let video_play_context = VideoPlayContext::builder()
+            .cancellation_token(presentation_cancellation_token.clone())
+            .colorspace_converter(colorspace_converter)
+            .current_main_stream_timestamp(current_main_stream_timestamp.clone())
+            .current_video_timestamp(current_video_timestamp.clone())
+            .pause_flag(pause_flag.clone())
+            .play_tasks_notify(play_tasks_notify.clone())
+            .tiny_decoder(tiny_decoder.clone())
+            .video_decode_thread_notify(video_decode_thread_notify)
+            .video_frame_receiver(video_frame_cache_queue.1)
+            .video_texture(video_texture.clone())
+            .build();
+        let present_data_manager = PresentDataManager::new(
+            rt.clone(),
+            presentation_cancellation_token,
+            audio_play_context,
+            video_play_context,
+        );
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
@@ -281,7 +294,7 @@ impl AppUI {
         let tip_window_flag = Arc::new(AtomicBool::new(false));
         let tip_window_msg = Arc::new(RwLock::new("empty msg".to_string()));
         let reset_input_context = ResetInputContext::builder()
-            .audio_player(audio_player.sink())
+            .audio_player(audio_player.clone())
             .bg_dyn_img(bg_dyn_img.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
@@ -814,7 +827,7 @@ impl AppUI {
                         .store(true, std::sync::atomic::Ordering::Release);
                     return;
                 }
-                context.audio_player.clear();
+                context.audio_player.clear_source_queue();
                 let video_rect = tiny_decoder.video_frame_rect;
                 Self::reset_main_colorimg_to_bg(
                     context.bg_dyn_img,
@@ -1035,7 +1048,7 @@ pub struct ResetInputContext {
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
-    audio_player: Arc<Player>,
+    audio_player: Arc<AudioPlayer>,
     main_color_image: Arc<RwLock<ColorImage>>,
     bg_dyn_img: Arc<DynamicImage>,
     video_texture_id: Arc<RwLock<TextureId>>,

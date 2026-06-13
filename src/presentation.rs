@@ -14,7 +14,6 @@ use ffmpeg_the_third::{
     frame::{Audio, Video},
 };
 use flume::Receiver;
-use rodio::Player;
 use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
@@ -22,7 +21,7 @@ use tokio::{
     time::sleep,
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken};
-use tracing::warn;
+use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
@@ -36,58 +35,68 @@ pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct PresentDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
-    data_manage_context: DataManageContext,
+    cancellation_token: Arc<CancellationToken>,
+    audio_play_context: AudioPlayContext,
+    video_play_context: VideoPlayContext,
+    runtime_handle: Handle,
     pub is_running: bool,
 }
 impl PresentDataManager {
-    pub fn new(data_manage_context: DataManageContext) -> Self {
+    pub fn new(
+        runtime_handle: Handle,
+        cancellation_token: Arc<CancellationToken>,
+        audio_play_context: AudioPlayContext,
+        video_play_context: VideoPlayContext,
+    ) -> Self {
         let is_running = false;
         Self {
             audio_thread_handle: None,
             video_thread_handle: None,
-            data_manage_context,
+            runtime_handle,
             is_running,
+            audio_play_context,
+            video_play_context,
+            cancellation_token,
         }
     }
-    async fn play_audio_task(data_manage_context: DataManageContext) {
+    async fn execute_audio_task(audio_play_context: AudioPlayContext) {
         let mut audio_cur_ts = None;
-        while !data_manage_context.cancellation_token.is_cancelled() {
+        while !audio_play_context.cancellation_token.is_cancelled() {
             /*
             add audio frame data to the audio player
              */
-            if !data_manage_context
+            if !audio_play_context
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                if data_manage_context.audio_sink.len() < 10 {
+                if audio_play_context.audio_player.len() < 8 {
                     let mainstream = {
-                        let tiny_decoder = data_manage_context.tiny_decoder.read().await;
+                        let tiny_decoder = audio_play_context.tiny_decoder.read().await;
                         tiny_decoder.main_stream.clone()
                     };
                     if let MainStream::Audio = &mainstream {
-                        if data_manage_context.audio_frame_receiver.len() < 5 {
-                            data_manage_context.audio_decode_thread_notify.notify_one();
+                        if audio_play_context.audio_frame_receiver.len() < 5 {
+                            audio_play_context.audio_decode_thread_notify.notify_one();
                         }
-                        if let Some(Ok(audio_frame)) = data_manage_context
+                        if let Some(Ok(audio_frame)) = audio_play_context
                             .audio_frame_receiver
                             .recv_async()
-                            .with_cancellation_token(&data_manage_context.cancellation_token)
+                            .with_cancellation_token(&audio_play_context.cancellation_token)
                             .await
                             && let Some(pts) = audio_frame.pts()
                         {
                             audio_cur_ts = Some(pts);
-                            if let Err(e) = AudioPlayer::append_source_data(
-                                &data_manage_context.audio_sink,
-                                audio_frame.clone(),
-                            )
-                            .await
+                            if let Err(e) = audio_play_context
+                                .audio_player
+                                .append_source_data(audio_frame.clone())
+                                .await
                             {
                                 warn!("{}", e);
                             }
-                            let used_model = data_manage_context.used_model.read().await;
+                            let used_model = audio_play_context.used_model.read().await;
                             let used_model_ref = &*used_model;
                             if UsedModel::None != *used_model_ref
-                                && let Err(e) = data_manage_context
+                                && let Err(e) = audio_play_context
                                     .transcriber
                                     .write()
                                     .await
@@ -100,28 +109,28 @@ impl PresentDataManager {
                     }
 
                     PresentDataManager::update_current_timestamp(
-                        data_manage_context.current_main_stream_timestamp.clone(),
+                        audio_play_context.current_main_stream_timestamp.clone(),
                         audio_cur_ts,
                         mainstream,
-                        data_manage_context.current_video_timestamp.clone(),
+                        audio_play_context.current_video_timestamp.clone(),
                     )
                     .await;
                 }
             } else {
-                data_manage_context.play_tasks_notify.notified().await;
+                audio_play_context.play_tasks_notify.notified().await;
             }
             sleep(Duration::from_millis(10)).await;
         }
     }
-    async fn play_video_task(data_manage_context: DataManageContext) {
+    async fn execute_video_task(video_play_context: VideoPlayContext) {
         let mut change_instant = Instant::now();
-        while !data_manage_context.cancellation_token.is_cancelled() {
-            if !data_manage_context
+        while !video_play_context.cancellation_token.is_cancelled() {
+            if !video_play_context
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 let (main_stream, audio_time_base, video_time_base) = {
-                    let tiny_decoder = data_manage_context.tiny_decoder.read().await;
+                    let tiny_decoder = video_play_context.tiny_decoder.read().await;
                     (
                         tiny_decoder.main_stream.clone(),
                         tiny_decoder.audio_time_base,
@@ -133,28 +142,26 @@ impl PresentDataManager {
                     main_stream.clone(),
                     audio_time_base,
                     video_time_base,
-                    data_manage_context.current_main_stream_timestamp.clone(),
-                    data_manage_context.current_video_timestamp.clone(),
+                    video_play_context.current_main_stream_timestamp.clone(),
+                    video_play_context.current_video_timestamp.clone(),
                 )
                 .await
                 {
                     let ins_now = Instant::now();
-                    if data_manage_context.video_frame_receiver.len() < 10 {
-                        data_manage_context.video_decode_thread_notify.notify_one();
+                    if video_play_context.video_frame_receiver.len() < 10 {
+                        video_play_context.video_decode_thread_notify.notify_one();
                     }
                     let frame_result = match &main_stream {
                         MainStream::Video => {
                             if ins_now.checked_duration_since(change_instant).is_some() {
-                                if let Some(Ok(frame)) = data_manage_context
+                                if let Some(Ok(frame)) = video_play_context
                                     .video_frame_receiver
                                     .recv_async()
-                                    .with_cancellation_token(
-                                        &data_manage_context.cancellation_token,
-                                    )
+                                    .with_cancellation_token(&video_play_context.cancellation_token)
                                     .await
                                 {
                                     if let Some(f_pts) = frame.pts() {
-                                        let cur_pts = data_manage_context
+                                        let cur_pts = video_play_context
                                             .current_video_timestamp
                                             .load(std::sync::atomic::Ordering::Relaxed);
 
@@ -179,7 +186,7 @@ impl PresentDataManager {
                                         } else {
                                             change_instant = ins_now;
                                         }
-                                        data_manage_context
+                                        video_play_context
                                             .current_video_timestamp
                                             .store(f_pts, std::sync::atomic::Ordering::Release);
                                         Ok(frame)
@@ -194,14 +201,14 @@ impl PresentDataManager {
                             }
                         }
                         MainStream::Audio => {
-                            if let Some(Ok(frame)) = data_manage_context
+                            if let Some(Ok(frame)) = video_play_context
                                 .video_frame_receiver
                                 .recv_async()
-                                .with_cancellation_token(&data_manage_context.cancellation_token)
+                                .with_cancellation_token(&video_play_context.cancellation_token)
                                 .await
                             {
                                 if let Some(pts) = frame.pts() {
-                                    data_manage_context
+                                    video_play_context
                                         .current_video_timestamp
                                         .store(pts, std::sync::atomic::Ordering::Release);
                                 }
@@ -213,10 +220,10 @@ impl PresentDataManager {
                     };
                     if let Ok(frame) = frame_result {
                         let mut color_space_converter =
-                            data_manage_context.color_space_converter.write().await;
+                            video_play_context.colorspace_converter.write().await;
 
                         if let Err(e) = color_space_converter
-                            .render_video(data_manage_context.video_texture.clone(), frame)
+                            .render_video(video_play_context.video_texture.clone(), frame)
                             .await
                         {
                             warn!("{}", e);
@@ -224,7 +231,7 @@ impl PresentDataManager {
                     }
                 }
             } else {
-                data_manage_context.play_tasks_notify.notified().await;
+                video_play_context.play_tasks_notify.notified().await;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -278,9 +285,9 @@ impl PresentDataManager {
         false
     }
     pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
-        self.data_manage_context.cancellation_token.cancel();
+        self.cancellation_token.cancel();
         Self::join_tasks(
-            self.data_manage_context.runtime_handle.clone(),
+            self.runtime_handle.clone(),
             self.audio_thread_handle
                 .take()
                 .context("get audio_thread_handle err")?,
@@ -292,13 +299,17 @@ impl PresentDataManager {
         Ok(())
     }
     pub fn spawn_present_tasks(&mut self) {
-        self.data_manage_context.cancellation_token = Arc::new(CancellationToken::new());
-        let runtime_handle = self.data_manage_context.runtime_handle.clone();
-        self.audio_thread_handle =
-            Some(runtime_handle.spawn(Self::play_audio_task(self.data_manage_context.clone())));
-
-        self.video_thread_handle =
-            Some(runtime_handle.spawn(Self::play_video_task(self.data_manage_context.clone())));
+        self.cancellation_token = Arc::new(CancellationToken::new());
+        self.audio_play_context.cancellation_token = self.cancellation_token.clone();
+        self.audio_thread_handle = Some(
+            self.runtime_handle
+                .spawn(Self::execute_audio_task(self.audio_play_context.clone())),
+        );
+        self.video_play_context.cancellation_token = self.cancellation_token.clone();
+        self.video_thread_handle = Some(
+            self.runtime_handle
+                .spawn(Self::execute_video_task(self.video_play_context.clone())),
+        );
         self.is_running = true;
     }
     fn join_tasks(
@@ -309,6 +320,7 @@ impl PresentDataManager {
         runtime.spawn(async move {
             audio_task_join_handle.await?;
             video_task_join_handle.await?;
+            info!("audio task and video task exit gracefully!");
             PlayerResult::Ok(())
         });
     }
@@ -316,35 +328,43 @@ impl PresentDataManager {
 impl Drop for PresentDataManager {
     fn drop(&mut self) {
         if self.is_running {
-            self.data_manage_context.cancellation_token.cancel();
+            self.cancellation_token.cancel();
             if let Some(audio_handle) = self.audio_thread_handle.take()
                 && let Some(video_handle) = self.video_thread_handle.take()
             {
-                Self::join_tasks(
-                    self.data_manage_context.runtime_handle.clone(),
-                    audio_handle,
-                    video_handle,
-                );
+                Self::join_tasks(self.runtime_handle.clone(), audio_handle, video_handle);
             }
         }
     }
 }
 
 #[derive(Clone, TypedBuilder)]
-pub struct DataManageContext {
+pub struct AudioPlayContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     used_model: Arc<RwLock<UsedModel>>,
     transcriber: Arc<RwLock<Transcriber>>,
-    audio_sink: Arc<Player>,
+    audio_player: Arc<AudioPlayer>,
     current_main_stream_timestamp: Arc<AtomicI64>,
-    runtime_handle: Handle,
     current_video_timestamp: Arc<AtomicI64>,
+    pause_flag: Arc<AtomicBool>,
+
+    audio_frame_receiver: Receiver<Audio>,
+    audio_decode_thread_notify: Arc<Notify>,
+    cancellation_token: Arc<CancellationToken>,
+    play_tasks_notify: Arc<Notify>,
+}
+#[derive(Clone, TypedBuilder)]
+pub struct VideoPlayContext {
+    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    current_main_stream_timestamp: Arc<AtomicI64>,
+    current_video_timestamp: Arc<AtomicI64>,
+
     video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
-    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
-    audio_frame_receiver: Receiver<Audio>,
+    colorspace_converter: Arc<RwLock<ColorSpaceConverter>>,
+
     video_frame_receiver: Receiver<Video>,
-    audio_decode_thread_notify: Arc<Notify>,
+
     video_decode_thread_notify: Arc<Notify>,
     cancellation_token: Arc<CancellationToken>,
     play_tasks_notify: Arc<Notify>,

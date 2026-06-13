@@ -1,4 +1,4 @@
-//! The internet_resource_ui module manages the ui of a seperate window
+//! The internet_resource_ui module manages the ui of a separate window
 //! The ui is with respect to the content of online resources
 use std::{
     collections::{HashMap, VecDeque},
@@ -61,13 +61,18 @@ impl InternetResourceUI {
         }
     }
     pub fn show(&mut self, ui: &mut Ui) {
+        let viewport_id = ViewportId::from_hash_of("internet_resource_ui");
+        ui.send_viewport_cmd_to(
+            viewport_id,
+            egui::ViewportCommand::Title("internet_resource_ui".to_string()),
+        );
         let current_category = self.current_category.clone();
         let available_resource_map = self.available_resource_map.clone();
         let web_client = self.web_client.clone();
         let change_input_ctx = self.change_input_ctx.clone();
         let internet_list_window_flag = self.internet_list_window_flag.clone();
         ui.show_viewport_deferred(
-            ViewportId::from_hash_of("Internet Resource UI"),
+            viewport_id,
             ViewportBuilder::default(),
             move |ui, _viewport_class| {
                 CentralPanel::default().show_inside(ui, |ui| {

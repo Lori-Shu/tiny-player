@@ -12,7 +12,7 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48000;
 pub const AUDIO_CHANNELS: u32 = 2;
 pub struct AudioPlayer {
     _device_sink: MixerDeviceSink,
-    sink: Arc<Player>,
+    player: Arc<Player>,
 }
 impl AudioPlayer {
     pub fn new() -> PlayerResult<Self> {
@@ -32,13 +32,13 @@ impl AudioPlayer {
         let sink = Arc::new(rodio::Player::connect_new(device_sink.mixer()));
 
         Ok(Self {
-            sink,
+            player: sink,
             _device_sink: device_sink,
         })
     }
 
     pub async fn append_source_data(
-        sink: &Player,
+        &self,
         audio_frame: ffmpeg_the_third::frame::Audio,
     ) -> PlayerResult<()> {
         let audio_data = bytemuck::cast_slice::<u8, f32>(
@@ -52,23 +52,23 @@ impl AudioPlayer {
             NonZero::new(audio_frame.rate()).context("construct nonzero err")?,
             audio_data,
         );
-        sink.append(source);
+        self.player.append(source);
         Ok(())
     }
 
     pub fn adjust_volume(&self, volumn: f32) {
-        self.sink.set_volume(volumn);
+        self.player.set_volume(volumn);
     }
     pub fn clear_source_queue(&self) {
-        self.sink.clear();
+        self.player.clear();
+    }
+    pub fn len(&self) -> usize {
+        self.player.len()
     }
     pub fn pause(&self) {
-        self.sink.pause();
+        self.player.pause();
     }
     pub fn play(&self) {
-        self.sink.play();
-    }
-    pub fn sink(&self) -> Arc<Player> {
-        self.sink.clone()
+        self.player.play();
     }
 }
