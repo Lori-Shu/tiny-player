@@ -1,4 +1,4 @@
-//! The playlist_ui module manages the ui of a seperate window
+//! The playlist_ui module manages the ui of a separate window
 //! The ui is with respect to the content of media sources from local disks
 use std::sync::{Arc, atomic::AtomicBool};
 
