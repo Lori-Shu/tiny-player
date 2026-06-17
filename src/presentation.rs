@@ -219,9 +219,9 @@ impl PresentDataManager {
                         }
                     };
                     if let Ok(frame) = frame_result {
-                        let mut color_space_converter = video_play_context.transcoder.write().await;
+                        let mut transcoder = video_play_context.transcoder.write().await;
 
-                        if let Err(e) = color_space_converter
+                        if let Err(e) = transcoder
                             .render_video(video_play_context.video_texture.clone(), frame)
                             .await
                         {

@@ -370,8 +370,8 @@ impl TinyDecoder {
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
             let video_decoder = self.enable_decoder_hwacc_with_fallback(codec_ctx).await?;
             {
-                let mut color_space_converter = self.transcoder.write().await;
-                color_space_converter.set_params_for_space(
+                let mut transcoder = self.transcoder.write().await;
+                transcoder.set_params_for_space(
                     video_decoder.color_space(),
                     video_decoder.format(),
                     video_decoder.color_transfer_characteristic(),
