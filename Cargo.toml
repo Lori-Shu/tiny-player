@@ -12,9 +12,9 @@ rodio = "0.22.2"
 bytemuck = "1.22.0"
 image = { version = "0.25.9", features = ["jpeg", "png"] }
 #egui dep list
-eframe = { version = "0.34.2", features = ["wgpu"] }
-egui = "0.34.2"
-egui_extras = { version = "0.34.2", features = ["image"] }
+eframe = { version = "0.34.3", features = ["wgpu"] }
+egui = "0.34.3"
+egui_extras = { version = "0.34.3", features = ["image"] }
 #
 glam = "0.32.1"
 egui_file = "0.26.0"

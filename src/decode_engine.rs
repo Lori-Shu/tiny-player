@@ -35,7 +35,7 @@ use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{Instrument, Level, info, span, warn};
 use typed_builder::TypedBuilder;
 
-use crate::{PlayerResult, audio_playback::AUDIO_SAMPLE_RATE, post_process::ColorSpaceConverter};
+use crate::{PlayerResult, audio_playback::AUDIO_SAMPLE_RATE, post_process::Transcoder};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -57,7 +57,6 @@ unsafe impl Sync for ManualProtectedAudioDecoder {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
-#[derive(Debug, Clone)]
 pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
@@ -66,16 +65,17 @@ struct ManualProtectedStream<'stream_life_time>(pub Stream<'stream_life_time>);
 unsafe impl<'stream_life_time> Send for ManualProtectedStream<'stream_life_time> {}
 unsafe impl<'stream_life_time> Sync for ManualProtectedStream<'stream_life_time> {}
 
-/// indicate which stream in the input is chose as main stream
+/// indicate which stream in the input is chosen as main stream
+/// always prefer Audio Stream and fallback to Video Stream
 #[derive(Debug, Clone)]
 pub enum MainStream {
     Video,
     Audio,
 }
 
-/// represent all the details and relevent variables about
-/// video format, decode, detail and hardware accelerate
-/// the main struct of decode module to manage input and decode
+/// `TinyDecoder` represent all the details and relevent member fields about
+/// video format, decode, hardware acceleration etc.
+/// the main struct of the decode_engine module to manage input and decode
 pub struct TinyDecoder {
     video_stream_index: usize,
     audio_stream_index: usize,
@@ -116,14 +116,13 @@ pub struct TinyDecoder {
     demux_thread_notify: Arc<Notify>,
     audio_decode_thread_notify: Arc<Notify>,
     video_decode_thread_notify: Arc<Notify>,
-    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
+    transcoder: Arc<RwLock<Transcoder>>,
     media_source_flag: Arc<AtomicBool>,
     current_video_timestamp: Arc<AtomicI64>,
     cancellation_token: Arc<CancellationToken>,
 }
 impl TinyDecoder {
     /// init Decoder and new Struct
-    /// `runtime_handle` is the handle of the tokio runtime in async_context
     pub fn new(tiny_decoder_creation_args: TinyDecoderCreationArgs) -> PlayerResult<Self> {
         ffmpeg_the_third::init()?;
         let resampler = Arc::new(RwLock::new(None));
@@ -155,7 +154,7 @@ impl TinyDecoder {
             demux_thread_notify: Arc::new(Notify::new()),
             audio_decode_thread_notify: tiny_decoder_creation_args.audio_decode_thread_notify,
             video_decode_thread_notify: tiny_decoder_creation_args.video_decode_thread_notify,
-            color_space_converter: tiny_decoder_creation_args.color_space_converter,
+            transcoder: tiny_decoder_creation_args.transcoder,
             resampler,
             media_source_flag: tiny_decoder_creation_args.media_source_flag,
             current_video_timestamp: tiny_decoder_creation_args.current_video_timestamp,
@@ -163,7 +162,7 @@ impl TinyDecoder {
         })
     }
     /// reset all fields to the initial state
-    /// this is to make the decoder ready for fresh input
+    /// to prepare for fresh input
     async fn reset_states(&mut self) {
         self.audio_stream_index = usize::MAX;
         self.video_stream_index = usize::MAX;
@@ -195,7 +194,7 @@ impl TinyDecoder {
         self.media_source_flag
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
-    /// called when user selected a file path to play
+    /// `reset_input` is called when user selected a file path to play
     /// init all the details from the file selected
     pub async fn reset_input(&mut self, path: &Path) -> PlayerResult<()> {
         info!("ffmpeg version{}", ffmpeg_the_third::format::version());
@@ -371,8 +370,8 @@ impl TinyDecoder {
                 ffmpeg_the_third::codec::Context::from_parameters(video_stream.0.parameters())?;
             let video_decoder = self.enable_decoder_hwacc_with_fallback(codec_ctx).await?;
             {
-                let mut color_space_converter = self.color_space_converter.write().await;
-                color_space_converter.set_params_for_space(
+                let mut transcoder = self.transcoder.write().await;
+                transcoder.set_params_for_space(
                     video_decoder.color_space(),
                     video_decoder.format(),
                     video_decoder.color_transfer_characteristic(),
@@ -402,9 +401,6 @@ impl TinyDecoder {
     async fn demux_input(demux_context: DemuxContext) -> PlayerResult<()> {
         info!("enter demux");
         while !demux_context.cancellation_token.is_cancelled() {
-            /*
-            choose to lock the packet vec first stick this in other functions
-             */
             if demux_context.audio_packet_sender.len() < 500
                 || demux_context.video_packet_sender.len() < 500
             {
@@ -471,8 +467,8 @@ impl TinyDecoder {
         }
         Ok(())
     }
-    ///convert the hardware output frame to middle format YUV420P
-    async fn convert_hardware_frame(
+    /// transfer hardware frame data to standard frame data
+    async fn transfer_hardware_frame(
         hardware_config: Arc<AtomicBool>,
         video_frame_tmp: Video,
     ) -> Video {
@@ -489,36 +485,11 @@ impl TinyDecoder {
 
                 transfered_frame.set_pts(video_frame_tmp.pts());
                 return transfered_frame;
-                // let mut default_frame = Video::empty();
-                // {
-                //     let mut hardware_frame_converter_guard = hardware_frame_converter.write().await;
-                //     if let Some(hardware_frame_converter) = &mut *hardware_frame_converter_guard {
-                //         if hardware_frame_converter
-                //             .0
-                //             .run(&transfered_frame, &mut default_frame)
-                //             .is_ok()
-                //         {
-                //             default_frame.set_pts(transfered_frame.pts());
-                //             return default_frame;
-                //         }
-                //     } else if let Ok(mut ctx) = ffmpeg_the_third::software::converter(
-                //         (video_frame_tmp.width(), video_frame_tmp.height()),
-                //         transfered_frame.format(),
-                //         Pixel::YUV420P,
-                //     ) {
-                //         info!("transfered_frame format: {:?}", transfered_frame.format());
-                //         if ctx.run(&transfered_frame, &mut default_frame).is_ok() {
-                //             default_frame.set_pts(transfered_frame.pts());
-                //             *hardware_frame_converter_guard = Some(ManualProtectedConverter(ctx));
-                //             return default_frame;
-                //         }
-                //     }
-                // }
             }
         }
         video_frame_tmp
     }
-    /// the loop of decoding demuxed packet
+    /// the loop of decoding video packet
     async fn decode_video_frame(decode_context: VideoDecodeContext) -> PlayerResult<()> {
         info!("enter decode");
         // let mut p = PathBuf::new();
@@ -663,7 +634,7 @@ impl TinyDecoder {
                     {
                         let mut video_frame_tmp = ffmpeg_the_third::frame::Video::empty();
                         while decoder.0.receive_frame(&mut video_frame_tmp).is_ok() {
-                            let video_frame = TinyDecoder::convert_hardware_frame(
+                            let video_frame = TinyDecoder::transfer_hardware_frame(
                                 decode_context.hardware_config_flag.clone(),
                                 video_frame_tmp,
                             )
@@ -690,6 +661,7 @@ impl TinyDecoder {
         }
         Ok(())
     }
+    /// the loop of decoding audio packet
     async fn decode_audio_frame(decode_context: AudioDecodeContext) -> PlayerResult<()> {
         while !decode_context.cancellation_token.is_cancelled() {
             if decode_context.audio_frame_sender.len() < 30 {
@@ -805,9 +777,6 @@ impl TinyDecoder {
     }
 
     /// seek the input to a selected timestamp
-    /// use the ffi function to enable seek all the frames
-    /// the ffmpeg_the_third::ffi::AVSEEK_FLAG_ANY flag makes sure
-    /// the seek would go as I want, to an exact frame
     pub async fn seek_timestamp_to_decode(&self, ts: i64) {
         let main_stream_idx = {
             if let MainStream::Audio = self.main_stream {
@@ -903,7 +872,7 @@ impl TinyDecoder {
         }
         Ok(())
     }
-    /// flush decoder , be called after seek file is done
+    /// flush decoder, called after seek file is done
     async fn flush_decoders(&self) {
         let mut a_decoder = self.audio_decoder.write().await;
         if let Some(a) = &mut *a_decoder {
@@ -917,9 +886,8 @@ impl TinyDecoder {
 }
 
 impl TinyDecoder {
-    /// enable hardware accelerate for video decode, currently use d3d12 only on windows
-    /// others like vulkan are in developing
-    /// fallback to softerware decoder if doesnt support
+    /// enable hardware accelerate for video decode
+    /// fallback to softerware decoder if the local computer doesn't support
     async fn enable_decoder_hwacc_with_fallback(
         &mut self,
         codec_ctx: codec::Context,
@@ -1035,7 +1003,7 @@ unsafe extern "C" fn get_format_callback(
     }
 }
 impl Drop for TinyDecoder {
-    /// handle some struct that have to be free manually
+    /// handle fields that have to be free manually
     fn drop(&mut self) {
         self.cancellation_token.cancel();
         self.demux_thread_notify.notify_waiters();
@@ -1066,7 +1034,7 @@ pub struct TinyDecoderCreationArgs {
     media_source_flag: Arc<AtomicBool>,
     end_timestamp: Arc<AtomicI64>,
     hardware_config_flag: Arc<AtomicBool>,
-    color_space_converter: Arc<RwLock<ColorSpaceConverter>>,
+    transcoder: Arc<RwLock<Transcoder>>,
     audio_frame_cache_queue: (
         Sender<ffmpeg_the_third::frame::Audio>,
         Receiver<ffmpeg_the_third::frame::Audio>,

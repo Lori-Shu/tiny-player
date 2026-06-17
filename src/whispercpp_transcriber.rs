@@ -43,7 +43,6 @@ const LOCAL_WHISPER_SERVER_URL: &str = "http://127.0.0.1:8187/inference";
 const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_of::<i16>();
 /// Transcriber type which handles audio normalization and
 /// communication with whisper server
-#[derive(Debug)]
 pub struct Transcriber {
     async_runtime: Handle,
     whisper_command: Option<Child>,
