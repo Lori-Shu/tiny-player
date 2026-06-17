@@ -33,7 +33,7 @@ use crate::PlayerResult;
 const SCALING_SHADER: &str = include_str!("./shaders/scaling_shader.wgsl");
 const FALLBACK_SCALING_SHADER: &str = include_str!("./shaders/fallback_scaling_shader.wgsl");
 
-pub struct ColorSpaceConverter {
+pub struct Transcoder {
     bt709_uniform: ColorSpaceUniform,
     bt601_uniform: ColorSpaceUniform,
     bt2020_uniform: ColorSpaceUniform,
@@ -59,7 +59,7 @@ pub struct ColorSpaceConverter {
     render_state: Arc<RenderState>,
     egui_ctx: egui::Context,
 }
-impl ColorSpaceConverter {
+impl Transcoder {
     pub fn new(
         render_state: Arc<RenderState>,
         egui_ctx: egui::Context,

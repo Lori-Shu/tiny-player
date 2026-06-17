@@ -28,7 +28,7 @@ use crate::{
     PlayerResult,
     audio_playback::AudioPlayer,
     decode_engine::{MainStream, TinyDecoder},
-    post_process::ColorSpaceConverter,
+    post_process::Transcoder,
     whispercpp_transcriber::{Transcriber, UsedModel},
 };
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
@@ -219,8 +219,7 @@ impl PresentDataManager {
                         }
                     };
                     if let Ok(frame) = frame_result {
-                        let mut color_space_converter =
-                            video_play_context.colorspace_converter.write().await;
+                        let mut color_space_converter = video_play_context.transcoder.write().await;
 
                         if let Err(e) = color_space_converter
                             .render_video(video_play_context.video_texture.clone(), frame)
@@ -361,7 +360,7 @@ pub struct VideoPlayContext {
 
     video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
-    colorspace_converter: Arc<RwLock<ColorSpaceConverter>>,
+    transcoder: Arc<RwLock<Transcoder>>,
 
     video_frame_receiver: Receiver<Video>,
 

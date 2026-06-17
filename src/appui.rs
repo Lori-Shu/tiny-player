@@ -46,7 +46,7 @@ use crate::{
     headbar_ui::HeadbarUI,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
-    post_process::ColorSpaceConverter,
+    post_process::Transcoder,
     presentation::{AudioPlayContext, PresentDataManager, VideoPlayContext},
     resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT, PAUSE_IMG, PLAY_IMG},
     whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
@@ -211,7 +211,7 @@ impl AppUI {
         let media_source_flag = Arc::new(AtomicBool::new(false));
         let end_ts = Arc::new(AtomicI64::new(0));
         let hardware_config_flag = Arc::new(AtomicBool::new(false));
-        let colorspace_converter = Arc::new(RwLock::new(ColorSpaceConverter::new(
+        let transcoder = Arc::new(RwLock::new(Transcoder::new(
             wgpu_render_state.clone(),
             cc.egui_ctx.clone(),
             hardware_config_flag.clone(),
@@ -227,7 +227,7 @@ impl AppUI {
             .media_source_flag(media_source_flag.clone())
             .end_timestamp(end_ts.clone())
             .hardware_config_flag(hardware_config_flag.clone())
-            .color_space_converter(colorspace_converter.clone())
+            .transcoder(transcoder.clone())
             .audio_frame_cache_queue(audio_frame_cache_queue.clone())
             .video_frame_cache_queue(video_frame_cache_queue.clone())
             .audio_decode_thread_notify(audio_decode_thread_notify.clone())
@@ -271,7 +271,7 @@ impl AppUI {
             .build();
         let video_play_context = VideoPlayContext::builder()
             .cancellation_token(presentation_cancellation_token.clone())
-            .colorspace_converter(colorspace_converter)
+            .transcoder(transcoder)
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .pause_flag(pause_flag.clone())
