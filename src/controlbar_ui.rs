@@ -28,7 +28,7 @@ pub struct ControlbarUI {
     visible_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
     end_ts: Arc<AtomicI64>,
-    pub time_text: String,
+    time_text: String,
     audio_player: Arc<AudioPlayer>,
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
     async_rt: Handle,
@@ -269,5 +269,8 @@ impl ControlbarUI {
                     .send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen_flag));
             }
         });
+    }
+    pub fn set_time_text(&mut self, s: String) {
+        self.time_text = s;
     }
 }

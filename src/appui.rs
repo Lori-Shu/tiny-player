@@ -461,7 +461,7 @@ impl AppUI {
         {
             now_str.push('|');
             now_str.push_str(&tiny_decoder.end_time_formatted_string);
-            self.controlbar_ui.time_text = now_str;
+            self.controlbar_ui.set_time_text(now_str);
         }
     }
     fn alloc_texture(
