@@ -11,7 +11,8 @@ use crate::PlayerResult;
 pub const AUDIO_SAMPLE_RATE: u32 = 48000;
 pub const AUDIO_CHANNELS: u32 = 2;
 pub struct AudioPlayer {
-    _device_sink: MixerDeviceSink,
+    #[allow(unused)]
+    device_sink: MixerDeviceSink,
     player: Arc<Player>,
 }
 impl AudioPlayer {
@@ -33,7 +34,7 @@ impl AudioPlayer {
 
         Ok(Self {
             player: sink,
-            _device_sink: device_sink,
+            device_sink,
         })
     }
 

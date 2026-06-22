@@ -40,19 +40,16 @@ use crate::{PlayerResult, audio_playback::AUDIO_SAMPLE_RATE, post_process::Trans
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
 pub struct ManualProtectedInput(ffmpeg_the_third::format::context::Input);
-unsafe impl Send for ManualProtectedInput {}
 unsafe impl Sync for ManualProtectedInput {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
 pub struct ManualProtectedVideoDecoder(ffmpeg_the_third::decoder::Video);
-
 unsafe impl Sync for ManualProtectedVideoDecoder {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
 pub struct ManualProtectedAudioDecoder(ffmpeg_the_third::decoder::Audio);
-
 unsafe impl Sync for ManualProtectedAudioDecoder {}
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
@@ -1050,34 +1047,34 @@ pub struct TinyDecoderCreationArgs {
 
 #[derive(TypedBuilder)]
 struct DemuxContext {
-    pub audio_stream_index: usize,
-    pub video_stream_index: usize,
-    pub cover_stream_index: usize,
-    pub format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
-    pub audio_packet_sender: Sender<Packet>,
-    pub video_packet_sender: Sender<Packet>,
-    pub cover_image_data: Arc<RwLock<Option<Vec<u8>>>>,
-    pub demux_thread_notify: Arc<Notify>,
-    pub cancellation_token: Arc<CancellationToken>,
+    audio_stream_index: usize,
+    video_stream_index: usize,
+    cover_stream_index: usize,
+    format_input: Arc<RwLock<Option<ManualProtectedInput>>>,
+    audio_packet_sender: Sender<Packet>,
+    video_packet_sender: Sender<Packet>,
+    cover_image_data: Arc<RwLock<Option<Vec<u8>>>>,
+    demux_thread_notify: Arc<Notify>,
+    cancellation_token: Arc<CancellationToken>,
 }
 
 #[derive(TypedBuilder)]
 struct VideoDecodeContext {
-    pub video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
-    pub video_packet_recv: Receiver<Packet>,
-    pub video_frame_sender: Sender<Video>,
-    pub hardware_config_flag: Arc<AtomicBool>,
-    pub demux_thread_notify: Arc<Notify>,
-    pub video_decode_thread_notify: Arc<Notify>,
-    pub cancellation_token: Arc<CancellationToken>,
+    video_decoder: Arc<RwLock<Option<ManualProtectedVideoDecoder>>>,
+    video_packet_recv: Receiver<Packet>,
+    video_frame_sender: Sender<Video>,
+    hardware_config_flag: Arc<AtomicBool>,
+    demux_thread_notify: Arc<Notify>,
+    video_decode_thread_notify: Arc<Notify>,
+    cancellation_token: Arc<CancellationToken>,
 }
 #[derive(TypedBuilder)]
 struct AudioDecodeContext {
-    pub audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
-    pub audio_packet_recv: Receiver<Packet>,
-    pub audio_frame_sender: Sender<Audio>,
-    pub demux_thread_notify: Arc<Notify>,
-    pub audio_decode_thread_notify: Arc<Notify>,
-    pub resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
-    pub cancellation_token: Arc<CancellationToken>,
+    audio_decoder: Arc<RwLock<Option<ManualProtectedAudioDecoder>>>,
+    audio_packet_recv: Receiver<Packet>,
+    audio_frame_sender: Sender<Audio>,
+    demux_thread_notify: Arc<Notify>,
+    audio_decode_thread_notify: Arc<Notify>,
+    resampler: Arc<RwLock<Option<ManualProtectedResampler>>>,
+    cancellation_token: Arc<CancellationToken>,
 }
