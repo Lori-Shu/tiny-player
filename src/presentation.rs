@@ -69,6 +69,16 @@ impl PresentDataManager {
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Acquire)
             {
+                if is_play_end(
+                    &audio_play_context.live_mode,
+                    &audio_play_context.audio_frame_receiver,
+                    &audio_play_context.video_frame_receiver,
+                    &audio_play_context.demux_eof_flag,
+                ) {
+                    audio_play_context
+                        .pause_flag
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 if audio_play_context.audio_player.len() < 8 {
                     let mainstream = {
                         let tiny_decoder = audio_play_context.tiny_decoder.read().await;
@@ -137,7 +147,16 @@ impl PresentDataManager {
                         tiny_decoder.video_time_base,
                     )
                 };
-
+                if is_play_end(
+                    &video_play_context.live_mode,
+                    &video_play_context.audio_frame_receiver,
+                    &video_play_context.video_frame_receiver,
+                    &video_play_context.demux_eof_flag,
+                ) {
+                    video_play_context
+                        .pause_flag
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 if PresentDataManager::should_video_chase_audio(
                     main_stream.clone(),
                     audio_time_base,
@@ -336,7 +355,17 @@ impl Drop for PresentDataManager {
         }
     }
 }
-
+fn is_play_end(
+    live_mode: &AtomicBool,
+    audio_frame_receiver: &Receiver<Audio>,
+    video_frame_receiver: &Receiver<Video>,
+    demux_eof_flag: &AtomicBool,
+) -> bool {
+    !live_mode.load(std::sync::atomic::Ordering::Relaxed)
+        && demux_eof_flag.load(std::sync::atomic::Ordering::Relaxed)
+        && audio_frame_receiver.is_empty()
+        && video_frame_receiver.is_empty()
+}
 #[derive(Clone, TypedBuilder)]
 pub struct AudioPlayContext {
     tiny_decoder: Arc<RwLock<TinyDecoder>>,
@@ -348,9 +377,12 @@ pub struct AudioPlayContext {
     pause_flag: Arc<AtomicBool>,
 
     audio_frame_receiver: Receiver<Audio>,
+    video_frame_receiver: Receiver<Video>,
     audio_decode_thread_notify: Arc<Notify>,
     cancellation_token: Arc<CancellationToken>,
     play_tasks_notify: Arc<Notify>,
+    demux_eof_flag: Arc<AtomicBool>,
+    live_mode: Arc<AtomicBool>,
 }
 #[derive(Clone, TypedBuilder)]
 pub struct VideoPlayContext {
@@ -361,10 +393,12 @@ pub struct VideoPlayContext {
     video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
     transcoder: Arc<RwLock<Transcoder>>,
-
+    audio_frame_receiver: Receiver<Audio>,
     video_frame_receiver: Receiver<Video>,
 
     video_decode_thread_notify: Arc<Notify>,
     cancellation_token: Arc<CancellationToken>,
     play_tasks_notify: Arc<Notify>,
+    demux_eof_flag: Arc<AtomicBool>,
+    live_mode: Arc<AtomicBool>,
 }
