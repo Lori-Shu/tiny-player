@@ -104,10 +104,7 @@ fn main() {
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             match appui::AppUI::new(cc) {
-                Ok(tiny_app_ui) => {
-                    tiny_app_ui.replace_fonts(&cc.egui_ctx);
-                    Ok(Box::new(tiny_app_ui))
-                }
+                Ok(tiny_app_ui) => Ok(Box::new(tiny_app_ui)),
                 Err(e) => Err(e.into()),
             }
         }),

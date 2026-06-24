@@ -5,9 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI64, AtomicU32},
 };
 
-use egui::{
-    AtomExt, Button, Color32, CornerRadius, Image, Layout, RichText, Stroke, Ui, Vec2, WidgetText,
-};
+use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2, WidgetText};
 use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
@@ -85,7 +83,7 @@ impl ControlbarUI {
                 )));
 
             let mut slider_width_style = egui::style::Style::default();
-            slider_width_style.spacing.slider_width = ui.ctx().content_rect().width() - 450.0;
+            slider_width_style.spacing.slider_width = ui.ctx().content_rect().width() / 2.0;
             slider_width_style.spacing.slider_rail_height = 10.0;
             slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
             slider_width_style.visuals.extreme_bg_color =
@@ -124,17 +122,11 @@ impl ControlbarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_rgba_unmultiplied(
-                0,
-                0,
-                0,
-                (10.0 * visible_num) as u8,
-            ))
+            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
             .stroke(Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * visible_num) as u8),
-            ))
-            .corner_radius(CornerRadius::from(30));
+                Color32::from_white_alpha((10.0 * visible_num) as u8),
+            ));
             let btn_response = ui.add(subtitle_btn);
             if btn_response.hovered() {
                 self.visible_flag
@@ -184,17 +176,11 @@ impl ControlbarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_rgba_unmultiplied(
-                0,
-                0,
-                0,
-                (10.0 * visible_num) as u8,
-            ))
+            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
             .stroke(Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * visible_num) as u8),
-            ))
-            .corner_radius(CornerRadius::from(30));
+                Color32::from_white_alpha((10.0 * visible_num) as u8),
+            ));
             let btn_response = ui.add(volumn_img_btn);
             if btn_response.hovered() {
                 self.visible_flag
@@ -256,8 +242,7 @@ impl ControlbarUI {
             .stroke(Stroke::new(
                 1.0,
                 Color32::from_white_alpha((10.0 * visible_num) as u8),
-            ))
-            .corner_radius(CornerRadius::from(30));
+            ));
             let btn_response = ui.add(fullscreen_image_btn);
             if btn_response.hovered() {
                 self.visible_flag

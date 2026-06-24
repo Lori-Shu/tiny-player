@@ -59,6 +59,7 @@ struct UIFlags {
     visible_flag: Arc<AtomicBool>,
     media_source_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
+    theme_flag: bool,
 }
 /// the main struct stores all the vars which are related to ui
 pub struct AppUI {
@@ -76,7 +77,6 @@ pub struct AppUI {
     subtitle_str: String,
     visible_num: Arc<AtomicU32>,
     wgpu_render_state: Arc<RenderState>,
-    end_ts: Arc<AtomicI64>,
     reset_input_context: ResetInputContext,
     time_formatter: OwnedFormatItem,
     keep_awake: Option<KeepAwake>,
@@ -88,25 +88,18 @@ pub struct AppUI {
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        if !self.ui_flags.theme_flag {
+            apply_player_visual(ui);
+            replace_fonts(ui);
+            apply_player_style(ui);
+            self.ui_flags.theme_flag = true;
+            info!("set theme success");
+        }
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical(|ui| {
                 // Following is the logic of ui painting
                 if self.manage_keepawake().is_err() {
                     warn!("manage keepawake err!");
-                }
-                if self
-                    .ui_flags
-                    .media_source_flag
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    && !self
-                        .ui_flags
-                        .pause_flag
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    && self.is_play_end()
-                {
-                    self.ui_flags
-                        .pause_flag
-                        .store(true, std::sync::atomic::Ordering::Release);
                 }
 
                 self.clear_garbage_texture();
@@ -144,42 +137,6 @@ impl eframe::App for AppUI {
     }
 }
 impl AppUI {
-    pub fn replace_fonts(&self, ctx: &egui::Context) {
-        // Start with the default fonts (we will be adding to them rather than replacing them).
-        let mut fonts = egui::FontDefinitions::default();
-
-        // Install my own font (maybe supporting non-latin characters).
-        // .ttf and .otf files supported.
-        fonts.font_data.insert(
-            "app_default_font".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(MAPLE_FONT)),
-        );
-        fonts.font_data.insert(
-            "noto_emoji".to_owned(),
-            Arc::new(egui::FontData::from_static(EMOJI_FONT)),
-        );
-        // Put my font first (highest priority) for proportional text:
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "app_default_font".to_owned());
-
-        // Put my font as last fallback for monospace:
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "app_default_font".to_owned());
-
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(1, "noto_emoji".to_owned());
-        // Tell egui to use these fonts:
-        ctx.set_fonts(fonts);
-    }
     pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
         let play_time = time::Time::from_hms(0, 0, 0)?;
 
@@ -222,6 +179,7 @@ impl AppUI {
         let video_decode_thread_notify = Arc::new(Notify::new());
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
+        let demux_eof_flag = Arc::new(AtomicBool::new(false));
         let tiny_decoder_creation_args = TinyDecoderCreationArgs::builder()
             .runtime_handle(rt.clone())
             .media_source_flag(media_source_flag.clone())
@@ -233,6 +191,7 @@ impl AppUI {
             .audio_decode_thread_notify(audio_decode_thread_notify.clone())
             .video_decode_thread_notify(video_decode_thread_notify.clone())
             .current_video_timestamp(current_video_timestamp.clone())
+            .demux_eof_flag(demux_eof_flag.clone())
             .build();
         let tiny_decoder = Arc::new(RwLock::new(crate::decode_engine::TinyDecoder::new(
             tiny_decoder_creation_args,
@@ -242,7 +201,7 @@ impl AppUI {
         let audio_player = Arc::new(crate::audio_playback::AudioPlayer::new()?);
 
         let pause_flag = Arc::new(AtomicBool::new(false));
-
+        let live_mode = Arc::new(AtomicBool::new(false));
         let (video_texture_id, video_texture) =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
         let presentation_cancellation_token = Arc::new(CancellationToken::new());
@@ -258,7 +217,7 @@ impl AppUI {
         let transcriber = Arc::new(RwLock::new(Transcriber::new(transcriber_args)?));
         let audio_play_context = AudioPlayContext::builder()
             .audio_decode_thread_notify(audio_decode_thread_notify)
-            .audio_frame_receiver(audio_frame_cache_queue.1)
+            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
             .audio_player(audio_player.clone())
             .cancellation_token(presentation_cancellation_token.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
@@ -268,6 +227,9 @@ impl AppUI {
             .tiny_decoder(tiny_decoder.clone())
             .transcriber(transcriber)
             .used_model(used_model.clone())
+            .video_frame_receiver(video_frame_cache_queue.1.clone())
+            .demux_eof_flag(demux_eof_flag.clone())
+            .live_mode(live_mode.clone())
             .build();
         let video_play_context = VideoPlayContext::builder()
             .cancellation_token(presentation_cancellation_token.clone())
@@ -280,6 +242,9 @@ impl AppUI {
             .video_decode_thread_notify(video_decode_thread_notify)
             .video_frame_receiver(video_frame_cache_queue.1)
             .video_texture(video_texture.clone())
+            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
+            .demux_eof_flag(demux_eof_flag.clone())
+            .live_mode(live_mode.clone())
             .build();
         let present_data_manager = PresentDataManager::new(
             rt.clone(),
@@ -290,7 +255,6 @@ impl AppUI {
         let present_data_manager = Arc::new(RwLock::new(present_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
-        let live_mode = Arc::new(AtomicBool::new(false));
         let tip_window_flag = Arc::new(AtomicBool::new(false));
         let tip_window_msg = Arc::new(RwLock::new("empty msg".to_string()));
         let reset_input_context = ResetInputContext::builder()
@@ -368,6 +332,7 @@ impl AppUI {
             .visible_flag(visible_flag.clone())
             .visible_num(visible_num.clone())
             .build();
+        let theme_flag = false;
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
@@ -384,11 +349,11 @@ impl AppUI {
                 visible_flag,
                 media_source_flag,
                 live_mode,
+                theme_flag,
             },
             tip_window_msg,
             visible_num,
             wgpu_render_state,
-            end_ts,
             reset_input_context,
             time_formatter,
             keep_awake,
@@ -646,17 +611,11 @@ impl AppUI {
                         .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                         .atom_size(btn_rect);
                     let play_or_pause_btn = egui::Button::new(btn_img)
-                        .fill(egui::Color32::from_rgba_unmultiplied(
-                            0,
-                            0,
-                            0,
-                            (10.0 * visible_num) as u8,
-                        ))
+                        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
                         .stroke(Stroke::new(
                             1.0,
-                            Color32::from_rgba_unmultiplied(0, 0, 0, (10.0 * visible_num) as u8),
-                        ))
-                        .corner_radius(CornerRadius::from(30));
+                            Color32::from_white_alpha((10.0 * visible_num) as u8),
+                        ));
 
                     let btn_response = ui.add(play_or_pause_btn);
                     if btn_response.hovered() {
@@ -714,24 +673,6 @@ impl AppUI {
         });
     }
 
-    fn is_play_end(&self) -> bool {
-        if !self
-            .ui_flags
-            .live_mode
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let pts = self
-                .current_main_stream_timestamp
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Relaxed);
-            if pts >= end_ts {
-                warn!("play end! end_ts:{end_ts},current_ts:{pts} ");
-                return true;
-            }
-        }
-        false
-    }
-
     async fn reset_main_colorimg_to_bg(
         bg_dyn_img: Arc<DynamicImage>,
         video_rect: &[u32; 2],
@@ -764,7 +705,7 @@ impl AppUI {
         tiny_decoder: &TinyDecoder,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
-        let cover_pic_data = tiny_decoder.cover_pic_data.clone();
+        let cover_pic_data = tiny_decoder.get_cover_pic_data();
         let cover_data = cover_pic_data.read().await;
         if let Some(data_vec) = &*cover_data
             && let Ok(img) = image::load_from_memory(data_vec)
@@ -1036,6 +977,66 @@ impl Drop for AppUI {
     fn drop(&mut self) {
         self.free_texture();
     }
+}
+fn apply_player_visual(ctx: &Ui) {
+    let mut visuals = egui::Visuals::dark();
+
+    visuals.panel_fill = egui::Color32::from_rgb(15, 23, 42);
+
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(30, 41, 59);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(51, 65, 85);
+
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(6, 182, 212);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(6, 182, 212).linear_multiply(0.3);
+
+    ctx.set_visuals(visuals);
+}
+fn apply_player_style(ctx: &Ui) {
+    let mut style = (*ctx.global_style()).clone();
+
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+
+    ctx.set_global_style(style);
+}
+fn replace_fonts(ctx: &Ui) {
+    // Start with the default fonts (we will be adding to them rather than replacing them).
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Install my own font (maybe supporting non-latin characters).
+    // .ttf and .otf files supported.
+    fonts.font_data.insert(
+        "app_default_font".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(MAPLE_FONT)),
+    );
+    fonts.font_data.insert(
+        "noto_emoji".to_owned(),
+        Arc::new(egui::FontData::from_static(EMOJI_FONT)),
+    );
+    // Put my font first (highest priority) for proportional text:
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "app_default_font".to_owned());
+
+    // Put my font as last fallback for monospace:
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "app_default_font".to_owned());
+
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(1, "noto_emoji".to_owned());
+    // Tell egui to use these fonts:
+    ctx.set_fonts(fonts);
 }
 pub struct VideoDes {
     pub name: String,

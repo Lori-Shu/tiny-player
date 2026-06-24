@@ -6,7 +6,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicI64},
     },
-    time::Duration,
 };
 
 use anyhow::Context;
@@ -29,7 +28,6 @@ use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
     task::JoinHandle,
-    time::sleep,
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{Instrument, Level, info, span, warn};
@@ -108,7 +106,7 @@ pub struct TinyDecoder {
     video_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     audio_decode_task_handle: Option<JoinHandle<PlayerResult<()>>>,
     hardware_config_flag: Arc<AtomicBool>,
-    pub cover_pic_data: Arc<RwLock<Option<Vec<u8>>>>,
+    cover_pic_data: Arc<RwLock<Option<Vec<u8>>>>,
     runtime_handle: Handle,
     demux_thread_notify: Arc<Notify>,
     audio_decode_thread_notify: Arc<Notify>,
@@ -117,6 +115,7 @@ pub struct TinyDecoder {
     media_source_flag: Arc<AtomicBool>,
     current_video_timestamp: Arc<AtomicI64>,
     cancellation_token: Arc<CancellationToken>,
+    demux_eof_flag: Arc<AtomicBool>,
 }
 impl TinyDecoder {
     /// init Decoder and new Struct
@@ -156,6 +155,7 @@ impl TinyDecoder {
             media_source_flag: tiny_decoder_creation_args.media_source_flag,
             current_video_timestamp: tiny_decoder_creation_args.current_video_timestamp,
             cancellation_token,
+            demux_eof_flag: tiny_decoder_creation_args.demux_eof_flag,
         })
     }
     /// reset all fields to the initial state
@@ -189,6 +189,8 @@ impl TinyDecoder {
         self.audio_frame_cache_queue.1.drain();
         self.video_frame_cache_queue.1.drain();
         self.media_source_flag
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.demux_eof_flag
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     /// `reset_input` is called when user selected a file path to play
@@ -406,15 +408,11 @@ impl TinyDecoder {
                     if let Some(input) = &mut *input {
                         match input.0.packets().next() {
                             Some(Ok((stream, packet))) => Ok((stream.index(), packet)),
-                            Some(Err(ffmpeg_the_third::util::error::Error::Eof)) => {
-                                info!("demux process hit the end");
-                                Err(anyhow::Error::msg("eof"))
-                            }
-                            None => Err(anyhow::Error::msg("None")),
-                            _ => Err(anyhow::Error::msg("Other case")),
+                            None => Err(anyhow::Error::msg("EOF")),
+                            _ => Err(anyhow::Error::msg("other cases")),
                         }
                     } else {
-                        Err(anyhow::Error::msg("Other case"))
+                        Err(anyhow::Error::msg("other cases"))
                     }
                 };
                 {
@@ -452,8 +450,12 @@ impl TinyDecoder {
                             }
                         }
                         Err(e) => {
-                            if format!("{}", e) == "eof" {
-                                sleep(Duration::from_millis(10)).await;
+                            if e.to_string() == "EOF" {
+                                warn!("demux task detected eof");
+                                demux_context
+                                    .demux_eof_flag
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                                demux_context.demux_thread_notify.notified().await;
                             }
                         }
                     }
@@ -728,6 +730,7 @@ impl TinyDecoder {
             .cover_image_data(self.cover_pic_data.clone())
             .demux_thread_notify(self.demux_thread_notify.clone())
             .cancellation_token(self.cancellation_token.clone())
+            .demux_eof_flag(self.demux_eof_flag.clone())
             .build();
 
         self.demux_task_handle = Some(self.runtime_handle.spawn(async move {
@@ -786,6 +789,8 @@ impl TinyDecoder {
             let mut input = self.format_input.write().await;
             info!("seek timestamp:{}", ts);
             if let Some(input) = &mut *input {
+                self.demux_eof_flag
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let res = ffmpeg_the_third::ffi::avformat_seek_file(
                     input.0.as_mut_ptr(),
                     main_stream_idx as i32,
@@ -979,6 +984,9 @@ impl TinyDecoder {
             }
         }
     }
+    pub fn get_cover_pic_data(&self) -> Arc<RwLock<Option<Vec<u8>>>> {
+        self.cover_pic_data.clone()
+    }
 }
 unsafe extern "C" fn get_format_callback(
     _ctx: *mut AVCodecContext,
@@ -1043,6 +1051,7 @@ pub struct TinyDecoderCreationArgs {
     audio_decode_thread_notify: Arc<Notify>,
     video_decode_thread_notify: Arc<Notify>,
     current_video_timestamp: Arc<AtomicI64>,
+    demux_eof_flag: Arc<AtomicBool>,
 }
 
 #[derive(TypedBuilder)]
@@ -1056,6 +1065,7 @@ struct DemuxContext {
     cover_image_data: Arc<RwLock<Option<Vec<u8>>>>,
     demux_thread_notify: Arc<Notify>,
     cancellation_token: Arc<CancellationToken>,
+    demux_eof_flag: Arc<AtomicBool>,
 }
 
 #[derive(TypedBuilder)]
