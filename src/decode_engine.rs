@@ -789,8 +789,6 @@ impl TinyDecoder {
             let mut input = self.format_input.write().await;
             info!("seek timestamp:{}", ts);
             if let Some(input) = &mut *input {
-                self.demux_eof_flag
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let res = ffmpeg_the_third::ffi::avformat_seek_file(
                     input.0.as_mut_ptr(),
                     main_stream_idx as i32,
@@ -810,6 +808,9 @@ impl TinyDecoder {
                     .store(0, std::sync::atomic::Ordering::Release);
 
                 self.flush_decoders().await;
+                self.demux_eof_flag
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.demux_thread_notify.notify_one();
             }
             info!("seek finished!");
         }
