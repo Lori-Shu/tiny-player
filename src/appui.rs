@@ -1,7 +1,7 @@
 //! The appui module encompasses the main struct AppUI
 //! which manages the user interface
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64, AtomicU32},
@@ -20,16 +20,15 @@ use eframe::{
     },
 };
 use egui::{
-    Align2, AtomExt, Button, Color32, ColorImage, CornerRadius, Id, Image, ImageData, ImageSource,
-    Layout, Pos2, Rect, RichText, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
+    Button, Color32, ColorImage, ImageSource, Pos2, Rect, RichText, TextureHandle, TextureId, Ui,
 };
 
-use ffmpeg_the_third::{format::stream::Disposition, media::Type};
+use egui_tiles::Tiles;
 use flume::{Receiver, Sender, bounded};
-use image::{DynamicImage, EncodableLayout, RgbaImage};
+use image::DynamicImage;
 
 use keepawake::KeepAwake;
-use time::format_description::{self, OwnedFormatItem};
+use time::format_description::{self};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::{Notify, RwLock},
@@ -41,14 +40,15 @@ use typed_builder::TypedBuilder;
 use crate::{
     PlayerResult,
     audio_playback::AudioPlayer,
+    body_ui::BodyUI,
     controlbar_ui::ControlbarUI,
-    decode_engine::{MainStream, TinyDecoder, TinyDecoderCreationArgs},
-    headbar_ui::HeadbarUI,
+    decode_engine::{TinyDecoder, TinyDecoderCreationArgs},
+    headbar_ui::{ControlPane, HeadbarUI, TreeBehavior},
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     post_process::Transcoder,
     presentation::{AudioPlayContext, PresentDataManager, VideoPlayContext},
-    resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT, PAUSE_IMG, PLAY_IMG},
+    resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT},
     whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
 };
 
@@ -57,7 +57,6 @@ struct UIFlags {
     pause_flag: Arc<AtomicBool>,
     tip_window_flag: Arc<AtomicBool>,
     visible_flag: Arc<AtomicBool>,
-    media_source_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
     theme_flag: bool,
 }
@@ -67,23 +66,14 @@ pub struct AppUI {
     async_runtime: Runtime,
     video_texture_id: Arc<RwLock<TextureId>>,
     garbage_video_texture_receiver: Receiver<TextureId>,
-    tiny_decoder: Arc<RwLock<crate::decode_engine::TinyDecoder>>,
-    audio_player: Arc<crate::audio_playback::AudioPlayer>,
-    current_main_stream_timestamp: Arc<AtomicI64>,
     ui_flags: UIFlags,
-    play_time: time::Time,
     tip_window_msg: Arc<RwLock<String>>,
-    subtitle_text_receiver: Receiver<String>,
-    subtitle_str: String,
     visible_num: Arc<AtomicU32>,
     wgpu_render_state: Arc<RenderState>,
     reset_input_context: ResetInputContext,
-    time_formatter: OwnedFormatItem,
     keep_awake: Option<KeepAwake>,
-    controlbar_ui: ControlbarUI,
-    play_tasks_notify: Arc<Notify>,
-    transcribe_task_notify: Arc<Notify>,
-    headbar_ui: HeadbarUI,
+    tile_tree: egui_tiles::Tree<ControlPane>,
+    tile_tree_behavior: TreeBehavior,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui redraw
@@ -95,7 +85,7 @@ impl eframe::App for AppUI {
             self.ui_flags.theme_flag = true;
             info!("set theme success");
         }
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical(|ui| {
                 // Following is the logic of ui painting
                 if self.manage_keepawake().is_err() {
@@ -111,25 +101,10 @@ impl eframe::App for AppUI {
                 self.ui_flags
                     .visible_flag
                     .store(false, std::sync::atomic::Ordering::Release);
-                self.paint_video_image(ui);
+
                 self.paint_tip_window(ui.ctx());
-                self.headbar_ui.paint_frame_info_text(ui);
-
-                ui.horizontal(|ui| {
-                    self.headbar_ui.paint_file_btn(ui);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        self.headbar_ui.paint_playlist_button(ui);
-                    });
-                });
-
-                self.paint_playpause_btn(ui);
-
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    self.update_time();
-                    self.update_time_text();
-                    self.controlbar_ui.paint_controlbar(ui);
-                    self.paint_subtitle(ui);
-                });
+                self.paint_video_image(ui);
+                self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
 
                 self.detect_file_drag(ui);
             });
@@ -314,11 +289,13 @@ impl AppUI {
             .show_subtitle_options_flag(show_subtitle_options_flag)
             .used_model(used_model.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
+            .play_time(play_time)
+            .time_formatter(time_formatter)
             .build();
         let last_fps_update_instant = Instant::now();
         let fps_text_str = String::new();
 
-        let file_dialog = egui_file::FileDialog::open_file();
+        let file_dialog = egui_file_dialog::FileDialog::new();
         let headbar_ui = HeadbarUI::builder()
             .fps_text_str(fps_text_str)
             .internet_list_window_flag(internet_list_window_flag)
@@ -333,21 +310,39 @@ impl AppUI {
             .visible_num(visible_num.clone())
             .build();
         let theme_flag = false;
+        let subtitle_str = String::new();
+        let body_ui = BodyUI::builder()
+            .audio_player(audio_player.clone())
+            .media_source_flag(media_source_flag.clone())
+            .pause_flag(pause_flag.clone())
+            .play_tasks_notify(play_tasks_notify.clone())
+            .transcribe_task_notify(transcribe_task_notify.clone())
+            .visible_flag(visible_flag.clone())
+            .visible_num(visible_num.clone())
+            .subtitle_text_receiver(subtitle_channel.1)
+            .subtitle_str(subtitle_str)
+            .build();
+        let mut tiles = Tiles::default();
+        let vertical_panes = vec![
+            ControlPane::Headbar(Box::new(headbar_ui)),
+            ControlPane::Body(Box::new(body_ui)),
+            ControlPane::Controlbar(Box::new(controlbar_ui)),
+        ];
+        let vertical_view = vertical_panes
+            .into_iter()
+            .map(|p| tiles.insert_pane(p))
+            .collect();
+        let root = tiles.insert_vertical_tile(vertical_view);
+        let tile_tree = egui_tiles::Tree::new("player_tile_tree", root, tiles);
+        let tile_tree_behavior = TreeBehavior::new();
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
-            subtitle_text_receiver: subtitle_channel.1,
-            subtitle_str: String::new(),
             video_texture_id,
-            tiny_decoder,
-            audio_player,
-            current_main_stream_timestamp,
-            play_time,
             ui_flags: UIFlags {
                 pause_flag,
                 tip_window_flag,
                 visible_flag,
-                media_source_flag,
                 live_mode,
                 theme_flag,
             },
@@ -355,80 +350,12 @@ impl AppUI {
             visible_num,
             wgpu_render_state,
             reset_input_context,
-            time_formatter,
             keep_awake,
-            controlbar_ui,
-            play_tasks_notify,
-            transcribe_task_notify,
-            headbar_ui,
+            tile_tree,
+            tile_tree_behavior,
         })
     }
-    /// paint image from the video texture
-    fn paint_video_image(&mut self, ui: &mut Ui) {
-        let layer_painter = ui.ctx().layer_painter(ui.layer_id());
-        if let Ok(texture_id) = self.video_texture_id.try_read() {
-            layer_painter.image(
-                *texture_id,
-                Rect::from_min_max(
-                    Pos2::new(0.0, 0.0),
-                    Pos2::new(
-                        ui.ctx().content_rect().width(),
-                        ui.ctx().content_rect().height(),
-                    ),
-                ),
-                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
-        }
-    }
-    fn update_time(&mut self) {
-        if let Ok(tiny_decoder) = self.tiny_decoder.try_read()
-            && self
-                .ui_flags
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            && !self
-                .ui_flags
-                .live_mode
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let play_ts = self
-                .current_main_stream_timestamp
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let sec_num = {
-                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                    let audio_time_base = tiny_decoder.audio_time_base;
-                    play_ts * audio_time_base.numerator() as i64
-                        / audio_time_base.denominator() as i64
-                } else {
-                    let v_time_base = tiny_decoder.video_time_base;
 
-                    play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
-                }
-            };
-            let sec = (sec_num % 60) as u8;
-            let min_num = sec_num / 60;
-            let min = (min_num % 60) as u8;
-            let hour_num = min_num / 60;
-            let hour = hour_num as u8;
-            if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                if cur_time != self.play_time {
-                    self.play_time = cur_time;
-                }
-            } else {
-                warn!("update time err!");
-            }
-        }
-    }
-    fn update_time_text(&mut self) {
-        if let Ok(mut now_str) = self.play_time.format(&self.time_formatter)
-            && let Ok(tiny_decoder) = self.tiny_decoder.try_read()
-        {
-            now_str.push('|');
-            now_str.push_str(&tiny_decoder.end_time_formatted_string);
-            self.controlbar_ui.set_time_text(now_str);
-        }
-    }
     fn alloc_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         render_state: Arc<RenderState>,
@@ -580,97 +507,6 @@ impl AppUI {
                 .write()
                 .free_texture(&garbage_texture);
         }
-    }
-
-    fn paint_playpause_btn(&mut self, ui: &mut Ui) {
-        if self
-            .ui_flags
-            .media_source_flag
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            egui::Area::new(Id::new("playpause button area"))
-                .fixed_pos(ui.content_rect().center())
-                .pivot(Align2::CENTER_CENTER)
-                .show(ui.ctx(), |ui| {
-                    let visible_num =
-                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-                    let play_or_pause_image_source = if self
-                        .ui_flags
-                        .pause_flag
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        PLAY_IMG
-                    } else {
-                        PAUSE_IMG
-                    };
-                    let btn_rect = Vec2::new(
-                        ui.ctx().content_rect().width() / 10.0,
-                        ui.ctx().content_rect().width() / 10.0,
-                    );
-                    let btn_img = Image::from(play_or_pause_image_source)
-                        .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
-                        .atom_size(btn_rect);
-                    let play_or_pause_btn = egui::Button::new(btn_img)
-                        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_white_alpha((10.0 * visible_num) as u8),
-                        ));
-
-                    let btn_response = ui.add(play_or_pause_btn);
-                    if btn_response.hovered() {
-                        self.ui_flags
-                            .visible_flag
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    if btn_response.clicked()
-                        || ui.ctx().input(|s| s.key_released(egui::Key::Space))
-                    {
-                        let pause_flag = &self.ui_flags.pause_flag;
-                        let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                        pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
-                        let audio_player = &self.audio_player;
-                        if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                            audio_player.pause();
-                        } else {
-                            audio_player.play();
-                            self.play_tasks_notify.notify_waiters();
-                            self.transcribe_task_notify.notify_one();
-                        }
-                    }
-                });
-        }
-    }
-
-    fn paint_subtitle(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self
-                .ui_flags
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
-                        self.subtitle_str = generated_str;
-                    }
-                    let visible_num =
-                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-                    let subtitle_text_button = egui::Button::new(
-                        RichText::new(&self.subtitle_str)
-                            .size(35.0)
-                            .color(Color32::ORANGE)
-                            .atom_size(Vec2::new(ui.content_rect().width(), 35.0)),
-                    )
-                    .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-                    .stroke(Stroke::new(
-                        1.0,
-                        Color32::from_black_alpha((10.0 * visible_num) as u8),
-                    ))
-                    .corner_radius(CornerRadius::from(30));
-                    ui.add(subtitle_text_button);
-                });
-            }
-        });
     }
 
     async fn reset_main_colorimg_to_bg(
@@ -825,87 +661,6 @@ impl AppUI {
         }
     }
 
-    pub async fn scan_video_folder(
-        ctx: egui::Context,
-        path: PathBuf,
-        video_des: Arc<RwLock<Vec<VideoDes>>>,
-    ) {
-        let mut video_targets = video_des.write().await;
-        if let Ok(ite) = path.read_dir() {
-            for entry in ite {
-                if let Ok(en) = entry {
-                    if let Ok(t) = en.file_type()
-                        && let Some(file_name) = en.file_name().to_str()
-                        && t.is_file()
-                        && let Ok(cover) = Self::load_file_cover(&en.path()).await
-                    {
-                        let texture_handle =
-                            Self::load_cover_texture(&ctx, &cover, file_name).await;
-                        video_targets.push(VideoDes {
-                            name: file_name.to_string(),
-                            path: en.path(),
-                            texture_handle,
-                        });
-                    }
-                } else {
-                    warn!("read dir element err");
-                }
-            }
-        }
-    }
-    async fn load_file_cover(file_path: &Path) -> PlayerResult<RgbaImage> {
-        if let Ok(input) = &mut ffmpeg_the_third::format::input(file_path) {
-            if input.duration() < 5_000_000 {
-                return Err(anyhow::Error::msg("not a valid media file"));
-            }
-            let mut cover_idx = None;
-
-            for stream in input.streams() {
-                if let Type::Video = stream.parameters().medium()
-                    && let Disposition::ATTACHED_PIC = stream.disposition()
-                {
-                    cover_idx = Some(stream.index());
-                    break;
-                }
-            }
-            if let Some(idx) = cover_idx {
-                for packet in input.packets() {
-                    if let Ok((stream, p)) = &packet
-                        && stream.index() == idx
-                        && let Some(cover_data) = p.data()
-                        && let Ok(dyn_img) = image::load_from_memory(cover_data)
-                    {
-                        return Ok(dyn_img.to_rgba8());
-                    }
-                }
-            }
-        } else {
-            return Err(anyhow::Error::msg("not a valid media file"));
-        }
-        if let ImageSource::Bytes { bytes, .. } = PLAY_IMG
-            && let Ok(dyn_img) = image::load_from_memory(bytes.as_bytes())
-        {
-            Ok(dyn_img.to_rgba8())
-        } else {
-            Err(anyhow::Error::msg("load PLAY_IMG failed"))
-        }
-    }
-    async fn load_cover_texture(
-        ctx: &egui::Context,
-        cover: &RgbaImage,
-        name: &str,
-    ) -> TextureHandle {
-        let color_image = ColorImage::from_rgba_unmultiplied(
-            [cover.width() as usize, cover.height() as usize],
-            cover.as_bytes(),
-        );
-        ctx.load_texture(
-            name,
-            ImageData::Color(Arc::new(color_image)),
-            TextureOptions::LINEAR,
-        )
-    }
-
     fn paint_tip_window(&mut self, ctx: &egui::Context) {
         if self
             .ui_flags
@@ -972,12 +727,25 @@ impl AppUI {
         }
         Ok(())
     }
+    /// paint image from the video texture
+    fn paint_video_image(&mut self, ui: &mut Ui) {
+        let layer_painter = ui.painter();
+        if let Ok(texture_id) = self.video_texture_id.try_read() {
+            layer_painter.image(
+                *texture_id,
+                ui.content_rect(),
+                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+    }
 }
 impl Drop for AppUI {
     fn drop(&mut self) {
         self.free_texture();
     }
 }
+
 fn apply_player_visual(ctx: &Ui) {
     let mut visuals = egui::Visuals::dark();
 
@@ -1038,6 +806,7 @@ fn replace_fonts(ctx: &Ui) {
     // Tell egui to use these fonts:
     ctx.set_fonts(fonts);
 }
+#[derive(Clone)]
 pub struct VideoDes {
     pub name: String,
     pub path: PathBuf,

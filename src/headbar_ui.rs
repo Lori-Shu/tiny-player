@@ -11,16 +11,59 @@ use std::{
 };
 
 use egui::{AtomExt, Button, Color32, CornerRadius, Image, Stroke, Ui, Vec2};
-use egui_file::FileDialog;
+use egui_file_dialog::FileDialog;
+use egui_tiles::{Behavior, UiResponse};
 use tracing::info;
 use typed_builder::TypedBuilder;
 
 use crate::{
     appui::{AppUI, ResetInputContext},
+    body_ui::BodyUI,
+    controlbar_ui::ControlbarUI,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     resources::{PLAY_LIST_IMG, TV_IMG, VIDEO_FILE_IMG},
 };
+
+pub enum ControlPane {
+    Headbar(Box<HeadbarUI>),
+    Body(Box<BodyUI>),
+    Controlbar(Box<ControlbarUI>),
+}
+pub struct TreeBehavior {}
+impl TreeBehavior {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+impl Behavior<ControlPane> for TreeBehavior {
+    fn is_container_resizable(
+        &self,
+        _tiles: &egui_tiles::Tiles<ControlPane>,
+        _tile_id: egui_tiles::TileId,
+    ) -> bool {
+        false
+    }
+    fn gap_width(&self, _style: &egui::Style) -> f32 {
+        0.0
+    }
+    fn pane_ui(
+        &mut self,
+        ui: &mut Ui,
+        _tile_id: egui_tiles::TileId,
+        pane: &mut ControlPane,
+    ) -> UiResponse {
+        match pane {
+            ControlPane::Headbar(headbar) => headbar.ui(ui),
+            ControlPane::Body(body) => body.ui(ui),
+            ControlPane::Controlbar(controlbar) => controlbar.ui(ui),
+        }
+    }
+
+    fn tab_title_for_pane(&mut self, _pane: &ControlPane) -> egui::WidgetText {
+        egui::WidgetText::Text(String::new())
+    }
+}
 #[derive(TypedBuilder)]
 pub struct HeadbarUI {
     visible_num: Arc<AtomicU32>,
@@ -62,14 +105,12 @@ impl HeadbarUI {
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         if file_img_btn_response.clicked() {
-            self.open_file_dialog.open();
+            self.open_file_dialog.pick_file();
         }
         let mut file_path = None;
 
-        self.open_file_dialog.show(ui.ctx());
-        if self.open_file_dialog.selected()
-            && let Some(p) = self.open_file_dialog.path()
-        {
+        self.open_file_dialog.update(ui.ctx());
+        if let Some(p) = self.open_file_dialog.take_picked() {
             info!("path selected{:#?}", p);
             file_path = Some(p.to_path_buf())
         }
@@ -188,5 +229,17 @@ impl HeadbarUI {
         {
             self.internet_resource_ui.show(ui);
         }
+    }
+
+    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        self.paint_frame_info_text(ui);
+        ui.horizontal(|ui| {
+            self.paint_file_btn(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                self.paint_playlist_button(ui);
+            });
+        });
+
+        UiResponse::None
     }
 }

@@ -5,17 +5,19 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI64, AtomicU32},
 };
 
-use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2, WidgetText};
+use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2};
+use egui_tiles::UiResponse;
+use time::{Time, format_description::OwnedFormatItem};
 use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
 };
-use tracing::info;
+use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
     audio_playback::AudioPlayer,
-    decode_engine::TinyDecoder,
+    decode_engine::{MainStream, TinyDecoder},
     resources::{FULLSCREEN_IMG, SUBTITLE_IMG, VOLUME_IMG},
     whispercpp_transcriber::UsedModel,
 };
@@ -37,6 +39,8 @@ pub struct ControlbarUI {
     show_volume_slider_flag: bool,
     used_model: Arc<RwLock<UsedModel>>,
     transcribe_task_notify: Arc<Notify>,
+    play_time: Time,
+    time_formatter: OwnedFormatItem,
 }
 impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
@@ -69,22 +73,11 @@ impl ControlbarUI {
             } else {
                 (0, 0)
             };
-            let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
-                .show_value(false)
-                .text(WidgetText::RichText(Arc::new(
-                    RichText::new(self.time_text.clone()).size(22.0).color(
-                        Color32::from_rgba_unmultiplied(
-                            slider_color[0],
-                            slider_color[1],
-                            slider_color[2],
-                            slider_color[3],
-                        ),
-                    ),
-                )));
+            let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts).show_value(false);
 
             let mut slider_width_style = egui::style::Style::default();
-            slider_width_style.spacing.slider_width = ui.ctx().content_rect().width() / 2.0;
-            slider_width_style.spacing.slider_rail_height = 10.0;
+            slider_width_style.spacing.slider_width = ui.content_rect().width() / 2.0;
+            slider_width_style.spacing.slider_rail_height = 8.0;
             slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
             slider_width_style.visuals.extreme_bg_color =
                 Color32::from_rgba_unmultiplied(0, 0, 0, 100);
@@ -94,8 +87,20 @@ impl ControlbarUI {
                 Color32::from_rgba_unmultiplied(0, 0, 0, 200);
             slider_width_style.visuals.widgets.inactive.bg_fill =
                 Color32::from_rgba_unmultiplied(255, 165, 0, 200);
+            slider_width_style.spacing.item_spacing.x = 12.0;
             ui.set_style(slider_width_style);
             let slider_response = ui.add(progress_slider);
+            let _ = ui.add(
+                Button::new(RichText::new(self.time_text.clone()).size(20.0).color(
+                    Color32::from_rgba_unmultiplied(
+                        slider_color[0],
+                        slider_color[1],
+                        slider_color[2],
+                        slider_color[3],
+                    ),
+                ))
+                .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8)),
+            );
             if slider_response.hovered() {
                 self.visible_flag
                     .store(true, std::sync::atomic::Ordering::Release);
@@ -193,11 +198,10 @@ impl ControlbarUI {
                 ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
                     let visible_num =
                         f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-                    ui.add_space(150.0);
                     let audio_player = &mut self.audio_player;
                     ui.scope(|ui| {
                         ui.set_opacity(visible_num);
-                        let volumn_slider = egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
+                        let volume_slider = egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
                             .vertical()
                             .show_value(false);
                         let mut slider_style = egui::style::Style::default();
@@ -213,7 +217,9 @@ impl ControlbarUI {
                         slider_style.visuals.widgets.inactive.bg_fill =
                             Color32::from_rgba_unmultiplied(255, 165, 0, 100);
                         ui.set_style(slider_style);
-                        let mut slider_response = ui.add(volumn_slider);
+
+                        let mut slider_response =
+                            ui.add_sized(Vec2::new(10.0, 150.0), volume_slider);
                         slider_response =
                             slider_response.on_hover_text((self.audio_volume * 100.0).to_string());
                         if slider_response.hovered() {
@@ -257,5 +263,58 @@ impl ControlbarUI {
     }
     pub fn set_time_text(&mut self, s: String) {
         self.time_text = s;
+    }
+    fn update_time(&mut self) {
+        if let Ok(tiny_decoder) = self.tiny_decoder.try_read()
+            && self
+                .media_source_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+            && !self.live_mode.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let play_ts = self
+                .current_main_stream_timestamp
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let sec_num = {
+                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
+                    let audio_time_base = tiny_decoder.audio_time_base;
+                    play_ts * audio_time_base.numerator() as i64
+                        / audio_time_base.denominator() as i64
+                } else {
+                    let v_time_base = tiny_decoder.video_time_base;
+
+                    play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
+                }
+            };
+            let sec = (sec_num % 60) as u8;
+            let min_num = sec_num / 60;
+            let min = (min_num % 60) as u8;
+            let hour_num = min_num / 60;
+            let hour = hour_num as u8;
+            if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
+                if cur_time != self.play_time {
+                    self.play_time = cur_time;
+                }
+            } else {
+                warn!("update time err!");
+            }
+        }
+    }
+    fn update_time_text(&mut self) {
+        if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
+            if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
+                now_str.push('|');
+                now_str.push_str(&tiny_decoder.end_time_formatted_string);
+            }
+            self.set_time_text(now_str);
+        }
+    }
+    pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        self.update_time();
+        self.update_time_text();
+        ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.add_space(10.0);
+            self.paint_controlbar(ui);
+        });
+        UiResponse::None
     }
 }
