@@ -24,6 +24,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod appui;
 mod audio_playback;
+mod body_ui;
 mod controlbar_ui;
 mod decode_engine;
 mod headbar_ui;
