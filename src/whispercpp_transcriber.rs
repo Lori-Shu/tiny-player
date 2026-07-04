@@ -81,16 +81,21 @@ impl Transcriber {
                 warn!("swr init err");
                 return Err(anyhow::Error::msg("swr init err"));
             }
-            let whisper_command = Some(
-                Command::new("whisper-server.exe")
-                    .arg("--language")
-                    .arg("auto")
-                    .arg("--model")
-                    .arg(path_str)
-                    .arg("--port")
-                    .arg("8187")
-                    .spawn()?,
-            );
+
+            let mut whisper_command = Command::new("whisper-server.exe");
+            whisper_command
+                .arg("--language")
+                .arg("auto")
+                .arg("--model")
+                .arg(path_str)
+                .arg("--port")
+                .arg("8187");
+            #[cfg(target_os = "windows")]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                whisper_command.creation_flags(CREATE_NO_WINDOW);
+            }
+            let whisper_command = Some(whisper_command.spawn()?);
             let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
             let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
             let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
