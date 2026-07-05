@@ -26,16 +26,15 @@ use tokio::{
     process::{Child, Command},
     runtime::Handle,
     sync::{Notify, RwLock},
-    task::JoinHandle,
     time::sleep,
 };
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tokio_util::{future::FutureExt, sync::CancellationToken};
+use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    CURRENT_EXE_PATH, PlayerResult, decode_engine::ManualProtectedResampler,
-    presentation::PLAY_SAMPLE_RATE,
+    CURRENT_EXE_PATH, PlayerResult, async_clean::AsyncCleaner,
+    decode_engine::ManualProtectedResampler, presentation::PLAY_SAMPLE_RATE,
 };
 
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;
@@ -44,13 +43,8 @@ const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_
 /// Transcriber type which handles audio normalization and
 /// communication with whisper server
 pub struct Transcriber {
-    async_runtime: Handle,
-    whisper_command: Option<Child>,
     audio_resampler: ManualProtectedResampler,
     audio_frame_vec_sender: Sender<Vec<u8>>,
-    transcribe_task_notify: Arc<Notify>,
-    transcribe_task_cancel_token: Arc<CancellationToken>,
-    transcribe_task_handle: Option<JoinHandle<()>>,
 }
 impl Transcriber {
     pub fn new(args: TranscriberArgs) -> PlayerResult<Self> {
@@ -95,7 +89,7 @@ impl Transcriber {
                 const CREATE_NO_WINDOW: u32 = 0x08000000;
                 whisper_command.creation_flags(CREATE_NO_WINDOW);
             }
-            let whisper_command = Some(whisper_command.spawn()?);
+            let whisper_command = whisper_command.spawn()?;
             let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
             let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
             let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
@@ -103,7 +97,12 @@ impl Transcriber {
             let used_model = args.used_model.clone();
             let pause_flag = args.pause_flag.clone();
             let subtitle_sender = args.subtitle_sender.clone();
-            let transcribe_task_handle = Some(args.async_runtime.spawn(async move {
+            let mut async_cleaner = args.async_cleaner.blocking_write();
+            async_cleaner.add_transcriber_resources(
+                transcribe_task_cancel_token,
+                args.transcribe_task_notify.clone(),
+            );
+            let _transcribe_task_handle = args.async_runtime.spawn(async move {
                 let mut buffer_queue = VecDeque::new();
                 let network_client = Client::new();
                 while !transcribe_task_cancel_token_cloned.is_cancelled() {
@@ -119,38 +118,48 @@ impl Transcriber {
 
                         if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
                             let contiguous_slice = buffer_queue.make_contiguous();
-                            Self::transcribe(
+                            if Self::transcribe(
                                 &network_client,
                                 contiguous_slice,
                                 &used_model,
                                 &subtitle_sender,
                             )
-                            .await;
+                            .with_cancellation_token(&transcribe_task_cancel_token_cloned)
+                            .await
+                            .is_none()
+                            {
+                                info!("debug point");
+                                break;
+                            }
                         } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
                             let data_bytes = buffer_queue
                                 .drain(0..THREE_SEC_BYTES_LEN)
                                 .collect::<Vec<u8>>();
-                            Self::transcribe(
+                            if Self::transcribe(
                                 &network_client,
                                 &data_bytes,
                                 &used_model,
                                 &subtitle_sender,
                             )
-                            .await;
+                            .with_cancellation_token(&transcribe_task_cancel_token_cloned)
+                            .await
+                            .is_none()
+                            {
+                                info!("debug point");
+                                break;
+                            }
                         }
+                        // have to be above notified, otherwise the clean step will fail
+                        sleep(Duration::from_millis(200)).await;
                     } else {
                         transcribe_task_notify_cloned.notified().await;
                     }
-                    sleep(Duration::from_millis(200)).await;
                 }
-            }));
+                info!("debug point");
+                Self::clean_resources(whisper_command).await;
+            });
             Ok(Self {
-                transcribe_task_notify: args.transcribe_task_notify,
-                transcribe_task_cancel_token,
-                async_runtime: args.async_runtime,
-                whisper_command,
                 audio_resampler: ManualProtectedResampler(swr_ctx),
-                transcribe_task_handle,
                 audio_frame_vec_sender,
             })
         }
@@ -252,25 +261,19 @@ impl Transcriber {
             .to_string();
         Ok(audio_scripts)
     }
+    async fn clean_resources(mut whisper_command: Child) {
+        if let Err(e) = whisper_command.kill().await {
+            warn!("exit whisper-server err:{:?}", e);
+        } else {
+            info!("exit whisper-server success");
+        }
+    }
 }
 impl Drop for Transcriber {
     fn drop(&mut self) {
+        warn!("start dropping Transcriber resources");
         unsafe {
             swr_free(&mut self.audio_resampler.0);
-
-            self.transcribe_task_cancel_token.cancel();
-            self.transcribe_task_notify.notify_waiters();
-            if let Some(transcribe_task_handle) = self.transcribe_task_handle.take()
-                && let Some(mut whisper_command) = self.whisper_command.take()
-            {
-                self.async_runtime.spawn(async move {
-                    if let Err(e) = whisper_command.kill().await {
-                        warn!("exit err:{:?}", e);
-                    }
-                    transcribe_task_handle.await?;
-                    PlayerResult::Ok(())
-                });
-            }
         }
     }
 }
@@ -287,4 +290,5 @@ pub struct TranscriberArgs {
     pause_flag: Arc<AtomicBool>,
     transcribe_task_notify: Arc<Notify>,
     used_model: Arc<RwLock<UsedModel>>,
+    async_cleaner: Arc<RwLock<AsyncCleaner>>,
 }
