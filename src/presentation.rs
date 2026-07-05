@@ -347,11 +347,6 @@ impl Drop for PresentDataManager {
     fn drop(&mut self) {
         if self.is_running {
             self.cancellation_token.cancel();
-            if let Some(audio_handle) = self.audio_thread_handle.take()
-                && let Some(video_handle) = self.video_thread_handle.take()
-            {
-                Self::join_tasks(self.runtime_handle.clone(), audio_handle, video_handle);
-            }
         }
     }
 }

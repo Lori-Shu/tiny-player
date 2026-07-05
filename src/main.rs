@@ -23,6 +23,7 @@ use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod appui;
+mod async_clean;
 mod audio_playback;
 mod body_ui;
 mod controlbar_ui;

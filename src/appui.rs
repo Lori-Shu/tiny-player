@@ -39,6 +39,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult,
+    async_clean::AsyncCleaner,
     audio_playback::AudioPlayer,
     body_ui::BodyUI,
     controlbar_ui::ControlbarUI,
@@ -64,6 +65,7 @@ struct UIFlags {
 pub struct AppUI {
     #[allow(unused)]
     async_runtime: Runtime,
+    async_cleaner: Arc<RwLock<AsyncCleaner>>,
     video_texture_id: Arc<RwLock<TextureId>>,
     garbage_video_texture_receiver: Receiver<TextureId>,
     ui_flags: UIFlags,
@@ -110,6 +112,10 @@ impl eframe::App for AppUI {
             });
         });
     }
+    fn on_exit(&mut self) {
+        let mut async_cleaner = self.async_cleaner.blocking_write();
+        async_cleaner.start_clean();
+    }
 }
 impl AppUI {
     pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
@@ -119,6 +125,7 @@ impl AppUI {
             .enable_all()
             .build()?;
         let rt = async_runtime.handle().clone();
+        let async_cleaner = Arc::new(RwLock::new(AsyncCleaner::new()));
         let (color_image, dyn_img) = {
             if let ImageSource::Bytes { bytes, .. } = DEFAULT_BG_IMG {
                 let dynimg = image::load_from_memory(&bytes)?;
@@ -188,6 +195,7 @@ impl AppUI {
             .pause_flag(pause_flag.clone())
             .used_model(used_model.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
+            .async_cleaner(async_cleaner.clone())
             .build();
         let transcriber = Arc::new(RwLock::new(Transcriber::new(transcriber_args)?));
         let audio_play_context = AudioPlayContext::builder()
@@ -353,6 +361,7 @@ impl AppUI {
             keep_awake,
             tile_tree,
             tile_tree_behavior,
+            async_cleaner,
         })
     }
 

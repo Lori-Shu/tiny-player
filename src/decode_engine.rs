@@ -1015,22 +1015,6 @@ impl Drop for TinyDecoder {
         self.demux_thread_notify.notify_waiters();
         self.audio_decode_thread_notify.notify_waiters();
         self.video_decode_thread_notify.notify_waiters();
-        let demux_task_handle = self.demux_task_handle.take();
-        let video_decode_task_handle = self.video_decode_task_handle.take();
-        let audio_decode_task_handle = self.audio_decode_task_handle.take();
-        self.runtime_handle.spawn(async move {
-            demux_task_handle
-                .context("join demux thread err")?
-                .await??;
-            video_decode_task_handle
-                .context(anyhow::Error::msg("join decode thread err"))?
-                .await??;
-            audio_decode_task_handle
-                .context("join decode thread err")?
-                .await??;
-            info!("demux and decode thread exit gracefully");
-            PlayerResult::Ok(())
-        });
         self.free_swr_ctx();
     }
 }
