@@ -25,7 +25,6 @@ use crate::{
 pub struct ControlbarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
-    visible_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
     end_ts: Arc<AtomicI64>,
     time_text: String,
@@ -101,10 +100,6 @@ impl ControlbarUI {
                 ))
                 .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8)),
             );
-            if slider_response.hovered() {
-                self.visible_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             if slider_response.drag_stopped() {
                 info!("slider dragged!");
                 let audio_player = self.audio_player.clone();
@@ -133,10 +128,6 @@ impl ControlbarUI {
                 Color32::from_white_alpha((10.0 * visible_num) as u8),
             ));
             let btn_response = ui.add(subtitle_btn);
-            if btn_response.hovered() {
-                self.visible_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             if btn_response.clicked() {
                 self.show_subtitle_options_flag = !self.show_subtitle_options_flag;
             }
@@ -187,10 +178,6 @@ impl ControlbarUI {
                 Color32::from_white_alpha((10.0 * visible_num) as u8),
             ));
             let btn_response = ui.add(volumn_img_btn);
-            if btn_response.hovered() {
-                self.visible_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             if btn_response.clicked() {
                 self.show_volume_slider_flag = !self.show_volume_slider_flag;
             }
@@ -222,10 +209,6 @@ impl ControlbarUI {
                             ui.add_sized(Vec2::new(10.0, 150.0), volume_slider);
                         slider_response =
                             slider_response.on_hover_text((self.audio_volume * 100.0).to_string());
-                        if slider_response.hovered() {
-                            self.visible_flag
-                                .store(true, std::sync::atomic::Ordering::Release);
-                        }
                         if slider_response.drag_stopped() {
                             info!("volumn slider dragged!");
                             audio_player.adjust_volume(self.audio_volume);
@@ -250,10 +233,6 @@ impl ControlbarUI {
                 Color32::from_white_alpha((10.0 * visible_num) as u8),
             ));
             let btn_response = ui.add(fullscreen_image_btn);
-            if btn_response.hovered() {
-                self.visible_flag
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             if btn_response.clicked() {
                 self.fullscreen_flag = !self.fullscreen_flag;
                 ui.ctx()

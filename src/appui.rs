@@ -109,6 +109,7 @@ impl eframe::App for AppUI {
                 self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
 
                 self.detect_file_drag(ui);
+                self.detect_pointer_moving(ui);
             });
         });
     }
@@ -283,7 +284,6 @@ impl AppUI {
         let controlbar_ui = ControlbarUI::builder()
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .media_source_flag(media_source_flag.clone())
-            .visible_flag(visible_flag.clone())
             .live_mode(live_mode.clone())
             .end_ts(end_ts.clone())
             .audio_player(audio_player.clone())
@@ -314,7 +314,6 @@ impl AppUI {
             .playlist_ui(playlist_ui)
             .playlist_window_flag(playlist_window_flag)
             .reset_input_context(reset_input_context.clone())
-            .visible_flag(visible_flag.clone())
             .visible_num(visible_num.clone())
             .build();
         let theme_flag = false;
@@ -325,7 +324,6 @@ impl AppUI {
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
-            .visible_flag(visible_flag.clone())
             .visible_num(visible_num.clone())
             .subtitle_text_receiver(subtitle_channel.1)
             .subtitle_str(subtitle_str)
@@ -668,6 +666,15 @@ impl AppUI {
                 .live_mode
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+    fn detect_pointer_moving(&self, ui: &mut Ui) {
+        ui.input(|state| {
+            if state.pointer.is_moving() {
+                self.ui_flags
+                    .visible_flag
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
     }
 
     fn paint_tip_window(&mut self, ctx: &egui::Context) {

@@ -19,7 +19,6 @@ pub struct BodyUI {
     media_source_flag: Arc<AtomicBool>,
     visible_num: Arc<AtomicU32>,
     pause_flag: Arc<AtomicBool>,
-    visible_flag: Arc<AtomicBool>,
     audio_player: Arc<AudioPlayer>,
     play_tasks_notify: Arc<Notify>,
     transcribe_task_notify: Arc<Notify>,
@@ -59,10 +58,6 @@ impl BodyUI {
                         ));
 
                     let btn_response = ui.add(play_or_pause_btn);
-                    if btn_response.hovered() {
-                        self.visible_flag
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
                     if btn_response.clicked()
                         || ui.ctx().input(|s| s.key_released(egui::Key::Space))
                     {
