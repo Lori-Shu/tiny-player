@@ -67,7 +67,6 @@ impl Behavior<ControlPane> for TreeBehavior {
 #[derive(TypedBuilder)]
 pub struct HeadbarUI {
     visible_num: Arc<AtomicU32>,
-    visible_flag: Arc<AtomicBool>,
     open_file_dialog: FileDialog,
     reset_input_context: ResetInputContext,
     live_mode: Arc<AtomicBool>,
@@ -99,11 +98,6 @@ impl HeadbarUI {
         .corner_radius(CornerRadius::from(30));
 
         let file_img_btn_response = ui.add(file_image_button);
-
-        if file_img_btn_response.hovered() {
-            self.visible_flag
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
         if file_img_btn_response.clicked() {
             self.open_file_dialog.pick_file();
         }
@@ -186,11 +180,6 @@ impl HeadbarUI {
         .corner_radius(CornerRadius::from(30));
 
         let btn_response = ui.add(open_btn);
-
-        if btn_response.hovered() {
-            self.visible_flag
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
         if btn_response.clicked() {
             self.playlist_window_flag
                 .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
@@ -214,11 +203,6 @@ impl HeadbarUI {
         .corner_radius(CornerRadius::from(30));
 
         let btn_response = ui.add(open_btn);
-
-        if btn_response.hovered() {
-            self.visible_flag
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
         if btn_response.clicked() {
             self.internet_list_window_flag
                 .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
