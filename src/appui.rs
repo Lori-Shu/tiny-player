@@ -53,7 +53,7 @@ use crate::{
     whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
 };
 
-// the struct stores all bool flags corresponding to ui
+/// the struct stores all bool flags corresponding to ui
 struct UIFlags {
     pause_flag: Arc<AtomicBool>,
     tip_window_flag: Arc<AtomicBool>,
@@ -78,7 +78,7 @@ pub struct AppUI {
     tile_tree_behavior: TreeBehavior,
 }
 impl eframe::App for AppUI {
-    /// this function will automaticly be called every ui redraw
+    /// this function will automaticly be called every ui repaint
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         if !self.ui_flags.theme_flag {
             apply_player_visual(ui);
@@ -94,12 +94,12 @@ impl eframe::App for AppUI {
                     warn!("manage keepawake err!");
                 }
 
-                self.clear_garbage_texture();
+                self.release_garbage_texture();
                 /*
                 down part is ui painting and control
 
                  */
-                self.visiable_anime(ui);
+                self.apply_visiable_anime(ui);
                 self.ui_flags
                     .visible_flag
                     .store(false, std::sync::atomic::Ordering::Release);
@@ -118,7 +118,14 @@ impl eframe::App for AppUI {
         async_cleaner.start_clean();
     }
 }
+struct PresentationTexture {
+    id: Arc<RwLock<TextureId>>,
+    texture: Arc<RwLock<Texture>>,
+}
 impl AppUI {
+    /// As the entry point for initializing the application,
+    /// the AppUI constructor performs most of the application's initialization
+    /// which instantiates the application's major components.
     pub fn new(cc: &CreationContext) -> PlayerResult<Self> {
         let play_time = time::Time::from_hms(0, 0, 0)?;
 
@@ -185,7 +192,7 @@ impl AppUI {
 
         let pause_flag = Arc::new(AtomicBool::new(false));
         let live_mode = Arc::new(AtomicBool::new(false));
-        let (video_texture_id, video_texture) =
+        let PresentationTexture { id, texture } =
             Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
         let presentation_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
@@ -225,7 +232,7 @@ impl AppUI {
             .tiny_decoder(tiny_decoder.clone())
             .video_decode_thread_notify(video_decode_thread_notify)
             .video_frame_receiver(video_frame_cache_queue.1)
-            .video_texture(video_texture.clone())
+            .video_texture(texture.clone())
             .audio_frame_receiver(audio_frame_cache_queue.1.clone())
             .demux_eof_flag(demux_eof_flag.clone())
             .live_mode(live_mode.clone())
@@ -253,8 +260,8 @@ impl AppUI {
             .render_state(wgpu_render_state.clone())
             .runtime_handle(rt.clone())
             .tiny_decoder(tiny_decoder.clone())
-            .video_texture(video_texture.clone())
-            .video_texture_id(video_texture_id.clone())
+            .video_texture(texture.clone())
+            .video_texture_id(id.clone())
             .live_mode(live_mode.clone())
             .present_data_manager(present_data_manager.clone())
             .tip_window_flag(tip_window_flag.clone())
@@ -344,7 +351,7 @@ impl AppUI {
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
-            video_texture_id,
+            video_texture_id: id,
             ui_flags: UIFlags {
                 pause_flag,
                 tip_window_flag,
@@ -362,11 +369,11 @@ impl AppUI {
             async_cleaner,
         })
     }
-
+    /// alloc wgpu texture and register it to the egui RenderState
     fn alloc_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         render_state: Arc<RenderState>,
-    ) -> (Arc<RwLock<TextureId>>, Arc<RwLock<Texture>>) {
+    ) -> PresentationTexture {
         let main_color_image = main_color_image.blocking_read();
 
         let video_texture = render_state.device.create_texture(&TextureDescriptor {
@@ -420,11 +427,12 @@ impl AppUI {
                 depth_or_array_layers: 1,
             },
         );
-        (
-            Arc::new(RwLock::new(texture_id)),
-            Arc::new(RwLock::new(video_texture)),
-        )
+        PresentationTexture {
+            id: Arc::new(RwLock::new(texture_id)),
+            texture: Arc::new(RwLock::new(video_texture)),
+        }
     }
+    /// free texture, using RenderState
     fn free_texture(&self) {
         let texture_id = self.video_texture_id.blocking_read();
         self.wgpu_render_state
@@ -432,6 +440,9 @@ impl AppUI {
             .write()
             .free_texture(&texture_id);
     }
+    /// When `reset_media_input` is called,
+    /// `update_video_texture` creates a new texture and updates the cached texture.
+    /// The new texture matches the new input video rectangle
     async fn update_video_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         texture_id: Arc<RwLock<TextureId>>,
@@ -507,7 +518,14 @@ impl AppUI {
         }
         Ok(())
     }
-    fn clear_garbage_texture(&self) {
+    /// After updating the cached texture,
+    /// `update_video_texture` sends the old TextureId to
+    /// the deferred deletion queue. `clear_garbage_texture` releases the texture
+    /// during the next repaint.
+    /// Releasing the texture is deferred until the next repaint to avoid
+    /// destroying GPU resources that may still be referenced by previously
+    /// submitted commands.
+    fn release_garbage_texture(&self) {
         if let Ok(garbage_texture) = self.garbage_video_texture_receiver.try_recv() {
             self.wgpu_render_state
                 .renderer
@@ -573,6 +591,9 @@ impl AppUI {
             *main_color_image = cover_color_img;
         }
     }
+    /// `reset_media_input` is called when user decides to play another
+    /// media. It resets the states
+    /// of the decoder and the presentation manager.
     pub fn reset_media_input(context: ResetInputContext) {
         info!("in change format input");
         context.runtime_handle.spawn(async move {
@@ -667,6 +688,8 @@ impl AppUI {
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    /// `detect_pointer_moving` monitors the pointer movement
+    /// and sets the visible_flag to true when it is moving.
     fn detect_pointer_moving(&self, ui: &mut Ui) {
         ui.input(|state| {
             if state.pointer.is_moving() {
@@ -699,7 +722,7 @@ impl AppUI {
             });
         }
     }
-    fn visiable_anime(&mut self, ui: &mut Ui) {
+    fn apply_visiable_anime(&mut self, ui: &mut Ui) {
         if !self
             .ui_flags
             .pause_flag
