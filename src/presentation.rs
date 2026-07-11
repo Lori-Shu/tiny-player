@@ -207,7 +207,7 @@ impl PresentDataManager {
                                         }
                                         video_play_context
                                             .current_video_timestamp
-                                            .store(f_pts, std::sync::atomic::Ordering::Release);
+                                            .store(f_pts, std::sync::atomic::Ordering::Relaxed);
                                         Ok(frame)
                                     } else {
                                         Err(anyhow::Error::msg("video frame pts is none"))
@@ -229,7 +229,7 @@ impl PresentDataManager {
                                 if let Some(pts) = frame.pts() {
                                     video_play_context
                                         .current_video_timestamp
-                                        .store(pts, std::sync::atomic::Ordering::Release);
+                                        .store(pts, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 Ok(frame)
                             } else {
@@ -267,12 +267,12 @@ impl PresentDataManager {
             MainStream::Audio => {
                 if let Some(pts) = audio_pts {
                     // info!("store main  timestamp:{}",pts);
-                    main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Release);
+                    main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             MainStream::Video => {
                 let pts = current_video_timestamp.load(std::sync::atomic::Ordering::Relaxed);
-                main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Release);
+                main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
             }
         };
     }

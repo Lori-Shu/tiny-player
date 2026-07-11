@@ -153,6 +153,7 @@ impl Transcriber {
                         sleep(Duration::from_millis(200)).await;
                     } else {
                         transcribe_task_notify_cloned.notified().await;
+                        info!("transcribe task waked");
                     }
                 }
                 info!("debug point");
