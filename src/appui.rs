@@ -1,5 +1,5 @@
 //! The appui module encompasses the main struct AppUI
-//! which manages the user interface
+//! which manages the user interface.
 use std::{
     path::PathBuf,
     sync::{
@@ -61,7 +61,7 @@ struct UIFlags {
     live_mode: Arc<AtomicBool>,
     theme_flag: bool,
 }
-/// the main struct stores all the vars which are related to ui
+/// the main struct stores all the vars which are related to ui.
 pub struct AppUI {
     #[allow(unused)]
     async_runtime: Runtime,
@@ -76,9 +76,10 @@ pub struct AppUI {
     keep_awake: Option<KeepAwake>,
     tile_tree: egui_tiles::Tree<ControlPane>,
     tile_tree_behavior: TreeBehavior,
+    fade_animation: FadeAnimation,
 }
 impl eframe::App for AppUI {
-    /// this function will automaticly be called every ui repaint
+    /// this function will automaticly be called every ui repaint.
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         if !self.ui_flags.theme_flag {
             apply_player_visual(ui);
@@ -99,10 +100,10 @@ impl eframe::App for AppUI {
                 down part is ui painting and control
 
                  */
-                self.apply_visiable_anime(ui);
+                self.apply_visiable_animation(ui);
                 self.ui_flags
                     .visible_flag
-                    .store(false, std::sync::atomic::Ordering::Release);
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
 
                 self.paint_tip_window(ui.ctx());
                 self.paint_video_image(ui);
@@ -121,6 +122,34 @@ impl eframe::App for AppUI {
 struct PresentationTexture {
     id: Arc<RwLock<TextureId>>,
     texture: Arc<RwLock<Texture>>,
+}
+struct FadeAnimation {
+    start_time: Option<f64>,
+    duration: f64,
+}
+impl FadeAnimation {
+    fn new() -> Self {
+        Self {
+            start_time: None,
+            duration: 2.0,
+        }
+    }
+    fn trigger(&mut self, event_time_point: f64) {
+        self.start_time = Some(event_time_point);
+    }
+    fn get_visible_num(&mut self, now: f64) -> f32 {
+        match &self.start_time {
+            Some(start_time) => {
+                if now - (*start_time) < self.duration {
+                    (1.0 - (now - (*start_time)) / self.duration) as f32
+                } else {
+                    self.start_time = None;
+                    0.0
+                }
+            }
+            None => 0.0,
+        }
+    }
 }
 impl AppUI {
     /// As the entry point for initializing the application,
@@ -348,6 +377,7 @@ impl AppUI {
         let root = tiles.insert_vertical_tile(vertical_view);
         let tile_tree = egui_tiles::Tree::new("player_tile_tree", root, tiles);
         let tile_tree_behavior = TreeBehavior::new();
+        let fade_animation = FadeAnimation::new();
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
@@ -367,9 +397,10 @@ impl AppUI {
             tile_tree,
             tile_tree_behavior,
             async_cleaner,
+            fade_animation,
         })
     }
-    /// alloc wgpu texture and register it to the egui RenderState
+    /// alloc wgpu texture and register it to the egui RenderState.
     fn alloc_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         render_state: Arc<RenderState>,
@@ -432,7 +463,7 @@ impl AppUI {
             texture: Arc::new(RwLock::new(video_texture)),
         }
     }
-    /// free texture, using RenderState
+    /// free texture, using RenderState.
     fn free_texture(&self) {
         let texture_id = self.video_texture_id.blocking_read();
         self.wgpu_render_state
@@ -442,7 +473,7 @@ impl AppUI {
     }
     /// When `reset_media_input` is called,
     /// `update_video_texture` creates a new texture and updates the cached texture.
-    /// The new texture matches the new input video rectangle
+    /// The new texture matches the new input video rectangle.
     async fn update_video_texture(
         main_color_image: Arc<RwLock<ColorImage>>,
         texture_id: Arc<RwLock<TextureId>>,
@@ -602,10 +633,10 @@ impl AppUI {
                 .store(true, std::sync::atomic::Ordering::Release);
             context
                 .current_main_stream_timestamp
-                .store(0, std::sync::atomic::Ordering::Release);
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             context
                 .current_video_timestamp
-                .store(0, std::sync::atomic::Ordering::Release);
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             {
                 let mut present_data_manager = context.present_data_manager.write().await;
 
@@ -617,7 +648,7 @@ impl AppUI {
                     *context.tip_window_msg.write().await = stop_err_msg;
                     context
                         .tip_window_flag
-                        .store(true, std::sync::atomic::Ordering::Release);
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
 
@@ -629,7 +660,7 @@ impl AppUI {
                     *context.tip_window_msg.write().await = reset_input_err_msg;
                     context
                         .tip_window_flag
-                        .store(true, std::sync::atomic::Ordering::Release);
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
                 context.audio_player.clear_source_queue();
@@ -657,7 +688,7 @@ impl AppUI {
                     *context.tip_window_msg.write().await = update_video_texture_err_msg;
                     context
                         .tip_window_flag
-                        .store(true, std::sync::atomic::Ordering::Release);
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
                 info!("reset video texture success");
@@ -690,14 +721,12 @@ impl AppUI {
     }
     /// `detect_pointer_moving` monitors the pointer movement
     /// and sets the visible_flag to true when it is moving.
-    fn detect_pointer_moving(&self, ui: &mut Ui) {
-        ui.input(|state| {
-            if state.pointer.is_moving() {
-                self.ui_flags
-                    .visible_flag
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
+    fn detect_pointer_moving(&mut self, ui: &mut Ui) {
+        let (is_moving, cur_time_point) =
+            ui.input(|states| (states.pointer.is_moving(), states.time));
+        if is_moving {
+            self.fade_animation.trigger(cur_time_point);
+        }
     }
 
     fn paint_tip_window(&mut self, ctx: &egui::Context) {
@@ -717,30 +746,25 @@ impl AppUI {
                 if ui.button("close").clicked() {
                     self.ui_flags
                         .tip_window_flag
-                        .store(false, std::sync::atomic::Ordering::Release);
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             });
         }
     }
-    fn apply_visiable_anime(&mut self, ui: &mut Ui) {
+    fn apply_visiable_animation(&mut self, ui: &mut Ui) {
         if !self
             .ui_flags
             .pause_flag
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            let visible_id = ui.make_persistent_id("visiable_num");
-            let visible_num = ui.ctx().animate_bool_with_time(
-                visible_id,
-                self.ui_flags
-                    .visible_flag
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                2.0,
-            );
+            let visible_num = self
+                .fade_animation
+                .get_visible_num(ui.input(|states| states.time));
             self.visible_num
-                .store(visible_num.to_bits(), std::sync::atomic::Ordering::Release);
+                .store(visible_num.to_bits(), std::sync::atomic::Ordering::Relaxed);
         } else {
             self.visible_num
-                .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Release);
+                .store(1.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
     }
     fn manage_keepawake(&mut self) -> PlayerResult<()> {
@@ -766,7 +790,7 @@ impl AppUI {
         }
         Ok(())
     }
-    /// paint image from the video texture
+    /// paint image from the video texture.
     fn paint_video_image(&mut self, ui: &mut Ui) {
         let layer_painter = ui.painter();
         if let Ok(texture_id) = self.video_texture_id.try_read() {

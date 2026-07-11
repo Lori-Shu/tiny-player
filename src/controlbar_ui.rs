@@ -158,6 +158,7 @@ impl ControlbarUI {
                     )
                     .clicked()
                 {
+                    info!("notify transcribe_task");
                     self.transcribe_task_notify.notify_one();
                 }
             }

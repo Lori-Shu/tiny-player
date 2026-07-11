@@ -805,7 +805,7 @@ impl TinyDecoder {
                 self.audio_frame_cache_queue.1.drain();
                 self.video_frame_cache_queue.1.drain();
                 self.current_video_timestamp
-                    .store(0, std::sync::atomic::Ordering::Release);
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
 
                 self.flush_decoders().await;
                 self.demux_eof_flag
