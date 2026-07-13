@@ -128,7 +128,6 @@ impl Transcriber {
                             .await
                             .is_none()
                             {
-                                info!("debug point");
                                 break;
                             }
                         } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
@@ -145,7 +144,6 @@ impl Transcriber {
                             .await
                             .is_none()
                             {
-                                info!("debug point");
                                 break;
                             }
                         }
@@ -156,7 +154,6 @@ impl Transcriber {
                         info!("transcribe task waked");
                     }
                 }
-                info!("debug point");
                 Self::clean_resources(whisper_command).await;
             });
             Ok(Self {
