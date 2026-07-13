@@ -80,11 +80,11 @@ pub struct AppUI {
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui repaint.
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         if !self.ui_flags.theme_flag {
             apply_player_visual(ui);
             replace_fonts(ui);
-            apply_player_style(ui);
+            apply_player_style(ui, frame);
             self.ui_flags.theme_flag = true;
             info!("set theme success");
         }
@@ -131,7 +131,7 @@ impl FadeAnimation {
     fn new() -> Self {
         Self {
             start_time: None,
-            duration: 2.0,
+            duration: 6.0,
         }
     }
     fn trigger(&mut self, event_time_point: f64) {
@@ -353,7 +353,6 @@ impl AppUI {
             .visible_num(visible_num.clone())
             .build();
         let theme_flag = false;
-        let subtitle_str = String::new();
         let body_ui = BodyUI::builder()
             .audio_player(audio_player.clone())
             .media_source_flag(media_source_flag.clone())
@@ -362,7 +361,8 @@ impl AppUI {
             .transcribe_task_notify(transcribe_task_notify.clone())
             .visible_num(visible_num.clone())
             .subtitle_text_receiver(subtitle_channel.1)
-            .subtitle_str(subtitle_str)
+            .subtitle_str(None)
+            .last_text_time(0.0)
             .build();
         let mut tiles = Tiles::default();
         let vertical_panes = vec![
@@ -757,9 +757,7 @@ impl AppUI {
             .pause_flag
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            let visible_num = self
-                .fade_animation
-                .get_visible_num(ui.input(|states| states.time));
+            let visible_num = self.fade_animation.get_visible_num(ui.time());
             self.visible_num
                 .store(visible_num.to_bits(), std::sync::atomic::Ordering::Relaxed);
         } else {
@@ -819,10 +817,12 @@ fn apply_player_visual(ctx: &Ui) {
 
     visuals.widgets.active.bg_fill = egui::Color32::from_rgb(6, 182, 212);
     visuals.selection.bg_fill = egui::Color32::from_rgb(6, 182, 212).linear_multiply(0.3);
+    visuals.window_fill = Color32::from_rgb(2, 6, 23);
 
+    visuals.panel_fill = Color32::from_rgb(15, 23, 42);
     ctx.set_visuals(visuals);
 }
-fn apply_player_style(ctx: &Ui) {
+fn apply_player_style(ctx: &Ui, _frame: &mut eframe::Frame) {
     let mut style = (*ctx.global_style()).clone();
 
     style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
@@ -830,7 +830,6 @@ fn apply_player_style(ctx: &Ui) {
 
     style.spacing.button_padding = egui::vec2(12.0, 6.0);
     style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-
     ctx.set_global_style(style);
 }
 fn replace_fonts(ctx: &Ui) {

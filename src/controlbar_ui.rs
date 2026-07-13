@@ -43,17 +43,36 @@ pub struct ControlbarUI {
 }
 impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                self.paint_progress_slider(ui);
-                self.paint_caption_button(ui);
-                self.paint_volume_button(ui);
-                self.paint_fullscreen_button(ui);
-            }
-        });
+        let visible_num =
+            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                15,
+                23,
+                42,
+                (220.0 * visible_num) as u8,
+            ))
+            .corner_radius(egui::CornerRadius::same(8))
+            .shadow(egui::Shadow {
+                offset: [0, -4],
+                blur: 16,
+                spread: 0,
+                color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
+            })
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if self
+                        .media_source_flag
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        self.paint_progress_slider(ui);
+                        self.paint_caption_button(ui);
+                        self.paint_volume_button(ui);
+                        self.paint_fullscreen_button(ui);
+                    }
+                });
+            });
     }
     fn paint_progress_slider(&mut self, ui: &mut Ui) {
         let mut slider_color = Color32::ORANGE.to_srgba_unmultiplied();
@@ -76,14 +95,9 @@ impl ControlbarUI {
 
             let mut slider_width_style = egui::style::Style::default();
             slider_width_style.spacing.slider_width = ui.content_rect().width() / 2.0;
-            slider_width_style.spacing.slider_rail_height = 8.0;
+            slider_width_style.spacing.slider_rail_height = 4.0;
+            slider_width_style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
             slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-            slider_width_style.visuals.extreme_bg_color =
-                Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-            slider_width_style.visuals.selection.bg_fill =
-                Color32::from_rgba_unmultiplied(0, 0, 0, 200);
-            slider_width_style.visuals.widgets.active.bg_fill =
-                Color32::from_rgba_unmultiplied(0, 0, 0, 200);
             slider_width_style.visuals.widgets.inactive.bg_fill =
                 Color32::from_rgba_unmultiplied(255, 165, 0, 200);
             slider_width_style.spacing.item_spacing.x = 12.0;
@@ -158,7 +172,6 @@ impl ControlbarUI {
                     )
                     .clicked()
                 {
-                    info!("notify transcribe_task");
                     self.transcribe_task_notify.notify_one();
                 }
             }
