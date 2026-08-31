@@ -13,8 +13,8 @@ use anyhow::Context;
 use ffmpeg_the_third::{
     ChannelLayout,
     ffi::{
-        AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO, swr_alloc_set_opts2, swr_convert_frame,
-        swr_free, swr_init,
+        AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO, SwrContext, swr_alloc_set_opts2,
+        swr_convert_frame, swr_free, swr_init,
     },
     format::Sample,
     frame::Audio,
@@ -33,18 +33,23 @@ use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    CURRENT_EXE_PATH, PlayerResult, async_clean::AsyncCleaner,
-    decode_engine::ManualProtectedResampler, presentation::PLAY_SAMPLE_RATE,
+    CURRENT_EXE_PATH, PlayerResult, async_clean::AsyncCleaner, presentation::PLAY_SAMPLE_RATE,
 };
-
+/// this wrapper type should be protected manually to
+/// keep memory safe in multi threads
+/// means need to wrap an Arc and a Lock to use it in multi threads
+pub struct ManualProtectedResampler(pub *mut SwrContext);
+unsafe impl Send for ManualProtectedResampler {}
+unsafe impl Sync for ManualProtectedResampler {}
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;
 const LOCAL_WHISPER_SERVER_URL: &str = "http://127.0.0.1:8187/inference";
 const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_of::<i16>();
+
 /// Transcriber type which handles audio normalization and
 /// communication with whisper server
 pub struct Transcriber {
     audio_resampler: ManualProtectedResampler,
-    audio_frame_vec_sender: Sender<Vec<u8>>,
+    audio_frame_bytes_sender: Sender<Vec<u8>>,
 }
 impl Transcriber {
     pub fn new(args: TranscriberArgs) -> PlayerResult<Self> {
@@ -93,7 +98,7 @@ impl Transcriber {
             let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
             let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
             let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
-            let (audio_frame_vec_sender, audio_frame_vec_receiver) = flume::bounded(256);
+            let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = flume::bounded(256);
             let used_model = args.used_model.clone();
             let pause_flag = args.pause_flag.clone();
             let subtitle_sender = args.subtitle_sender.clone();
@@ -110,11 +115,11 @@ impl Transcriber {
                     if !pause_flag.load(std::sync::atomic::Ordering::Relaxed)
                         && UsedModel::None != used_model
                     {
-                        let data_vec = audio_frame_vec_receiver
+                        let frame_bytes = audio_frame_bytes_receiver
                             .drain()
                             .flatten()
                             .collect::<Vec<u8>>();
-                        buffer_queue.extend(data_vec);
+                        buffer_queue.extend(frame_bytes);
 
                         if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
                             let contiguous_slice = buffer_queue.make_contiguous();
@@ -158,7 +163,7 @@ impl Transcriber {
             });
             Ok(Self {
                 audio_resampler: ManualProtectedResampler(swr_ctx),
-                audio_frame_vec_sender,
+                audio_frame_bytes_sender,
             })
         }
     }
@@ -190,7 +195,7 @@ impl Transcriber {
         {
             let mut writer = WavWriter::new(&mut cursor, spec)?;
 
-            for chunk in pcm_data.chunks_exact(2) {
+            for chunk in pcm_data.as_chunks::<2>().0 {
                 let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
                 writer.write_sample(sample)?;
             }
@@ -216,10 +221,12 @@ impl Transcriber {
                 warn!(err_msg);
                 return Err(anyhow::Error::msg(err_msg));
             }
-            let data_vec = transcribe_frame.data(0)
+            let frame_bytes = transcribe_frame.data(0)
                 [0..(transcribe_frame.samples() * size_of::<i16>())]
                 .to_vec();
-            self.audio_frame_vec_sender.send_async(data_vec).await?;
+            self.audio_frame_bytes_sender
+                .send_async(frame_bytes)
+                .await?;
         }
         Ok(())
     }

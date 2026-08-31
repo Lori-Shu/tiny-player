@@ -144,9 +144,9 @@ impl HeadbarUI {
             ui.add(fps_button);
 
             let mut date_time_str = "date-time：".to_string();
-            if let Ok(formatter) =
-                time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-                && let Ok(local_date_time) = time::OffsetDateTime::now_local()
+            if let Ok(formatter) = time::format_description::parse_borrowed::<3>(
+                "[year]-[month]-[day] [hour]:[minute]:[second]",
+            ) && let Ok(local_date_time) = time::OffsetDateTime::now_local()
                 && let Ok(formatted_date_time_str) = local_date_time.format(&formatter)
             {
                 date_time_str.push_str(formatted_date_time_str.as_str());

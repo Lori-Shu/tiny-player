@@ -45,12 +45,12 @@ impl PlayListUI {
         let controlbar_id = tiles.insert_new(egui_tiles::Tile::Pane(PlayListUIPane::Controlbar(
             Box::new(controlbar),
         )));
-        let des_list = DesList::builder()
+        let deses = DesList::builder()
             .live_mode(live_mode)
             .reset_input_ctx(reset_input_context)
             .build();
         let deslist_id = tiles.insert_new(egui_tiles::Tile::Pane(PlayListUIPane::DesList(
-            Box::new(des_list),
+            Box::new(deses),
         )));
         let root = tiles.insert_vertical_tile(vec![controlbar_id, deslist_id]);
         let local_medias_tree = Arc::new(RwLock::new(egui_tiles::Tree::new(

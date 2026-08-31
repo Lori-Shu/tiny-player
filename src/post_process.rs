@@ -904,6 +904,9 @@ impl Transcoder {
         self.egui_ctx.request_repaint();
         Ok(())
     }
+    pub async fn repaint_ui(&self) {
+        self.egui_ctx.request_repaint();
+    }
 }
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]

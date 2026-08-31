@@ -17,19 +17,18 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     audio_playback::AudioPlayer,
-    decode_engine::{MainStream, TinyDecoder},
     resources::{FULLSCREEN_IMG, SUBTITLE_IMG, VOLUME_IMG},
     whispercpp_transcriber::UsedModel,
 };
+use media_engine::MediaEngine;
 #[derive(TypedBuilder, Clone)]
 pub struct ControlbarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
-    end_ts: Arc<AtomicI64>,
     time_text: String,
     audio_player: Arc<AudioPlayer>,
-    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    media_engine: Arc<MediaEngine>,
     async_rt: Handle,
     show_subtitle_options_flag: bool,
     visible_num: Arc<AtomicU32>,
@@ -86,21 +85,23 @@ impl ControlbarUI {
                 let ts = self
                     .current_main_stream_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let end_ts = self.end_ts.load(std::sync::atomic::Ordering::Relaxed);
+                let end_ts = if let Ok(media_source_info) = self.media_engine.media_source_info() {
+                    media_source_info.end_timestamp
+                } else {
+                    return;
+                };
                 (ts, end_ts)
             } else {
                 (0, 0)
             };
-            let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts).show_value(false);
-
+            let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
+                .show_value(false)
+                .handle_shape(egui::style::HandleShape::Circle);
             let mut slider_width_style = egui::style::Style::default();
             slider_width_style.spacing.slider_width = ui.content_rect().width() / 2.0;
             slider_width_style.spacing.slider_rail_height = 4.0;
-            slider_width_style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-            slider_width_style.spacing.interact_size = Vec2::new(20.0, 20.0);
             slider_width_style.visuals.widgets.inactive.bg_fill =
                 Color32::from_rgba_unmultiplied(255, 165, 0, 200);
-            slider_width_style.spacing.item_spacing.x = 12.0;
             ui.set_style(slider_width_style);
             let slider_response = ui.add(progress_slider);
             let _ = ui.add(
@@ -117,10 +118,9 @@ impl ControlbarUI {
             if slider_response.drag_stopped() {
                 info!("slider dragged!");
                 let audio_player = self.audio_player.clone();
-                let tiny_decoder = self.tiny_decoder.clone();
+                let media_engine = self.media_engine.clone();
                 self.async_rt.spawn(async move {
-                    let tiny_decoder = tiny_decoder.read().await;
-                    tiny_decoder.seek_timestamp_to_decode(ts).await;
+                    media_engine.seek_timestamp(ts);
                     audio_player.clear_source_queue();
                     audio_player.play();
                 });
@@ -258,7 +258,7 @@ impl ControlbarUI {
         self.time_text = s;
     }
     fn update_time(&mut self) {
-        if let Ok(tiny_decoder) = self.tiny_decoder.try_read()
+        if let Ok(media_source_info) = self.media_engine.media_source_info()
             && self
                 .media_source_flag
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -268,12 +268,12 @@ impl ControlbarUI {
                 .current_main_stream_timestamp
                 .load(std::sync::atomic::Ordering::Relaxed);
             let sec_num = {
-                if let MainStream::Audio = tiny_decoder.main_stream.clone() {
-                    let audio_time_base = tiny_decoder.audio_time_base;
+                if media_source_info.stream_existence_flags.audio {
+                    let audio_time_base = media_source_info.audio_time_base;
                     play_ts * audio_time_base.numerator() as i64
                         / audio_time_base.denominator() as i64
                 } else {
-                    let v_time_base = tiny_decoder.video_time_base;
+                    let v_time_base = media_source_info.video_time_base;
 
                     play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
                 }
@@ -294,9 +294,9 @@ impl ControlbarUI {
     }
     fn update_time_text(&mut self) {
         if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
-            if let Ok(tiny_decoder) = self.tiny_decoder.try_read() {
+            if let Ok(info) = self.media_engine.media_source_info() {
                 now_str.push('|');
-                now_str.push_str(&tiny_decoder.end_time_formatted_string);
+                now_str.push_str(&info.end_time_formatted_string);
             }
             self.set_time_text(now_str);
         }
