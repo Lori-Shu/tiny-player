@@ -1,5 +1,7 @@
 //! The presentation module manages data synchronization and presentation
 use std::{
+    collections::VecDeque,
+    f32::consts::PI,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64},
@@ -13,7 +15,9 @@ use ffmpeg_the_third::{
     Rational,
     frame::{Audio, Video},
 };
-use flume::Receiver;
+use flume::{Receiver, Sender};
+use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
 use tokio::{
     runtime::Handle,
     sync::{Notify, RwLock},
@@ -27,10 +31,10 @@ use typed_builder::TypedBuilder;
 use crate::{
     PlayerResult,
     audio_playback::AudioPlayer,
-    decode_engine::{MainStream, TinyDecoder},
     post_process::Transcoder,
     whispercpp_transcriber::{Transcriber, UsedModel},
 };
+use media_engine::MediaEngine;
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct PresentDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
@@ -61,75 +65,95 @@ impl PresentDataManager {
     }
     async fn execute_audio_task(audio_play_context: AudioPlayContext) {
         let mut audio_cur_ts = None;
-        while !audio_play_context.cancellation_token.is_cancelled() {
-            /*
-            add audio frame data to the audio player
-             */
-            if !audio_play_context
-                .pause_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                if is_play_end(
-                    &audio_play_context.live_mode,
-                    &audio_play_context.audio_frame_receiver,
-                    &audio_play_context.video_frame_receiver,
-                    &audio_play_context.demux_eof_flag,
-                ) {
-                    audio_play_context
-                        .pause_flag
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                if audio_play_context.audio_player.len() < 8 {
-                    let mainstream = {
-                        let tiny_decoder = audio_play_context.tiny_decoder.read().await;
-                        tiny_decoder.main_stream.clone()
-                    };
-                    if let MainStream::Audio = &mainstream {
-                        if audio_play_context.audio_frame_receiver.len() < 5 {
-                            audio_play_context.audio_decode_thread_notify.notify_one();
-                        }
-                        if let Some(Ok(audio_frame)) = audio_play_context
-                            .audio_frame_receiver
-                            .recv_async()
-                            .with_cancellation_token(&audio_play_context.cancellation_token)
-                            .await
-                            && let Some(pts) = audio_frame.pts()
-                        {
-                            audio_cur_ts = Some(pts);
-                            if let Err(e) = audio_play_context
-                                .audio_player
-                                .append_source_data(audio_frame.clone())
-                                .await
-                            {
-                                warn!("{}", e);
-                            }
-                            let used_model = audio_play_context.used_model.read().await;
-                            let used_model_ref = &*used_model;
-                            if UsedModel::None != *used_model_ref
-                                && let Err(e) = audio_play_context
-                                    .transcriber
-                                    .write()
-                                    .await
-                                    .push_audio_frame(audio_frame)
-                                    .await
-                            {
-                                warn!("transcribe err:{:?}", e);
-                            }
-                        }
+        if let Ok(mut frequency_analyzer) = FrequencyAnalyzer::new() {
+            while !audio_play_context.cancellation_token.is_cancelled() {
+                /*
+                add audio frame data to the audio player
+                 */
+                if !audio_play_context
+                    .pause_flag
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    if is_play_end(
+                        &audio_play_context.live_mode,
+                        &audio_play_context.audio_frame_receiver,
+                        &audio_play_context.video_frame_receiver,
+                        &audio_play_context.demux_eof_flag,
+                    ) {
+                        audio_play_context
+                            .pause_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
+                    if audio_play_context.audio_player.len() < 8 {
+                        let audio_stream_flag = {
+                            if let Ok(info) = audio_play_context.media_engine.media_source_info() {
+                                info.stream_existence_flags.audio
+                            } else {
+                                return;
+                            }
+                        };
+                        if audio_stream_flag {
+                            if audio_play_context.audio_frame_receiver.len() < 5 {
+                                audio_play_context.audio_decode_thread_notify.notify_one();
+                            }
+                            if let Some(Ok(audio_frame)) = audio_play_context
+                                .audio_frame_receiver
+                                .recv_async()
+                                .with_cancellation_token(&audio_play_context.cancellation_token)
+                                .await
+                                && let Some(pts) = audio_frame.pts()
+                            {
+                                audio_cur_ts = Some(pts);
+                                if let Err(e) = audio_play_context
+                                    .audio_player
+                                    .append_source_data(audio_frame.clone())
+                                    .await
+                                {
+                                    warn!("{}", e);
+                                }
+                                {
+                                    let transcoder = audio_play_context.transcoder.read().await;
+                                    transcoder.repaint_ui().await;
+                                }
+                                let used_model = audio_play_context.used_model.read().await;
+                                let used_model_ref = &*used_model;
+                                if UsedModel::None != *used_model_ref
+                                    && let Err(e) = audio_play_context
+                                        .transcriber
+                                        .write()
+                                        .await
+                                        .push_audio_frame(audio_frame.clone())
+                                        .await
+                                {
+                                    warn!("transcribe err:{:?}", e);
+                                }
+                                if let Ok(items) =
+                                    frequency_analyzer.process_frame(audio_frame).await
+                                {
+                                    for i in items {
+                                        if let Err(e) =
+                                            audio_play_context.mel_bars_sender.send_async(i).await
+                                        {
+                                            warn!("send bars err:{:?}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                    PresentDataManager::update_current_timestamp(
-                        audio_play_context.current_main_stream_timestamp.clone(),
-                        audio_cur_ts,
-                        mainstream,
-                        audio_play_context.current_video_timestamp.clone(),
-                    )
-                    .await;
+                        PresentDataManager::update_current_timestamp(
+                            audio_play_context.current_main_stream_timestamp.clone(),
+                            audio_cur_ts,
+                            audio_stream_flag,
+                            audio_play_context.current_video_timestamp.clone(),
+                        )
+                        .await;
+                    }
+                } else {
+                    audio_play_context.play_tasks_notify.notified().await;
                 }
-            } else {
-                audio_play_context.play_tasks_notify.notified().await;
+                sleep(Duration::from_millis(10)).await;
             }
-            sleep(Duration::from_millis(10)).await;
         }
     }
     async fn execute_video_task(video_play_context: VideoPlayContext) {
@@ -139,13 +163,16 @@ impl PresentDataManager {
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
-                let (main_stream, audio_time_base, video_time_base) = {
-                    let tiny_decoder = video_play_context.tiny_decoder.read().await;
-                    (
-                        tiny_decoder.main_stream.clone(),
-                        tiny_decoder.audio_time_base,
-                        tiny_decoder.video_time_base,
-                    )
+                let (audio_existence_flag, audio_time_base, video_time_base) = {
+                    if let Ok(info) = video_play_context.media_engine.media_source_info() {
+                        (
+                            info.stream_existence_flags.audio,
+                            info.audio_time_base,
+                            info.video_time_base,
+                        )
+                    } else {
+                        return;
+                    }
                 };
                 if is_play_end(
                     &video_play_context.live_mode,
@@ -158,7 +185,7 @@ impl PresentDataManager {
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 if PresentDataManager::should_video_chase_audio(
-                    main_stream.clone(),
+                    audio_existence_flag,
                     audio_time_base,
                     video_time_base,
                     video_play_context.current_main_stream_timestamp.clone(),
@@ -170,71 +197,68 @@ impl PresentDataManager {
                     if video_play_context.video_frame_receiver.len() < 10 {
                         video_play_context.video_decode_thread_notify.notify_one();
                     }
-                    let frame_result = match &main_stream {
-                        MainStream::Video => {
-                            if ins_now.checked_duration_since(change_instant).is_some() {
-                                if let Some(Ok(frame)) = video_play_context
-                                    .video_frame_receiver
-                                    .recv_async()
-                                    .with_cancellation_token(&video_play_context.cancellation_token)
-                                    .await
-                                {
-                                    if let Some(f_pts) = frame.pts() {
-                                        let cur_pts = video_play_context
-                                            .current_video_timestamp
-                                            .load(std::sync::atomic::Ordering::Relaxed);
-
-                                        if f_pts > 0
-                                            && ((f_pts - cur_pts)
-                                                * 1000
-                                                * video_time_base.numerator() as i64
-                                                / video_time_base.denominator() as i64)
-                                                < 1000
-                                        {
-                                            if let Some(ins) =
-                                                change_instant.checked_add(Duration::from_millis(
-                                                    ((f_pts - cur_pts)
-                                                        * 1000
-                                                        * video_time_base.numerator() as i64
-                                                        / video_time_base.denominator() as i64)
-                                                        as u64,
-                                                ))
-                                            {
-                                                change_instant = ins;
-                                            }
-                                        } else {
-                                            change_instant = ins_now;
-                                        }
-                                        video_play_context
-                                            .current_video_timestamp
-                                            .store(f_pts, std::sync::atomic::Ordering::Relaxed);
-                                        Ok(frame)
-                                    } else {
-                                        Err(anyhow::Error::msg("video frame pts is none"))
-                                    }
-                                } else {
-                                    Err(anyhow::Error::msg("try video frame failed"))
-                                }
-                            } else {
-                                Err(anyhow::Error::msg("video wait for its present time"))
-                            }
-                        }
-                        MainStream::Audio => {
+                    let frame_result = if !audio_existence_flag {
+                        if ins_now.checked_duration_since(change_instant).is_some() {
                             if let Some(Ok(frame)) = video_play_context
                                 .video_frame_receiver
                                 .recv_async()
                                 .with_cancellation_token(&video_play_context.cancellation_token)
                                 .await
                             {
-                                if let Some(pts) = frame.pts() {
+                                if let Some(f_pts) = frame.pts() {
+                                    let cur_pts = video_play_context
+                                        .current_video_timestamp
+                                        .load(std::sync::atomic::Ordering::Relaxed);
+
+                                    if f_pts > 0
+                                        && ((f_pts - cur_pts)
+                                            * 1000
+                                            * video_time_base.numerator() as i64
+                                            / video_time_base.denominator() as i64)
+                                            < 1000
+                                    {
+                                        if let Some(ins) =
+                                            change_instant.checked_add(Duration::from_millis(
+                                                ((f_pts - cur_pts)
+                                                    * 1000
+                                                    * video_time_base.numerator() as i64
+                                                    / video_time_base.denominator() as i64)
+                                                    as u64,
+                                            ))
+                                        {
+                                            change_instant = ins;
+                                        }
+                                    } else {
+                                        change_instant = ins_now;
+                                    }
                                     video_play_context
                                         .current_video_timestamp
-                                        .store(pts, std::sync::atomic::Ordering::Relaxed);
+                                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
+                                    Ok(frame)
+                                } else {
+                                    Err(anyhow::Error::msg("video frame pts is none"))
                                 }
-                                Ok(frame)
                             } else {
                                 Err(anyhow::Error::msg("try video frame failed"))
                             }
+                        } else {
+                            Err(anyhow::Error::msg("video wait for its present time"))
+                        }
+                    } else {
+                        if let Some(Ok(frame)) = video_play_context
+                            .video_frame_receiver
+                            .recv_async()
+                            .with_cancellation_token(&video_play_context.cancellation_token)
+                            .await
+                        {
+                            if let Some(pts) = frame.pts() {
+                                video_play_context
+                                    .current_video_timestamp
+                                    .store(pts, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            Ok(frame)
+                        } else {
+                            Err(anyhow::Error::msg("try video frame failed"))
                         }
                     };
                     if let Ok(frame) = frame_result {
@@ -257,34 +281,31 @@ impl PresentDataManager {
     async fn update_current_timestamp(
         main_stream_current_timestamp: Arc<AtomicI64>,
         audio_pts: Option<i64>,
-        main_stream: MainStream,
+        audio_existence_flag: bool,
         current_video_timestamp: Arc<AtomicI64>,
     ) {
         /*
         add audio frame data to the audio player
          */
-        match main_stream {
-            MainStream::Audio => {
-                if let Some(pts) = audio_pts {
-                    // info!("store main  timestamp:{}",pts);
-                    main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            MainStream::Video => {
-                let pts = current_video_timestamp.load(std::sync::atomic::Ordering::Relaxed);
+        if audio_existence_flag {
+            if let Some(pts) = audio_pts {
+                // info!("store main  timestamp:{}",pts);
                 main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
             }
-        };
+        } else {
+            let pts = current_video_timestamp.load(std::sync::atomic::Ordering::Relaxed);
+            main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     /// if video time-audio time is too high(more than 1 second),default return true
     async fn should_video_chase_audio(
-        main_stream: MainStream,
+        audio_stream_flag: bool,
         audio_time_base: Rational,
         video_time_base: Rational,
         main_stream_current_timestamp: Arc<AtomicI64>,
         current_video_timestamp: Arc<AtomicI64>,
     ) -> bool {
-        if let MainStream::Video = &main_stream {
+        if !audio_stream_flag {
             return true;
         }
         let current_video_timestamp =
@@ -363,7 +384,7 @@ fn is_play_end(
 }
 #[derive(Clone, TypedBuilder)]
 pub struct AudioPlayContext {
-    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    media_engine: Arc<MediaEngine>,
     used_model: Arc<RwLock<UsedModel>>,
     transcriber: Arc<RwLock<Transcriber>>,
     audio_player: Arc<AudioPlayer>,
@@ -378,10 +399,13 @@ pub struct AudioPlayContext {
     play_tasks_notify: Arc<Notify>,
     demux_eof_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
+
+    transcoder: Arc<RwLock<Transcoder>>,
+    mel_bars_sender: Sender<Vec<f32>>,
 }
 #[derive(Clone, TypedBuilder)]
 pub struct VideoPlayContext {
-    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    media_engine: Arc<MediaEngine>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
 
@@ -396,4 +420,119 @@ pub struct VideoPlayContext {
     play_tasks_notify: Arc<Notify>,
     demux_eof_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
+}
+const FFT_SIZE: usize = 1024;
+struct FrequencyAnalyzer {
+    fft: Arc<dyn Fft<f32>>,
+    buffer: VecDeque<f32>,
+    mel_filterbank: Vec<Vec<f32>>,
+    hann_window: Vec<f32>,
+}
+impl FrequencyAnalyzer {
+    fn new() -> PlayerResult<Self> {
+        let mut fft_planner = FftPlanner::<f32>::new();
+
+        let fft = fft_planner.plan_fft(FFT_SIZE, rustfft::FftDirection::Forward);
+        let mel_filterbank = Self::construct_mel_filterbank()?;
+        let hann_window = Self::construct_hann_window();
+        Ok(Self {
+            fft,
+            buffer: VecDeque::new(),
+            mel_filterbank,
+            hann_window,
+        })
+    }
+    async fn process_frame(
+        &mut self,
+        frame: ffmpeg_the_third::frame::Audio,
+    ) -> PlayerResult<Vec<Vec<f32>>> {
+        let frame_bytes = &frame.data(0)
+            [0..(size_of::<f32>() * frame.samples() * frame.ch_layout().channels() as usize)];
+        self.buffer
+            .extend(bytemuck::cast_slice::<_, f32>(frame_bytes));
+        let mut fft_res = vec![];
+        let mut buffer = vec![Complex { re: 0.0, im: 0.0 }; FFT_SIZE];
+        while self.buffer.len() >= FFT_SIZE {
+            for c in &mut buffer {
+                *c = Complex {
+                    re: self.buffer.pop_front().context("pop floating-point err")?,
+                    im: 0.0,
+                };
+            }
+            for (idx, sample) in buffer.iter_mut().enumerate() {
+                sample.re *= self.hann_window[idx];
+            }
+            self.fft.process(&mut buffer);
+            let real_powers = buffer
+                .iter()
+                .take(FFT_SIZE / 2 + 1)
+                .map(|i| i.norm_sqr())
+                .collect::<Vec<f32>>();
+            fft_res.push(real_powers);
+        }
+        let mut res = vec![];
+        for i in &fft_res {
+            let mut bar_nums = vec![];
+            for j in &self.mel_filterbank {
+                let reduce_res = j
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, mel)| *mel * i[idx])
+                    .reduce(|i, j| i + j)
+                    .context("reduce mel result err")?;
+                bar_nums.push(reduce_res);
+            }
+            bar_nums
+                .iter_mut()
+                .for_each(|i| *i = 10.0 * (*i + 1e-8).log10());
+            res.push(bar_nums);
+        }
+        Ok(res)
+    }
+    fn construct_hann_window() -> Vec<f32> {
+        (0..FFT_SIZE)
+            .map(|n| 0.5 * (1.0 - (2.0 * PI * n as f32 / (FFT_SIZE - 1) as f32).cos()))
+            .collect()
+    }
+    fn construct_mel_filterbank() -> PlayerResult<Vec<Vec<f32>>> {
+        let filterbank_size = 32;
+        let f_min = 20_u32;
+        let f_max = PLAY_SAMPLE_RATE / 2;
+        let mel_min = 2595.0 * ((1.0 + f_min as f32) / 700.0).log10();
+        let mel_max = 2595.0 * ((1.0 + f_max as f32) / 700.0).log10();
+        let step = (mel_max - mel_min) / (filterbank_size as f32 + 1.0);
+        let mut mel_points = vec![mel_min];
+        let mut tmp = mel_min;
+        for _ in 0..(filterbank_size + 1) {
+            tmp += step;
+            mel_points.push(tmp);
+        }
+        mel_points
+            .iter_mut()
+            .for_each(|point| *point = 700.0 * (10.0_f32.powf(*point / 2595.0) - 1.0));
+        let bins = mel_points
+            .iter()
+            .map(|f| ((FFT_SIZE as f32 + 1.0) * (*f) / PLAY_SAMPLE_RATE as f32) as usize)
+            .collect::<Vec<usize>>();
+        let mut mel_filterbank = vec![];
+        for i in 0..filterbank_size as usize {
+            let l = bins[i];
+            let c = bins[i + 1];
+            let r = bins[i + 2];
+
+            let mut hs = vec![0.0; FFT_SIZE / 2 + 1];
+            if c == l || r == c {
+                continue;
+            }
+            for (idx, j) in hs.iter_mut().enumerate() {
+                if idx >= l && idx <= c {
+                    *j = ((idx - l) as f32) / (c - l) as f32;
+                } else if idx > c && idx <= r {
+                    *j = ((r - idx) as f32) / (r - c) as f32;
+                }
+            }
+            mel_filterbank.push(hs);
+        }
+        Ok(mel_filterbank)
+    }
 }

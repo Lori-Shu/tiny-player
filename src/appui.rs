@@ -28,7 +28,7 @@ use flume::{Receiver, Sender, bounded};
 use image::DynamicImage;
 
 use keepawake::KeepAwake;
-use time::format_description::{self};
+use time::format_description;
 use tokio::{
     runtime::{Handle, Runtime},
     sync::{Notify, RwLock},
@@ -43,7 +43,6 @@ use crate::{
     audio_playback::AudioPlayer,
     body_ui::BodyUI,
     controlbar_ui::ControlbarUI,
-    decode_engine::{TinyDecoder, TinyDecoderCreationArgs},
     headbar_ui::{ControlPane, HeadbarUI, TreeBehavior},
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
@@ -52,7 +51,7 @@ use crate::{
     resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT},
     whispercpp_transcriber::{Transcriber, TranscriberArgs, UsedModel},
 };
-
+use media_engine::MediaEngine;
 /// the struct stores all bool flags corresponding to ui
 struct UIFlags {
     pause_flag: Arc<AtomicBool>,
@@ -177,6 +176,7 @@ impl AppUI {
                 Err(anyhow::Error::msg("img create err"))
             }
         }?;
+        let media_engine = MediaEngine::new()?;
         let main_color_image = Arc::new(RwLock::new(color_image));
         let wgpu_render_state = Arc::new(
             cc.wgpu_render_state
@@ -184,36 +184,10 @@ impl AppUI {
                 .context("get render state err")?
                 .clone(),
         );
-        let media_source_flag = Arc::new(AtomicBool::new(false));
-        let end_ts = Arc::new(AtomicI64::new(0));
-        let hardware_config_flag = Arc::new(AtomicBool::new(false));
         let transcoder = Arc::new(RwLock::new(Transcoder::new(
             wgpu_render_state.clone(),
             cc.egui_ctx.clone(),
-            hardware_config_flag.clone(),
-        )?));
-        let audio_frame_cache_queue = flume::bounded(32);
-        let video_frame_cache_queue = flume::bounded(32);
-        let audio_decode_thread_notify = Arc::new(Notify::new());
-        let video_decode_thread_notify = Arc::new(Notify::new());
-        let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
-        let current_video_timestamp = Arc::new(AtomicI64::new(0));
-        let demux_eof_flag = Arc::new(AtomicBool::new(false));
-        let tiny_decoder_creation_args = TinyDecoderCreationArgs::builder()
-            .runtime_handle(rt.clone())
-            .media_source_flag(media_source_flag.clone())
-            .end_timestamp(end_ts.clone())
-            .hardware_config_flag(hardware_config_flag.clone())
-            .transcoder(transcoder.clone())
-            .audio_frame_cache_queue(audio_frame_cache_queue.clone())
-            .video_frame_cache_queue(video_frame_cache_queue.clone())
-            .audio_decode_thread_notify(audio_decode_thread_notify.clone())
-            .video_decode_thread_notify(video_decode_thread_notify.clone())
-            .current_video_timestamp(current_video_timestamp.clone())
-            .demux_eof_flag(demux_eof_flag.clone())
-            .build();
-        let tiny_decoder = Arc::new(RwLock::new(crate::decode_engine::TinyDecoder::new(
-            tiny_decoder_creation_args,
+            media_engine.realtime_status.hardware_config_flag.clone(),
         )?));
         let used_model = Arc::new(RwLock::new(UsedModel::None));
         let subtitle_channel = flume::bounded(10);
@@ -235,35 +209,50 @@ impl AppUI {
             .async_cleaner(async_cleaner.clone())
             .build();
         let transcriber = Arc::new(RwLock::new(Transcriber::new(transcriber_args)?));
+        let bars_channel = flume::bounded(128);
+        let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
+        let current_video_timestamp = Arc::new(AtomicI64::new(0));
         let audio_play_context = AudioPlayContext::builder()
-            .audio_decode_thread_notify(audio_decode_thread_notify)
-            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
+            .audio_decode_thread_notify(
+                media_engine
+                    .background_tasks_notifies
+                    .audio_decode_thread_notify
+                    .clone(),
+            )
+            .audio_frame_receiver(media_engine.realtime_status.audio_frame_recv.clone())
             .audio_player(audio_player.clone())
             .cancellation_token(presentation_cancellation_token.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
-            .tiny_decoder(tiny_decoder.clone())
+            .media_engine(media_engine.clone())
             .transcriber(transcriber)
             .used_model(used_model.clone())
-            .video_frame_receiver(video_frame_cache_queue.1.clone())
-            .demux_eof_flag(demux_eof_flag.clone())
+            .video_frame_receiver(media_engine.realtime_status.video_frame_recv.clone())
+            .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
+            .transcoder(transcoder.clone())
+            .mel_bars_sender(bars_channel.0)
             .build();
         let video_play_context = VideoPlayContext::builder()
             .cancellation_token(presentation_cancellation_token.clone())
-            .transcoder(transcoder)
+            .transcoder(transcoder.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
-            .tiny_decoder(tiny_decoder.clone())
-            .video_decode_thread_notify(video_decode_thread_notify)
-            .video_frame_receiver(video_frame_cache_queue.1)
+            .media_engine(media_engine.clone())
+            .video_decode_thread_notify(
+                media_engine
+                    .background_tasks_notifies
+                    .video_decode_thread_notify
+                    .clone(),
+            )
+            .video_frame_receiver(media_engine.realtime_status.video_frame_recv.clone())
             .video_texture(texture.clone())
-            .audio_frame_receiver(audio_frame_cache_queue.1.clone())
-            .demux_eof_flag(demux_eof_flag.clone())
+            .audio_frame_receiver(media_engine.realtime_status.audio_frame_recv.clone())
+            .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
             .build();
         let present_data_manager = PresentDataManager::new(
@@ -288,13 +277,14 @@ impl AppUI {
             .pause_flag(pause_flag.clone())
             .render_state(wgpu_render_state.clone())
             .runtime_handle(rt.clone())
-            .tiny_decoder(tiny_decoder.clone())
+            .media_engine(media_engine.clone())
             .video_texture(texture.clone())
             .video_texture_id(id.clone())
             .live_mode(live_mode.clone())
             .present_data_manager(present_data_manager.clone())
             .tip_window_flag(tip_window_flag.clone())
             .tip_window_msg(tip_window_msg.clone())
+            .transcoder(transcoder.clone())
             .build();
         let internet_list_window_flag = Arc::new(AtomicBool::new(false));
         let internet_resource_ui = InternetResourceUI::new(
@@ -319,11 +309,10 @@ impl AppUI {
         let show_subtitle_options_flag = false;
         let controlbar_ui = ControlbarUI::builder()
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
-            .media_source_flag(media_source_flag.clone())
+            .media_source_flag(media_engine.realtime_status.media_source_flag.clone())
             .live_mode(live_mode.clone())
-            .end_ts(end_ts.clone())
             .audio_player(audio_player.clone())
-            .tiny_decoder(tiny_decoder.clone())
+            .media_engine(media_engine.clone())
             .async_rt(rt.clone())
             .visible_num(visible_num.clone())
             .time_text(time_text)
@@ -355,7 +344,7 @@ impl AppUI {
         let theme_flag = false;
         let body_ui = BodyUI::builder()
             .audio_player(audio_player.clone())
-            .media_source_flag(media_source_flag.clone())
+            .media_source_flag(media_engine.realtime_status.media_source_flag.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
@@ -363,6 +352,8 @@ impl AppUI {
             .subtitle_text_receiver(subtitle_channel.1)
             .subtitle_str(None)
             .last_text_time(0.0)
+            .mel_bars_recv(bars_channel.1)
+            .bars_buffer(Vec::new())
             .build();
         let mut tiles = Tiles::default();
         let vertical_panes = vec![
@@ -594,32 +585,34 @@ impl AppUI {
         *main_color_image = bg_color_img;
     }
     async fn reset_main_colorimg_to_cover(
-        tiny_decoder: &TinyDecoder,
+        media_engine: &MediaEngine,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
-        let cover_pic_data = tiny_decoder.get_cover_pic_data();
-        let cover_data = cover_pic_data.read().await;
-        if let Some(data_vec) = &*cover_data
-            && let Ok(img) = image::load_from_memory(data_vec)
-        {
-            let video_frame_rect = tiny_decoder.video_frame_rect;
-            let rgba8_img = if video_frame_rect[0] != 0 {
-                img.resize(
-                    video_frame_rect[0],
-                    video_frame_rect[1],
-                    image::imageops::FilterType::Triangle,
-                )
-                .to_rgba8()
-            } else {
-                img.to_rgba8()
-            };
-            let cover_color_img = ColorImage::from_rgba_unmultiplied(
-                [rgba8_img.width() as usize, rgba8_img.height() as usize],
-                &rgba8_img,
-            );
-            info!("set cover img!");
-            let mut main_color_image = main_color_image.write().await;
-            *main_color_image = cover_color_img;
+        if let Ok(media_source_info) = media_engine.media_source_info() {
+            let cover_pic_data = media_source_info.cover_pic_data.clone();
+            let cover_data = cover_pic_data.read().await;
+            if let Some(cover_img_bytes) = &*cover_data
+                && let Ok(img) = image::load_from_memory(cover_img_bytes)
+            {
+                let video_frame_rect = media_source_info.resolution_rect;
+                let rgba8_img = if video_frame_rect[0] != 0 {
+                    img.resize(
+                        video_frame_rect[0],
+                        video_frame_rect[1],
+                        image::imageops::FilterType::Triangle,
+                    )
+                    .to_rgba8()
+                } else {
+                    img.to_rgba8()
+                };
+                let cover_color_img = ColorImage::from_rgba_unmultiplied(
+                    [rgba8_img.width() as usize, rgba8_img.height() as usize],
+                    &rgba8_img,
+                );
+                info!("set cover img!");
+                let mut main_color_image = main_color_image.write().await;
+                *main_color_image = cover_color_img;
+            }
         }
     }
     /// `reset_media_input` is called when user decides to play another
@@ -652,9 +645,7 @@ impl AppUI {
                     return;
                 }
 
-                let mut tiny_decoder = context.tiny_decoder.write().await;
-
-                if let Err(e) = tiny_decoder.reset_input(&context.path).await {
+                if let Err(e) = context.media_engine.reset_input(&context.path) {
                     let reset_input_err_msg = format!("reset_input error:{}", e);
                     warn!("reset_input error:{:?}", e);
                     *context.tip_window_msg.write().await = reset_input_err_msg;
@@ -663,16 +654,36 @@ impl AppUI {
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
+
                 context.audio_player.clear_source_queue();
-                let video_rect = tiny_decoder.video_frame_rect;
+                let media_source_info = if let Ok(info) = context.media_engine.media_source_info() {
+                    info
+                } else {
+                    return;
+                };
+                {
+                    let mut transcoder = context.transcoder.write().await;
+                    if let Some(args) = &media_source_info.transcoder_args {
+                        transcoder.set_params_for_space(
+                            args.colorspace,
+                            args.pixel_format,
+                            args.transfer_characteristic,
+                            [args.width, args.height],
+                        );
+                    }
+                }
+                let video_rect = media_source_info.resolution_rect;
                 Self::reset_main_colorimg_to_bg(
                     context.bg_dyn_img,
                     &video_rect,
                     context.main_color_image.clone(),
                 )
                 .await;
-                Self::reset_main_colorimg_to_cover(&tiny_decoder, context.main_color_image.clone())
-                    .await;
+                Self::reset_main_colorimg_to_cover(
+                    &context.media_engine,
+                    context.main_color_image.clone(),
+                )
+                .await;
 
                 if let Err(e) = Self::update_video_texture(
                     context.main_color_image,
@@ -879,7 +890,7 @@ pub struct ResetInputContext {
     pause_flag: Arc<AtomicBool>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
-    tiny_decoder: Arc<RwLock<TinyDecoder>>,
+    media_engine: Arc<MediaEngine>,
     audio_player: Arc<AudioPlayer>,
     main_color_image: Arc<RwLock<ColorImage>>,
     bg_dyn_img: Arc<DynamicImage>,
@@ -893,4 +904,5 @@ pub struct ResetInputContext {
     present_data_manager: Arc<RwLock<PresentDataManager>>,
     tip_window_flag: Arc<AtomicBool>,
     tip_window_msg: Arc<RwLock<String>>,
+    transcoder: Arc<RwLock<Transcoder>>,
 }

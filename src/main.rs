@@ -27,7 +27,6 @@ mod async_clean;
 mod audio_playback;
 mod body_ui;
 mod controlbar_ui;
-mod decode_engine;
 mod headbar_ui;
 mod internet_resource_ui;
 mod playlist_ui;
