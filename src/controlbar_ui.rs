@@ -42,36 +42,36 @@ pub struct ControlbarUI {
 }
 impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
-        let visible_num =
-            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-        egui::Frame::new()
-            .fill(egui::Color32::from_rgba_unmultiplied(
-                15,
-                23,
-                42,
-                (220.0 * visible_num) as u8,
-            ))
-            .corner_radius(egui::CornerRadius::same(8))
-            .shadow(egui::Shadow {
-                offset: [0, -4],
-                blur: 16,
-                spread: 0,
-                color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
-            })
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if self
-                        .media_source_flag
-                        .load(std::sync::atomic::Ordering::Acquire)
-                    {
+        if self
+            .media_source_flag
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let visible_num =
+                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(
+                    15,
+                    23,
+                    42,
+                    (220.0 * visible_num) as u8,
+                ))
+                .corner_radius(egui::CornerRadius::same(8))
+                .shadow(egui::Shadow {
+                    offset: [0, -4],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
+                })
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         self.paint_progress_slider(ui);
                         self.paint_caption_button(ui);
                         self.paint_volume_button(ui);
                         self.paint_fullscreen_button(ui);
-                    }
+                    });
                 });
-            });
+        }
     }
     fn paint_progress_slider(&mut self, ui: &mut Ui) {
         let mut slider_color = Color32::ORANGE.to_srgba_unmultiplied();
@@ -85,11 +85,16 @@ impl ControlbarUI {
                 let ts = self
                     .current_main_stream_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let end_ts = if let Ok(media_source_info) = self.media_engine.media_source_info() {
-                    media_source_info.end_timestamp
-                } else {
-                    return;
-                };
+                let end_ts = self
+                    .async_rt
+                    .block_on(async {
+                        if let Ok(media_source_info) = self.media_engine.media_source_info().await {
+                            Some(media_source_info.end_timestamp)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
                 (ts, end_ts)
             } else {
                 (0, 0)
@@ -98,7 +103,7 @@ impl ControlbarUI {
                 .show_value(false)
                 .handle_shape(egui::style::HandleShape::Circle);
             let mut slider_width_style = egui::style::Style::default();
-            slider_width_style.spacing.slider_width = ui.content_rect().width() / 2.0;
+            slider_width_style.spacing.slider_width = ui.available_width() / 2.0;
             slider_width_style.spacing.slider_rail_height = 4.0;
             slider_width_style.visuals.widgets.inactive.bg_fill =
                 Color32::from_rgba_unmultiplied(255, 165, 0, 200);
@@ -120,7 +125,7 @@ impl ControlbarUI {
                 let audio_player = self.audio_player.clone();
                 let media_engine = self.media_engine.clone();
                 self.async_rt.spawn(async move {
-                    media_engine.seek_timestamp(ts);
+                    media_engine.seek_timestamp(ts).await;
                     audio_player.clear_source_queue();
                     audio_player.play();
                 });
@@ -196,39 +201,56 @@ impl ControlbarUI {
                 self.show_volume_slider_flag = !self.show_volume_slider_flag;
             }
             if self.show_volume_slider_flag {
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    let visible_num =
-                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-                    let audio_player = &mut self.audio_player;
-                    ui.scope(|ui| {
-                        ui.set_opacity(visible_num);
-                        let volume_slider = egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
-                            .vertical()
-                            .show_value(false);
-                        let mut slider_style = egui::style::Style::default();
-                        slider_style.spacing.slider_width = 150.0;
-                        slider_style.spacing.slider_rail_height = 10.0;
-                        slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                        slider_style.visuals.extreme_bg_color =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_style.visuals.selection.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                        slider_style.visuals.widgets.active.bg_fill =
-                            Color32::from_rgba_unmultiplied(0, 0, 100, 100);
-                        slider_style.visuals.widgets.inactive.bg_fill =
-                            Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                        ui.set_style(slider_style);
-
-                        let mut slider_response =
-                            ui.add_sized(Vec2::new(10.0, 150.0), volume_slider);
-                        slider_response =
-                            slider_response.on_hover_text((self.audio_volume * 100.0).to_string());
-                        if slider_response.drag_stopped() {
-                            info!("volumn slider dragged!");
-                            audio_player.adjust_volume(self.audio_volume);
-                        }
+                let visible_num =
+                    f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+                let audio_player = &mut self.audio_player;
+                egui::Area::new(egui::Id::new("volume_slider_popup"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(btn_response.rect.left_top() - egui::vec2(-32.0, 180.0))
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgba_unmultiplied(
+                                15,
+                                23,
+                                42,
+                                (220.0 * visible_num) as u8,
+                            ))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .shadow(egui::Shadow {
+                                offset: [0, -4],
+                                blur: 16,
+                                spread: 0,
+                                color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
+                            })
+                            .inner_margin(egui::Margin::same(12))
+                            .show(ui, |ui| {
+                                ui.set_opacity(visible_num);
+                                let volume_slider =
+                                    egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
+                                        .vertical()
+                                        .show_value(false);
+                                let mut slider_style = egui::style::Style::default();
+                                slider_style.spacing.slider_width = 150.0;
+                                slider_style.spacing.slider_rail_height = 10.0;
+                                slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
+                                slider_style.visuals.extreme_bg_color =
+                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                                slider_style.visuals.selection.bg_fill =
+                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+                                slider_style.visuals.widgets.active.bg_fill =
+                                    Color32::from_rgba_unmultiplied(0, 0, 100, 100);
+                                slider_style.visuals.widgets.inactive.bg_fill =
+                                    Color32::from_rgba_unmultiplied(255, 165, 0, 100);
+                                ui.set_style(slider_style);
+                                let mut slider_response = ui.add(volume_slider);
+                                slider_response = slider_response
+                                    .on_hover_text((self.audio_volume * 100.0).to_string());
+                                if slider_response.drag_stopped() {
+                                    info!("volumn slider dragged!");
+                                    audio_player.adjust_volume(self.audio_volume);
+                                }
+                            });
                     });
-                });
             }
         });
     }
@@ -258,7 +280,11 @@ impl ControlbarUI {
         self.time_text = s;
     }
     fn update_time(&mut self) {
-        if let Ok(media_source_info) = self.media_engine.media_source_info()
+        let media_source_info = self
+            .async_rt
+            .block_on(self.media_engine.media_source_info());
+
+        if let Ok(media_source_info) = &media_source_info
             && self
                 .media_source_flag
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -294,7 +320,10 @@ impl ControlbarUI {
     }
     fn update_time_text(&mut self) {
         if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
-            if let Ok(info) = self.media_engine.media_source_info() {
+            let media_source_info = self
+                .async_rt
+                .block_on(self.media_engine.media_source_info());
+            if let Ok(info) = media_source_info {
                 now_str.push('|');
                 now_str.push_str(&info.end_time_formatted_string);
             }

@@ -1,25 +1,25 @@
 [package]
 name = "tiny-player"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "a tiny media player"
 authors = ["Lori-Shu"]
 
 [dependencies]
-media_engine = "0.1.0"
+media_engine = { path = "../media_engine" }
 ffmpeg-the-third = "6.0.0"
 flume = "0.12.0"
 rodio = "0.22.2"
 bytemuck = "1.22.0"
 image = { version = "0.25.9", features = ["jpeg", "png"] }
 #egui dep list
-eframe = { version = "0.35.0", features = ["wgpu"] }
-egui = "0.35.0"
-egui_extras = { version = "0.35.0", features = ["image"] }
+eframe = { version = "0.36.1", features = ["wgpu"] }
+egui = "0.36.1"
+egui_extras = { version = "0.36.1", features = ["image"] }
+egui_tiles = "0.17.1"
 #
+egui-file-dialog = "0.15.0"
 glam = "0.32.1"
-egui-file-dialog = "0.14.0"
-egui_tiles = "0.16.0"
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.22",features = ["local-time"]}
 time = { version = "0.3.55", features = ["formatting","local-offset"] }
@@ -41,7 +41,3 @@ num-complex = "0.4.6"
 
 [build-dependencies]
 winresource = "0.1.29"
-
-[[test]]
-name = "tile_demo"
-harness = false

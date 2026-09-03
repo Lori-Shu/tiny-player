@@ -84,15 +84,17 @@ impl PresentDataManager {
                             .pause_flag
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if audio_play_context.audio_player.len() < 8 {
-                        let audio_stream_flag = {
-                            if let Ok(info) = audio_play_context.media_engine.media_source_info() {
-                                info.stream_existence_flags.audio
+                    if audio_play_context.audio_player.len() < 16 {
+                        let media_source_info = {
+                            if let Ok(info) =
+                                audio_play_context.media_engine.media_source_info().await
+                            {
+                                info
                             } else {
                                 return;
                             }
                         };
-                        if audio_stream_flag {
+                        if media_source_info.stream_existence_flags.audio {
                             if audio_play_context.audio_frame_receiver.len() < 5 {
                                 audio_play_context.audio_decode_thread_notify.notify_one();
                             }
@@ -127,8 +129,9 @@ impl PresentDataManager {
                                 {
                                     warn!("transcribe err:{:?}", e);
                                 }
-                                if let Ok(items) =
-                                    frequency_analyzer.process_frame(audio_frame).await
+                                if !media_source_info.stream_existence_flags.video
+                                    && let Ok(items) =
+                                        frequency_analyzer.process_frame(audio_frame).await
                                 {
                                     for i in items {
                                         if let Err(e) =
@@ -144,7 +147,7 @@ impl PresentDataManager {
                         PresentDataManager::update_current_timestamp(
                             audio_play_context.current_main_stream_timestamp.clone(),
                             audio_cur_ts,
-                            audio_stream_flag,
+                            media_source_info.stream_existence_flags.audio,
                             audio_play_context.current_video_timestamp.clone(),
                         )
                         .await;
@@ -164,7 +167,7 @@ impl PresentDataManager {
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 let (audio_existence_flag, audio_time_base, video_time_base) = {
-                    if let Ok(info) = video_play_context.media_engine.media_source_info() {
+                    if let Ok(info) = video_play_context.media_engine.media_source_info().await {
                         (
                             info.stream_existence_flags.audio,
                             info.audio_time_base,

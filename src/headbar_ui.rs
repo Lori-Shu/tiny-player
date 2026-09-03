@@ -19,16 +19,19 @@ use typed_builder::TypedBuilder;
 use crate::{
     appui::{AppUI, ResetInputContext},
     body_ui::BodyUI,
+    caption_ui::CaptionUI,
     controlbar_ui::ControlbarUI,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     resources::{PLAY_LIST_IMG, TV_IMG, VIDEO_FILE_IMG},
 };
 
-pub enum ControlPane {
+pub enum WidgetsPane {
     Headbar(Box<HeadbarUI>),
     Body(Box<BodyUI>),
+    Caption(Box<CaptionUI>),
     Controlbar(Box<ControlbarUI>),
+    PlayList(Box<PlayListUI>),
 }
 pub struct TreeBehavior {}
 impl TreeBehavior {
@@ -36,13 +39,13 @@ impl TreeBehavior {
         Self {}
     }
 }
-impl Behavior<ControlPane> for TreeBehavior {
+impl Behavior<WidgetsPane> for TreeBehavior {
     fn is_container_resizable(
         &self,
-        _tiles: &egui_tiles::Tiles<ControlPane>,
+        _tiles: &egui_tiles::Tiles<WidgetsPane>,
         _tile_id: egui_tiles::TileId,
     ) -> bool {
-        false
+        true
     }
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         0.0
@@ -51,16 +54,18 @@ impl Behavior<ControlPane> for TreeBehavior {
         &mut self,
         ui: &mut Ui,
         _tile_id: egui_tiles::TileId,
-        pane: &mut ControlPane,
+        pane: &mut WidgetsPane,
     ) -> UiResponse {
         match pane {
-            ControlPane::Headbar(headbar) => headbar.ui(ui),
-            ControlPane::Body(body) => body.ui(ui),
-            ControlPane::Controlbar(controlbar) => controlbar.ui(ui),
+            WidgetsPane::Headbar(headbar) => headbar.ui(ui),
+            WidgetsPane::Body(body) => body.ui(ui),
+            WidgetsPane::Caption(caption) => caption.ui(ui),
+            WidgetsPane::Controlbar(controlbar) => controlbar.ui(ui),
+            WidgetsPane::PlayList(playlist) => playlist.ui(ui),
         }
     }
 
-    fn tab_title_for_pane(&mut self, _pane: &ControlPane) -> egui::WidgetText {
+    fn tab_title_for_pane(&mut self, _pane: &WidgetsPane) -> egui::WidgetText {
         egui::WidgetText::Text(String::new())
     }
 }
@@ -72,8 +77,7 @@ pub struct HeadbarUI {
     live_mode: Arc<AtomicBool>,
     last_fps_update_instant: Instant,
     fps_text_str: String,
-    playlist_window_flag: Arc<AtomicBool>,
-    playlist_ui: PlayListUI,
+    playlist_flag: Arc<AtomicBool>,
     internet_list_window_flag: Arc<AtomicBool>,
     internet_resource_ui: InternetResourceUI,
 }
@@ -181,14 +185,8 @@ impl HeadbarUI {
 
         let btn_response = ui.add(open_btn);
         if btn_response.clicked() {
-            self.playlist_window_flag
+            self.playlist_flag
                 .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if self
-            .playlist_window_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.playlist_ui.show(ui);
         }
         let open_btn = Button::new(
             Image::from(TV_IMG)
@@ -217,13 +215,31 @@ impl HeadbarUI {
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.paint_frame_info_text(ui);
-        ui.horizontal(|ui| {
-            self.paint_file_btn(ui);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                self.paint_playlist_button(ui);
+        let visible_num =
+            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                15,
+                23,
+                42,
+                (220.0 * visible_num) as u8,
+            ))
+            .corner_radius(egui::CornerRadius::same(8))
+            .shadow(egui::Shadow {
+                offset: [0, -4],
+                blur: 16,
+                spread: 0,
+                color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
+            })
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    self.paint_file_btn(ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        self.paint_playlist_button(ui);
+                    });
+                });
             });
-        });
-
         UiResponse::None
     }
 }

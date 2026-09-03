@@ -26,6 +26,7 @@ mod appui;
 mod async_clean;
 mod audio_playback;
 mod body_ui;
+mod caption_ui;
 mod controlbar_ui;
 mod headbar_ui;
 mod internet_resource_ui;
