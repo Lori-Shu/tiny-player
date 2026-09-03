@@ -7,7 +7,7 @@ use std::{
 
 use egui::{
     AtomExt, Button, ColorImage, Image, ImageData, ImageSource, RichText, ScrollArea,
-    TextureHandle, TextureOptions, Ui, Vec2, ViewportBuilder, ViewportId, WidgetText,
+    TextureHandle, TextureOptions, Ui, Vec2, WidgetText,
 };
 use egui_file_dialog::FileDialog;
 use egui_tiles::{Behavior, UiResponse};
@@ -24,16 +24,14 @@ use crate::{
 };
 
 pub struct PlayListUI {
-    local_medias_tree: Arc<RwLock<egui_tiles::Tree<PlayListUIPane>>>,
-    play_list_tree_behavior: Arc<RwLock<PlayListTreeBehavior>>,
-    playlist_window_flag: Arc<AtomicBool>,
+    local_medias_tree: egui_tiles::Tree<PlayListUIPane>,
+    play_list_tree_behavior: PlayListTreeBehavior,
 }
 impl PlayListUI {
     pub fn new(
         reset_input_context: ResetInputContext,
         live_mode: Arc<AtomicBool>,
         runtime_handle: Handle,
-        playlist_window_flag: Arc<AtomicBool>,
     ) -> Self {
         let media_des_panes = Arc::new(RwLock::new(vec![]));
         let scan_folder_dialog = Arc::new(RwLock::new(FileDialog::new()));
@@ -53,47 +51,36 @@ impl PlayListUI {
             Box::new(deses),
         )));
         let root = tiles.insert_vertical_tile(vec![controlbar_id, deslist_id]);
-        let local_medias_tree = Arc::new(RwLock::new(egui_tiles::Tree::new(
-            "local_medias_tree",
-            root,
-            tiles,
-        )));
-        let play_list_tree_behavior = Arc::new(RwLock::new(
-            PlayListTreeBehavior::builder()
-                .media_des_panes(media_des_panes)
-                .build(),
-        ));
+        let local_medias_tree = egui_tiles::Tree::new("local_medias_tree", root, tiles);
+        let play_list_tree_behavior = PlayListTreeBehavior::builder()
+            .media_des_panes(media_des_panes)
+            .build();
         Self {
             local_medias_tree,
             play_list_tree_behavior,
-            playlist_window_flag,
         }
     }
-    pub fn show(&mut self, ui: &mut Ui) {
-        let viewport_id = ViewportId::from_hash_of("playlist_ui");
-        ui.send_viewport_cmd_to(
-            viewport_id,
-            egui::ViewportCommand::Title("playlist_ui".to_string()),
-        );
-
-        let viewport_builder = ViewportBuilder::default();
-        let playlist_window_flag = self.playlist_window_flag.clone();
-        let local_medias_tree = self.local_medias_tree.clone();
-        let play_list_tree_behavior = self.play_list_tree_behavior.clone();
-        ui.show_viewport_deferred(viewport_id, viewport_builder, move |ui, _class| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                if let Ok(mut local_medias_tree) = local_medias_tree.try_write()
-                    && let Ok(mut play_list_tree_behavior) = play_list_tree_behavior.try_write()
-                {
-                    local_medias_tree.ui(&mut *play_list_tree_behavior, ui);
-                }
+    pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                15,
+                23,
+                42,
+                (220.0) as u8,
+            ))
+            .corner_radius(egui::CornerRadius::same(8))
+            .shadow(egui::Shadow {
+                offset: [0, -4],
+                blur: 16,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(80),
+            })
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                self.local_medias_tree
+                    .ui(&mut self.play_list_tree_behavior, ui);
             });
-            ui.ctx().input(|state| {
-                if state.viewport().close_requested() {
-                    playlist_window_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-            });
-        });
+        UiResponse::None
     }
 }
 enum PlayListUIPane {
@@ -255,9 +242,10 @@ struct MediaDesPane {
 }
 impl MediaDesPane {
     fn ui(&self, ui: &mut Ui, ctx: &ResetInputContext, live_mode: Arc<AtomicBool>) -> UiResponse {
+        let available_width = ui.available_width();
         let image_btn = Button::new(
             Image::new(&self.media_des.texture_handle)
-                .atom_size(Vec2::new(1920.0 / 6.0, 1080.0 / 6.0)),
+                .atom_size(Vec2::new(available_width / 1.25, 1080.0 / 6.0)),
         );
 
         let player_text_button = Button::new(self.media_des.name.clone());

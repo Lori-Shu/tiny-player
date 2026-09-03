@@ -23,7 +23,7 @@ use egui::{
     Button, Color32, ColorImage, ImageSource, Pos2, Rect, RichText, TextureHandle, TextureId, Ui,
 };
 
-use egui_tiles::Tiles;
+use egui_tiles::{TileId, Tiles};
 use flume::{Receiver, Sender, bounded};
 use image::DynamicImage;
 
@@ -42,8 +42,9 @@ use crate::{
     async_clean::AsyncCleaner,
     audio_playback::AudioPlayer,
     body_ui::BodyUI,
+    caption_ui::CaptionUI,
     controlbar_ui::ControlbarUI,
-    headbar_ui::{ControlPane, HeadbarUI, TreeBehavior},
+    headbar_ui::{HeadbarUI, TreeBehavior, WidgetsPane},
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     post_process::Transcoder,
@@ -59,6 +60,7 @@ struct UIFlags {
     visible_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
     theme_flag: bool,
+    playlist_flag: Arc<AtomicBool>,
 }
 /// the main struct stores all the vars which are related to ui.
 pub struct AppUI {
@@ -73,9 +75,10 @@ pub struct AppUI {
     wgpu_render_state: Arc<RenderState>,
     reset_input_context: ResetInputContext,
     keep_awake: Option<KeepAwake>,
-    tile_tree: egui_tiles::Tree<ControlPane>,
+    tile_tree: egui_tiles::Tree<WidgetsPane>,
     tile_tree_behavior: TreeBehavior,
     fade_animation: FadeAnimation,
+    playlist_id: TileId,
 }
 impl eframe::App for AppUI {
     /// this function will automaticly be called every ui repaint.
@@ -106,6 +109,15 @@ impl eframe::App for AppUI {
 
                 self.paint_tip_window(ui.ctx());
                 self.paint_video_image(ui);
+                if self
+                    .ui_flags
+                    .playlist_flag
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    self.tile_tree.tiles.set_visible(self.playlist_id, true);
+                } else {
+                    self.tile_tree.tiles.set_visible(self.playlist_id, false);
+                }
                 self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
 
                 self.detect_file_drag(ui);
@@ -176,7 +188,7 @@ impl AppUI {
                 Err(anyhow::Error::msg("img create err"))
             }
         }?;
-        let media_engine = MediaEngine::new()?;
+        let media_engine = MediaEngine::new(rt.clone())?;
         let main_color_image = Arc::new(RwLock::new(color_image));
         let wgpu_render_state = Arc::new(
             cc.wgpu_render_state
@@ -184,6 +196,7 @@ impl AppUI {
                 .context("get render state err")?
                 .clone(),
         );
+
         let transcoder = Arc::new(RwLock::new(Transcoder::new(
             wgpu_render_state.clone(),
             cc.egui_ctx.clone(),
@@ -291,13 +304,9 @@ impl AppUI {
             reset_input_context.clone(),
             internet_list_window_flag.clone(),
         );
-        let playlist_window_flag = Arc::new(AtomicBool::new(false));
-        let playlist_ui = PlayListUI::new(
-            reset_input_context.clone(),
-            live_mode.clone(),
-            rt.clone(),
-            playlist_window_flag.clone(),
-        );
+        let playlist_flag = Arc::new(AtomicBool::new(false));
+        let playlist_ui =
+            PlayListUI::new(reset_input_context.clone(), live_mode.clone(), rt.clone());
         let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
         let keep_awake = None;
         let visible_flag = Arc::new(AtomicBool::new(false));
@@ -336,8 +345,7 @@ impl AppUI {
             .last_fps_update_instant(last_fps_update_instant)
             .live_mode(live_mode.clone())
             .open_file_dialog(file_dialog)
-            .playlist_ui(playlist_ui)
-            .playlist_window_flag(playlist_window_flag)
+            .playlist_flag(playlist_flag.clone())
             .reset_input_context(reset_input_context.clone())
             .visible_num(visible_num.clone())
             .build();
@@ -349,23 +357,31 @@ impl AppUI {
             .play_tasks_notify(play_tasks_notify.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
             .visible_num(visible_num.clone())
-            .subtitle_text_receiver(subtitle_channel.1)
-            .subtitle_str(None)
-            .last_text_time(0.0)
             .mel_bars_recv(bars_channel.1)
             .bars_buffer(Vec::new())
+            .async_runtime(rt.clone())
+            .media_engine(media_engine.clone())
+            .build();
+        let caption_ui = CaptionUI::builder()
+            .last_text_time(0.0)
+            .subtitle_str(None)
+            .subtitle_text_receiver(subtitle_channel.1.clone())
+            .visible_num(visible_num.clone())
             .build();
         let mut tiles = Tiles::default();
         let vertical_panes = vec![
-            ControlPane::Headbar(Box::new(headbar_ui)),
-            ControlPane::Body(Box::new(body_ui)),
-            ControlPane::Controlbar(Box::new(controlbar_ui)),
+            WidgetsPane::Headbar(Box::new(headbar_ui)),
+            WidgetsPane::Body(Box::new(body_ui)),
+            WidgetsPane::Caption(Box::new(caption_ui)),
+            WidgetsPane::Controlbar(Box::new(controlbar_ui)),
         ];
         let vertical_view = vertical_panes
             .into_iter()
             .map(|p| tiles.insert_pane(p))
             .collect();
-        let root = tiles.insert_vertical_tile(vertical_view);
+        let view_part = tiles.insert_vertical_tile(vertical_view);
+        let list_part = tiles.insert_pane(WidgetsPane::PlayList(Box::new(playlist_ui)));
+        let root = tiles.insert_horizontal_tile(vec![view_part, list_part]);
         let tile_tree = egui_tiles::Tree::new("player_tile_tree", root, tiles);
         let tile_tree_behavior = TreeBehavior::new();
         let fade_animation = FadeAnimation::new();
@@ -379,6 +395,7 @@ impl AppUI {
                 visible_flag,
                 live_mode,
                 theme_flag,
+                playlist_flag,
             },
             tip_window_msg,
             visible_num,
@@ -389,6 +406,7 @@ impl AppUI {
             tile_tree_behavior,
             async_cleaner,
             fade_animation,
+            playlist_id: list_part,
         })
     }
     /// alloc wgpu texture and register it to the egui RenderState.
@@ -588,31 +606,29 @@ impl AppUI {
         media_engine: &MediaEngine,
         main_color_image: Arc<RwLock<ColorImage>>,
     ) {
-        if let Ok(media_source_info) = media_engine.media_source_info() {
-            let cover_pic_data = media_source_info.cover_pic_data.clone();
-            let cover_data = cover_pic_data.read().await;
-            if let Some(cover_img_bytes) = &*cover_data
-                && let Ok(img) = image::load_from_memory(cover_img_bytes)
-            {
-                let video_frame_rect = media_source_info.resolution_rect;
-                let rgba8_img = if video_frame_rect[0] != 0 {
-                    img.resize(
-                        video_frame_rect[0],
-                        video_frame_rect[1],
-                        image::imageops::FilterType::Triangle,
-                    )
-                    .to_rgba8()
-                } else {
-                    img.to_rgba8()
-                };
-                let cover_color_img = ColorImage::from_rgba_unmultiplied(
-                    [rgba8_img.width() as usize, rgba8_img.height() as usize],
-                    &rgba8_img,
-                );
-                info!("set cover img!");
-                let mut main_color_image = main_color_image.write().await;
-                *main_color_image = cover_color_img;
-            }
+        info!("start reset_main_colorimg_to_cover");
+        if let Ok(media_source_info) = media_engine.media_source_info().await
+            && let Some(cover_img_bytes) = &media_source_info.cover_pic_data
+            && let Ok(img) = image::load_from_memory(cover_img_bytes)
+        {
+            let video_frame_rect = media_source_info.resolution_rect;
+            let rgba8_img = if video_frame_rect[0] != 0 {
+                img.resize(
+                    video_frame_rect[0],
+                    video_frame_rect[1],
+                    image::imageops::FilterType::Triangle,
+                )
+                .to_rgba8()
+            } else {
+                img.to_rgba8()
+            };
+            let cover_color_img = ColorImage::from_rgba_unmultiplied(
+                [rgba8_img.width() as usize, rgba8_img.height() as usize],
+                &rgba8_img,
+            );
+            info!("set cover img!");
+            let mut main_color_image = main_color_image.write().await;
+            *main_color_image = cover_color_img;
         }
     }
     /// `reset_media_input` is called when user decides to play another
@@ -632,7 +648,6 @@ impl AppUI {
                 .store(0, std::sync::atomic::Ordering::Relaxed);
             {
                 let mut present_data_manager = context.present_data_manager.write().await;
-
                 if present_data_manager.is_running
                     && let Err(e) = present_data_manager.cancel_present_tasks().await
                 {
@@ -645,7 +660,7 @@ impl AppUI {
                     return;
                 }
 
-                if let Err(e) = context.media_engine.reset_input(&context.path) {
+                if let Err(e) = context.media_engine.reset_input(&context.path).await {
                     let reset_input_err_msg = format!("reset_input error:{}", e);
                     warn!("reset_input error:{:?}", e);
                     *context.tip_window_msg.write().await = reset_input_err_msg;
@@ -654,13 +669,13 @@ impl AppUI {
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
-
                 context.audio_player.clear_source_queue();
-                let media_source_info = if let Ok(info) = context.media_engine.media_source_info() {
-                    info
-                } else {
-                    return;
-                };
+                let media_source_info =
+                    if let Ok(info) = context.media_engine.media_source_info().await {
+                        info
+                    } else {
+                        return;
+                    };
                 {
                     let mut transcoder = context.transcoder.write().await;
                     if let Some(args) = &media_source_info.transcoder_args {
@@ -712,9 +727,8 @@ impl AppUI {
         let mut detected = None;
         ui.input(|input| {
             let dropped_files = &input.raw.dropped_files;
-            if !dropped_files.is_empty()
-                && let Some(path) = &dropped_files[0].path
-            {
+            if !dropped_files.is_empty() {
+                let path = dropped_files[0].path();
                 detected = Some(path.to_path_buf());
             }
         });

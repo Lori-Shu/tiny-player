@@ -3,13 +3,12 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU32},
 };
 
-use egui::{
-    Align2, AtomExt, Button, Color32, CornerRadius, Id, Image, Layout, RichText, Stroke, Ui, Vec2,
-};
+use egui::{Align2, AtomExt, Button, Color32, Id, Image, Pos2, Stroke, Ui, Vec2, epaint::Hsva};
 
 use egui_tiles::UiResponse;
 use flume::Receiver;
-use tokio::sync::Notify;
+use media_engine::MediaEngine;
+use tokio::{runtime::Handle, sync::Notify};
 use typed_builder::TypedBuilder;
 
 use crate::{
@@ -19,15 +18,14 @@ use crate::{
 
 #[derive(TypedBuilder)]
 pub struct BodyUI {
+    async_runtime: Handle,
+    media_engine: Arc<MediaEngine>,
     media_source_flag: Arc<AtomicBool>,
     visible_num: Arc<AtomicU32>,
     pause_flag: Arc<AtomicBool>,
     audio_player: Arc<AudioPlayer>,
     play_tasks_notify: Arc<Notify>,
     transcribe_task_notify: Arc<Notify>,
-    subtitle_text_receiver: Receiver<String>,
-    subtitle_str: Option<String>,
-    last_text_time: f64,
     mel_bars_recv: Receiver<Vec<f32>>,
     bars_buffer: Vec<f32>,
 }
@@ -38,7 +36,10 @@ impl BodyUI {
             .load(std::sync::atomic::Ordering::Acquire)
         {
             egui::Area::new(Id::new("playpause button area"))
-                .fixed_pos(ui.content_rect().center())
+                .fixed_pos(Pos2::new(
+                    ui.available_size()[0] / 2.0,
+                    ui.content_rect().height() / 2.0,
+                ))
                 .pivot(Align2::CENTER_CENTER)
                 .show(ui.ctx(), |ui| {
                     let visible_num =
@@ -82,86 +83,47 @@ impl BodyUI {
                 });
         }
     }
-    fn paint_subtitle(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                    if let Ok(generated_str) = self.subtitle_text_receiver.try_recv() {
-                        self.subtitle_str = Some(generated_str);
-                        self.last_text_time = ui.time();
-                    }
-                    let visible_num =
-                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
-                    if let Some(subtitle_str) = &self.subtitle_str {
-                        let subtitle_text_button = egui::Button::new(
-                            RichText::new(subtitle_str)
-                                .size(35.0)
-                                .color(Color32::ORANGE)
-                                .atom_size(Vec2::new(ui.content_rect().width(), 35.0)),
-                        )
-                        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_black_alpha((10.0 * visible_num) as u8),
-                        ))
-                        .corner_radius(CornerRadius::from(30));
-                        ui.add(subtitle_text_button);
-                    }
-                });
-            }
-            if ui.time() - self.last_text_time > 2.0 {
-                self.subtitle_str = None;
-            }
-        });
-    }
     pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         // let test_btn=Button::new("test").fill(Color32::from_white_alpha(10)).min_size(Vec2::new(ui.available_width(), ui.available_height()));
         // let _=ui.add(test_btn);
         self.paint_playpause_btn(ui);
         self.paint_mel_bars(ui);
-        ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-            self.paint_subtitle(ui);
-        });
         UiResponse::None
     }
     fn paint_mel_bars(&mut self, ui: &mut Ui) {
         while let Ok(bars) = self.mel_bars_recv.try_recv() {
             self.bars_buffer = bars;
         }
-        ui.horizontal(|ui| {
-            let content_size = ui.content_rect().size();
-            let mut max = 0.0;
-            self.bars_buffer.iter().for_each(|i| {
-                if i.abs() > max {
-                    max = i.abs();
+        let media_source_info = self
+            .async_runtime
+            .block_on(self.media_engine.media_source_info());
+        if let Ok(media_source_info) = media_source_info
+            && media_source_info.stream_existence_flags.audio
+            && !media_source_info.stream_existence_flags.video
+        {
+            let available_size = ui.available_size();
+            ui.horizontal(|ui| {
+                let mut max = 0.0;
+                self.bars_buffer.iter().for_each(|i| {
+                    if i.abs() > max {
+                        max = i.abs();
+                    }
+                });
+                for (idx, j) in self.bars_buffer.iter().enumerate() {
+                    let portion = j.abs() / max;
+                    let bar = Button::new("".atom_size(Vec2::new(
+                        available_size[0] / 64.0,
+                        portion * available_size[1],
+                    )))
+                    .fill(Hsva::new(
+                        idx as f32 / self.bars_buffer.len() as f32,
+                        0.75,
+                        0.75,
+                        0.75,
+                    ));
+                    ui.add(bar);
                 }
             });
-            for i in &self.bars_buffer {
-                let portion = i.abs() / max;
-                let bar = if portion < 0.5 {
-                    Button::new("".atom_size(Vec2::new(
-                        content_size[0] / 64.0,
-                        portion * content_size[1] / 3.0,
-                    )))
-                    .fill(Color32::from_rgb(30, 144, 255))
-                } else if (0.5..0.8).contains(&portion) {
-                    Button::new("".atom_size(Vec2::new(
-                        content_size[0] / 64.0,
-                        portion * content_size[1] / 3.0,
-                    )))
-                    .fill(Color32::from_rgb(0, 120, 255))
-                } else {
-                    Button::new("".atom_size(Vec2::new(
-                        content_size[0] / 64.0,
-                        portion * content_size[1] / 3.0,
-                    )))
-                    .fill(Color32::from_rgb(0, 220, 255))
-                };
-                ui.add(bar);
-            }
-        });
+        }
     }
 }
