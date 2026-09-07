@@ -46,6 +46,10 @@ pub type PlayerResult<T> = anyhow::Result<T>;
 
 /// main fun init log, init main ui type Appui
 fn main() {
+    // SAFETY:
+    // This unsafe block is promised to be safe on windows
+    // as described in the states of `std::env::set_var`
+    #[cfg(target_os = "windows")]
     unsafe {
         std::env::set_var("RUST_BACKTRACE", "1");
     }

@@ -58,7 +58,11 @@ impl Transcriber {
         let models_dir_path = exe_dir.join("models");
         let model_path = models_dir_path.join("ggml-base-q8_0.bin");
         let path_str = model_path.to_str().context("to str failed")?;
-        unsafe {
+        // SAFETY:
+        // This unsafe block is promised to be safe because
+        // the ManualProtectedResampler is bound to be free
+        // at the drop phase
+        let resampler_ctx = unsafe {
             let mut swr_ctx = null_mut();
             let r = swr_alloc_set_opts2(
                 &mut swr_ctx,
@@ -80,92 +84,93 @@ impl Transcriber {
                 warn!("swr init err");
                 return Err(anyhow::Error::msg("swr init err"));
             }
+            ManualProtectedResampler(swr_ctx)
+        };
 
-            let mut whisper_command = Command::new("whisper-server.exe");
-            whisper_command
-                .arg("--language")
-                .arg("auto")
-                .arg("--model")
-                .arg(path_str)
-                .arg("--port")
-                .arg("8187");
-            #[cfg(target_os = "windows")]
-            {
-                const CREATE_NO_WINDOW: u32 = 0x08000000;
-                whisper_command.creation_flags(CREATE_NO_WINDOW);
-            }
-            let whisper_command = whisper_command.spawn()?;
-            let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
-            let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
-            let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
-            let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = flume::bounded(256);
-            let used_model = args.used_model.clone();
-            let pause_flag = args.pause_flag.clone();
-            let subtitle_sender = args.subtitle_sender.clone();
-            let mut async_cleaner = args.async_cleaner.blocking_write();
-            async_cleaner.add_transcriber_resources(
-                transcribe_task_cancel_token,
-                args.transcribe_task_notify.clone(),
-            );
-            let _transcribe_task_handle = args.async_runtime.spawn(async move {
-                let mut buffer_queue = VecDeque::new();
-                let network_client = Client::new();
-                while !transcribe_task_cancel_token_cloned.is_cancelled() {
-                    let used_model = (*used_model.read().await).clone();
-                    if !pause_flag.load(std::sync::atomic::Ordering::Relaxed)
-                        && UsedModel::None != used_model
-                    {
-                        let frame_bytes = audio_frame_bytes_receiver
-                            .drain()
-                            .flatten()
-                            .collect::<Vec<u8>>();
-                        buffer_queue.extend(frame_bytes);
-
-                        if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
-                            let contiguous_slice = buffer_queue.make_contiguous();
-                            if Self::transcribe(
-                                &network_client,
-                                contiguous_slice,
-                                &used_model,
-                                &subtitle_sender,
-                            )
-                            .with_cancellation_token(&transcribe_task_cancel_token_cloned)
-                            .await
-                            .is_none()
-                            {
-                                break;
-                            }
-                        } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
-                            let data_bytes = buffer_queue
-                                .drain(0..THREE_SEC_BYTES_LEN)
-                                .collect::<Vec<u8>>();
-                            if Self::transcribe(
-                                &network_client,
-                                &data_bytes,
-                                &used_model,
-                                &subtitle_sender,
-                            )
-                            .with_cancellation_token(&transcribe_task_cancel_token_cloned)
-                            .await
-                            .is_none()
-                            {
-                                break;
-                            }
-                        }
-                        // have to be above notified, otherwise the clean step will fail
-                        sleep(Duration::from_millis(200)).await;
-                    } else {
-                        transcribe_task_notify_cloned.notified().await;
-                        info!("transcribe task waked");
-                    }
-                }
-                Self::clean_resources(whisper_command).await;
-            });
-            Ok(Self {
-                audio_resampler: ManualProtectedResampler(swr_ctx),
-                audio_frame_bytes_sender,
-            })
+        let mut whisper_command = Command::new("whisper-server.exe");
+        whisper_command
+            .arg("--language")
+            .arg("auto")
+            .arg("--model")
+            .arg(path_str)
+            .arg("--port")
+            .arg("8187");
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            whisper_command.creation_flags(CREATE_NO_WINDOW);
         }
+        let whisper_command = whisper_command.spawn()?;
+        let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
+        let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
+        let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
+        let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = flume::bounded(256);
+        let used_model = args.used_model.clone();
+        let pause_flag = args.pause_flag.clone();
+        let subtitle_sender = args.subtitle_sender.clone();
+        let mut async_cleaner = args.async_cleaner.blocking_write();
+        async_cleaner.add_transcriber_resources(
+            transcribe_task_cancel_token,
+            args.transcribe_task_notify.clone(),
+        );
+        let _transcribe_task_handle = args.async_runtime.spawn(async move {
+            let mut buffer_queue = VecDeque::new();
+            let network_client = Client::new();
+            while !transcribe_task_cancel_token_cloned.is_cancelled() {
+                let used_model = (*used_model.read().await).clone();
+                if !pause_flag.load(std::sync::atomic::Ordering::Relaxed)
+                    && UsedModel::None != used_model
+                {
+                    let frame_bytes = audio_frame_bytes_receiver
+                        .drain()
+                        .flatten()
+                        .collect::<Vec<u8>>();
+                    buffer_queue.extend(frame_bytes);
+
+                    if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
+                        let contiguous_slice = buffer_queue.make_contiguous();
+                        if Self::transcribe(
+                            &network_client,
+                            contiguous_slice,
+                            &used_model,
+                            &subtitle_sender,
+                        )
+                        .with_cancellation_token(&transcribe_task_cancel_token_cloned)
+                        .await
+                        .is_none()
+                        {
+                            break;
+                        }
+                    } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
+                        let data_bytes = buffer_queue
+                            .drain(0..THREE_SEC_BYTES_LEN)
+                            .collect::<Vec<u8>>();
+                        if Self::transcribe(
+                            &network_client,
+                            &data_bytes,
+                            &used_model,
+                            &subtitle_sender,
+                        )
+                        .with_cancellation_token(&transcribe_task_cancel_token_cloned)
+                        .await
+                        .is_none()
+                        {
+                            break;
+                        }
+                    }
+                    // have to be above notified, otherwise the clean step will fail
+                    sleep(Duration::from_millis(200)).await;
+                } else {
+                    transcribe_task_notify_cloned.notified().await;
+                    info!("transcribe task waked");
+                }
+            }
+            Self::clean_resources(whisper_command).await;
+        });
+        Ok(Self {
+            audio_resampler: resampler_ctx,
+            audio_frame_bytes_sender,
+        })
     }
     async fn transcribe(
         network_client: &Client,
@@ -204,13 +209,14 @@ impl Transcriber {
         Ok(cursor.into_inner())
     }
     pub async fn push_audio_frame(&mut self, frame: Audio) -> PlayerResult<()> {
+        let mut transcribe_frame = Audio::empty();
+        transcribe_frame.set_format(Sample::I16(ffmpeg_the_third::format::sample::Type::Packed));
+        transcribe_frame.set_ch_layout(ChannelLayout::MONO);
+        transcribe_frame.set_rate(TRANSCRIBE_SAMPLE_RATE);
+        // SAFETY:
+        // This unsafe block is promised to be safe because
+        // the inner operations do not alloc extra memory
         unsafe {
-            let mut transcribe_frame = Audio::empty();
-            transcribe_frame
-                .set_format(Sample::I16(ffmpeg_the_third::format::sample::Type::Packed));
-            transcribe_frame.set_ch_layout(ChannelLayout::MONO);
-            transcribe_frame.set_rate(TRANSCRIBE_SAMPLE_RATE);
-
             let err_num = swr_convert_frame(
                 self.audio_resampler.0,
                 transcribe_frame.as_mut_ptr(),
@@ -221,13 +227,13 @@ impl Transcriber {
                 warn!(err_msg);
                 return Err(anyhow::Error::msg(err_msg));
             }
-            let frame_bytes = transcribe_frame.data(0)
-                [0..(transcribe_frame.samples() * size_of::<i16>())]
-                .to_vec();
-            self.audio_frame_bytes_sender
-                .send_async(frame_bytes)
-                .await?;
         }
+        let frame_bytes =
+            transcribe_frame.data(0)[0..(transcribe_frame.samples() * size_of::<i16>())].to_vec();
+        self.audio_frame_bytes_sender
+            .send_async(frame_bytes)
+            .await?;
+
         Ok(())
     }
     async fn send_request(
@@ -277,6 +283,10 @@ impl Transcriber {
 impl Drop for Transcriber {
     fn drop(&mut self) {
         warn!("start dropping Transcriber resources");
+        // SAFETY:
+        // This unsafe block is promised to be safe because
+        // the inner operations do not alloc extra memory
+        // but free the resampler memory
         unsafe {
             swr_free(&mut self.audio_resampler.0);
         }
