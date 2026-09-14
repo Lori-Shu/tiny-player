@@ -10,29 +10,29 @@ media_engine = { path = "../media_engine" }
 ffmpeg-the-third = "6.0.0"
 flume = "0.12.0"
 rodio = "0.22.2"
-bytemuck = "1.22.0"
-image = { version = "0.25.9", features = ["jpeg", "png"] }
+bytemuck = "1.25.2"
+image = { version = "0.25.10", features = ["jpeg", "png"] }
 #egui dep list
-eframe = { version = "0.36.1", features = ["wgpu"] }
-egui = "0.36.1"
-egui_extras = { version = "0.36.1", features = ["image"] }
+eframe = { version = "0.36.2", features = ["wgpu"] }
+egui = "0.36.2"
+egui_extras = { version = "0.36.2", features = ["image"] }
 egui_tiles = "0.17.1"
 #
 egui-file-dialog = "0.15.0"
-glam = "0.32.1"
+glam = "0.33.7"
 tracing = "0.1.44"
-tracing-subscriber = {version = "0.3.22",features = ["local-time"]}
+tracing-subscriber = {version = "0.3.23",features = ["local-time"]}
 time = { version = "0.3.55", features = ["formatting","local-offset"] }
-keepawake = "0.6.0"
+keepawake = "0.6.1"
 tokio = { version = "1.53.1", features = ["full"] }
-reqwest = {version="0.13.2",features=["form","stream","multipart","json"]}
+reqwest = {version="0.13.5",features=["form","stream","multipart","json"]}
 # reqwest-websocket = "0.5.1"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.143"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 typed-builder = "0.23.2"
 anyhow = "1.0.104"
 quick-m3u8 = "0.8.0"
-futures-util = "0.3.32"
+futures-util = "0.3.34"
 tokio-util = "0.7.19"
 hound = "3.5.1"
 rustfft = "6.4.1"
@@ -40,4 +40,4 @@ rustfft = "6.4.1"
 num-complex = "0.4.6"
 
 [build-dependencies]
-winresource = "0.1.29"
+winresource = "0.1.31"
