@@ -113,7 +113,7 @@ impl PresentDataManager {
                                 {
                                     warn!("{}", e);
                                 }
-                                {
+                                if !media_source_info.stream_existence_flags.video {
                                     let transcoder = audio_play_context.transcoder.read().await;
                                     transcoder.repaint_ui().await;
                                 }
@@ -273,6 +273,7 @@ impl PresentDataManager {
                         {
                             warn!("{}", e);
                         }
+                        transcoder.repaint_ui().await;
                     }
                 }
             } else {

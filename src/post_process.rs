@@ -901,7 +901,6 @@ impl Transcoder {
                 .queue
                 .submit(std::iter::once(encoder.finish()));
         }
-        self.egui_ctx.request_repaint();
         Ok(())
     }
     pub async fn repaint_ui(&self) {
