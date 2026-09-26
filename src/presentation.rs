@@ -32,7 +32,7 @@ use crate::{
     PlayerResult,
     audio_playback::AudioPlayer,
     post_process::Transcoder,
-    whispercpp_transcriber::{Transcriber, UsedModel},
+    whispercpp_transcriber::{AtomicTargetLanguage, TargetLanguage, Transcriber},
 };
 use media_engine::MediaEngine;
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
@@ -117,9 +117,7 @@ impl PresentDataManager {
                                     let transcoder = audio_play_context.transcoder.read().await;
                                     transcoder.repaint_ui().await;
                                 }
-                                let used_model = audio_play_context.used_model.read().await;
-                                let used_model_ref = &*used_model;
-                                if UsedModel::None != *used_model_ref
+                                if TargetLanguage::None != audio_play_context.target_language.load()
                                     && let Err(e) = audio_play_context
                                         .transcriber
                                         .write()
@@ -389,7 +387,7 @@ fn is_play_end(
 #[derive(Clone, TypedBuilder)]
 pub struct AudioPlayContext {
     media_engine: Arc<MediaEngine>,
-    used_model: Arc<RwLock<UsedModel>>,
+    target_language: Arc<AtomicTargetLanguage>,
     transcriber: Arc<RwLock<Transcriber>>,
     audio_player: Arc<AudioPlayer>,
     current_main_stream_timestamp: Arc<AtomicI64>,

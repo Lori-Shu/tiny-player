@@ -36,6 +36,7 @@ futures-util = "0.3.34"
 tokio-util = "0.7.19"
 hound = "3.5.1"
 rustfft = "6.4.1"
+rand = "0.10.3"
 [dev-dependencies]
 num-complex = "0.4.6"
 

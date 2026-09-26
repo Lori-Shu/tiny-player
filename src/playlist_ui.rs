@@ -17,11 +17,7 @@ use tokio::{runtime::Handle, sync::RwLock};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
-use crate::{
-    PlayerResult,
-    appui::{AppUI, ResetInputContext, VideoDes},
-    resources::PLAY_IMG,
-};
+use crate::{PlayerResult, appui::VideoDes, resources::PLAY_IMG, state_reset::StateResetter};
 
 pub struct PlayListUI {
     local_medias_tree: egui_tiles::Tree<PlayListUIPane>,
@@ -29,7 +25,7 @@ pub struct PlayListUI {
 }
 impl PlayListUI {
     pub fn new(
-        reset_input_context: ResetInputContext,
+        state_resetter: Arc<StateResetter>,
         live_mode: Arc<AtomicBool>,
         runtime_handle: Handle,
     ) -> Self {
@@ -45,7 +41,7 @@ impl PlayListUI {
         )));
         let deses = DesList::builder()
             .live_mode(live_mode)
-            .reset_input_ctx(reset_input_context)
+            .state_resetter(state_resetter.clone())
             .build();
         let deslist_id = tiles.insert_new(egui_tiles::Tile::Pane(PlayListUIPane::DesList(
             Box::new(deses),
@@ -207,7 +203,7 @@ impl PlayListControlbar {
 }
 #[derive(TypedBuilder)]
 struct DesList {
-    reset_input_ctx: ResetInputContext,
+    state_resetter: Arc<StateResetter>,
     live_mode: Arc<AtomicBool>,
 }
 impl DesList {
@@ -219,13 +215,13 @@ impl DesList {
                         if item.0 % 2 == 0 {
                             let _ = item.1.ui(
                                 &mut ui[0],
-                                &self.reset_input_ctx,
+                                self.state_resetter.clone(),
                                 self.live_mode.clone(),
                             );
                         } else {
                             let _ = item.1.ui(
                                 &mut ui[1],
-                                &self.reset_input_ctx,
+                                self.state_resetter.clone(),
                                 self.live_mode.clone(),
                             );
                         }
@@ -241,7 +237,12 @@ struct MediaDesPane {
     media_des: VideoDes,
 }
 impl MediaDesPane {
-    fn ui(&self, ui: &mut Ui, ctx: &ResetInputContext, live_mode: Arc<AtomicBool>) -> UiResponse {
+    fn ui(
+        &self,
+        ui: &mut Ui,
+        state_resetter: Arc<StateResetter>,
+        live_mode: Arc<AtomicBool>,
+    ) -> UiResponse {
         let available_width = ui.available_width();
         let image_btn = Button::new(
             Image::new(&self.media_des.texture_handle)
@@ -251,9 +252,7 @@ impl MediaDesPane {
         let player_text_button = Button::new(self.media_des.name.clone());
         ui.add(image_btn);
         if ui.add(player_text_button).clicked() {
-            let mut ctx = ctx.clone();
-            ctx.path = self.media_des.path.clone();
-            AppUI::reset_media_input(ctx);
+            state_resetter.reset_media_input(self.media_des.path.clone());
             live_mode.store(false, std::sync::atomic::Ordering::Relaxed);
             info!("change_format_input success");
         }

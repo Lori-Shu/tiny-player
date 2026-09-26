@@ -5,7 +5,10 @@ use std::{
     io::Cursor,
     ptr::null_mut,
     str::FromStr,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8},
+    },
     time::Duration,
 };
 
@@ -42,7 +45,6 @@ pub struct ManualProtectedResampler(pub *mut SwrContext);
 unsafe impl Send for ManualProtectedResampler {}
 unsafe impl Sync for ManualProtectedResampler {}
 const TRANSCRIBE_SAMPLE_RATE: u32 = 16000;
-const LOCAL_WHISPER_SERVER_URL: &str = "http://127.0.0.1:8187/inference";
 const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_of::<i16>();
 
 /// Transcriber type which handles audio normalization and
@@ -86,26 +88,34 @@ impl Transcriber {
             }
             ManualProtectedResampler(swr_ctx)
         };
-
-        let mut whisper_command = Command::new("whisper-server.exe");
-        whisper_command
-            .arg("--language")
-            .arg("auto")
-            .arg("--model")
-            .arg(path_str)
-            .arg("--port")
-            .arg("8187");
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            whisper_command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let whisper_command = whisper_command.spawn()?;
+        let (child_process, server_url) = loop {
+            let random_port = rand::random_range(10000..65535);
+            let random_port_str = random_port.to_string();
+            let mut whisper_command = Command::new("whisper-server.exe");
+            whisper_command
+                .arg("--language")
+                .arg("auto")
+                .arg("--model")
+                .arg(path_str)
+                .arg("--port")
+                .arg(&random_port_str);
+            #[cfg(target_os = "windows")]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                whisper_command.creation_flags(CREATE_NO_WINDOW);
+            }
+            if let Ok(child_process) = whisper_command.spawn() {
+                let mut server_url = String::from("http://127.0.0.1:");
+                server_url.push_str(&random_port_str);
+                server_url.push_str("/inference");
+                break (child_process, server_url);
+            }
+        };
         let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
         let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
         let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
         let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = flume::bounded(256);
-        let used_model = args.used_model.clone();
+        let target_language = args.target_language.clone();
         let pause_flag = args.pause_flag.clone();
         let subtitle_sender = args.subtitle_sender.clone();
         let mut async_cleaner = args.async_cleaner.blocking_write();
@@ -117,9 +127,9 @@ impl Transcriber {
             let mut buffer_queue = VecDeque::new();
             let network_client = Client::new();
             while !transcribe_task_cancel_token_cloned.is_cancelled() {
-                let used_model = (*used_model.read().await).clone();
+                let used_model = target_language.load();
                 if !pause_flag.load(std::sync::atomic::Ordering::Relaxed)
-                    && UsedModel::None != used_model
+                    && TargetLanguage::None != used_model
                 {
                     let frame_bytes = audio_frame_bytes_receiver
                         .drain()
@@ -134,6 +144,7 @@ impl Transcriber {
                             contiguous_slice,
                             &used_model,
                             &subtitle_sender,
+                            &server_url,
                         )
                         .with_cancellation_token(&transcribe_task_cancel_token_cloned)
                         .await
@@ -150,6 +161,7 @@ impl Transcriber {
                             &data_bytes,
                             &used_model,
                             &subtitle_sender,
+                            &server_url,
                         )
                         .with_cancellation_token(&transcribe_task_cancel_token_cloned)
                         .await
@@ -165,7 +177,7 @@ impl Transcriber {
                     info!("transcribe task waked");
                 }
             }
-            Self::clean_resources(whisper_command).await;
+            Self::clean_resources(child_process).await;
         });
         Ok(Self {
             audio_resampler: resampler_ctx,
@@ -175,11 +187,17 @@ impl Transcriber {
     async fn transcribe(
         network_client: &Client,
         contiguous_slice: &[u8],
-        used_model: &UsedModel,
+        target_language: &TargetLanguage,
         subtitle_sender: &Sender<String>,
+        server_url: &str,
     ) {
-        if let Ok(audio_script) =
-            Self::send_request(network_client, contiguous_slice, used_model).await
+        if let Ok(audio_script) = Self::send_request(
+            network_client,
+            contiguous_slice,
+            target_language,
+            server_url,
+        )
+        .await
         {
             for line in audio_script.lines() {
                 if let Err(e) = subtitle_sender.send_async(line.to_string()).await {
@@ -239,16 +257,17 @@ impl Transcriber {
     async fn send_request(
         network_client: &Client,
         bytes: &[u8],
-        used_model: &UsedModel,
+        target_language: &TargetLanguage,
+        server_url: &str,
     ) -> PlayerResult<String> {
-        let model_str = match used_model {
-            UsedModel::None => {
+        let model_str = match target_language {
+            TargetLanguage::None => {
                 return Err(anyhow::Error::msg(
                     "used_model should not be none in send_request",
                 ));
             }
-            UsedModel::English => String::from_str("en")?,
-            UsedModel::Chinese => String::from_str("zh")?,
+            TargetLanguage::English => String::from_str("en")?,
+            TargetLanguage::Chinese => String::from_str("zh")?,
         };
         let wav_bytes_with_header = Self::package_wav_bytes(bytes).await?;
         let form = reqwest::multipart::Form::new()
@@ -261,7 +280,7 @@ impl Transcriber {
             .text("language", model_str)
             .text("response_format", "json");
         let audio_scripts = network_client
-            .post(LOCAL_WHISPER_SERVER_URL)
+            .post(server_url)
             .multipart(form)
             .send()
             .await?
@@ -292,11 +311,47 @@ impl Drop for Transcriber {
         }
     }
 }
+#[repr(u8)]
 #[derive(Debug, PartialEq, Clone)]
-pub enum UsedModel {
-    None,
-    Chinese,
-    English,
+pub enum TargetLanguage {
+    None = 0,
+    Chinese = 1,
+    English = 2,
+}
+#[derive(Debug)]
+pub struct AtomicTargetLanguage {
+    target_num: AtomicU8,
+}
+impl AtomicTargetLanguage {
+    pub fn new() -> Self {
+        Self {
+            target_num: AtomicU8::new(0),
+        }
+    }
+    pub fn load(&self) -> TargetLanguage {
+        match self.target_num.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => TargetLanguage::None,
+            1 => TargetLanguage::Chinese,
+            2 => TargetLanguage::English,
+            _ => {
+                warn!("unexpected atomic number!");
+                TargetLanguage::None
+            }
+        }
+    }
+    pub fn store(&self, language: TargetLanguage) {
+        match language {
+            TargetLanguage::None => self
+                .target_num
+                .store(0, std::sync::atomic::Ordering::Relaxed),
+            TargetLanguage::Chinese => self
+                .target_num
+                .store(1, std::sync::atomic::Ordering::Relaxed),
+            TargetLanguage::English => self
+                .target_num
+                .store(2, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct TranscriberArgs {
@@ -304,6 +359,6 @@ pub struct TranscriberArgs {
     subtitle_sender: Sender<String>,
     pause_flag: Arc<AtomicBool>,
     transcribe_task_notify: Arc<Notify>,
-    used_model: Arc<RwLock<UsedModel>>,
+    target_language: Arc<AtomicTargetLanguage>,
     async_cleaner: Arc<RwLock<AsyncCleaner>>,
 }

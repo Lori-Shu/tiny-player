@@ -2,23 +2,21 @@
 //! The subarea includes a few control widgets (e.g., progress slider)
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU32},
+    atomic::{AtomicBool, AtomicI64},
 };
 
 use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2};
 use egui_tiles::UiResponse;
 use time::{Time, format_description::OwnedFormatItem};
-use tokio::{
-    runtime::Handle,
-    sync::{Notify, RwLock},
-};
+use tokio::{runtime::Handle, sync::Notify};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
+    appui::AtomicF32,
     audio_playback::AudioPlayer,
     resources::{FULLSCREEN_IMG, SUBTITLE_IMG, VOLUME_IMG},
-    whispercpp_transcriber::UsedModel,
+    whispercpp_transcriber::{AtomicTargetLanguage, TargetLanguage},
 };
 use media_engine::MediaEngine;
 #[derive(TypedBuilder, Clone)]
@@ -31,11 +29,11 @@ pub struct ControlbarUI {
     media_engine: Arc<MediaEngine>,
     async_rt: Handle,
     show_subtitle_options_flag: bool,
-    visible_num: Arc<AtomicU32>,
+    visible_num: Arc<AtomicF32>,
     audio_volume: f32,
     fullscreen_flag: bool,
     show_volume_slider_flag: bool,
-    used_model: Arc<RwLock<UsedModel>>,
+    target_language: Arc<AtomicTargetLanguage>,
     transcribe_task_notify: Arc<Notify>,
     play_time: Time,
     time_formatter: OwnedFormatItem,
@@ -46,8 +44,7 @@ impl ControlbarUI {
             .media_source_flag
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             egui::Frame::new()
                 .fill(egui::Color32::from_rgba_unmultiplied(
                     15,
@@ -77,8 +74,7 @@ impl ControlbarUI {
         let mut slider_color = Color32::ORANGE.to_srgba_unmultiplied();
         slider_color[3] = 255;
         ui.scope(|ui| {
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             ui.set_opacity(visible_num);
 
             let (mut ts, end_ts) = if !self.live_mode.load(std::sync::atomic::Ordering::Relaxed) {
@@ -134,8 +130,7 @@ impl ControlbarUI {
     }
     fn paint_caption_button(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             let subtitle_btn = Button::new(
                 Image::from(SUBTITLE_IMG)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
@@ -151,32 +146,38 @@ impl ControlbarUI {
                 self.show_subtitle_options_flag = !self.show_subtitle_options_flag;
             }
 
-            if self.show_subtitle_options_flag
-                && let Ok(mut used_model) = self.used_model.try_write()
-            {
-                ui.radio_value(
-                    &mut *used_model,
-                    UsedModel::None,
-                    RichText::new("close").size(10.0).color(Color32::ORANGE),
-                );
+            if self.show_subtitle_options_flag {
+                let mut target = self.target_language.load();
                 if ui
                     .radio_value(
-                        &mut *used_model,
-                        UsedModel::Chinese,
+                        &mut target,
+                        TargetLanguage::None,
+                        RichText::new("close").size(10.0).color(Color32::ORANGE),
+                    )
+                    .clicked()
+                {
+                    self.target_language.store(target.clone());
+                }
+                if ui
+                    .radio_value(
+                        &mut target,
+                        TargetLanguage::Chinese,
                         RichText::new("中文").size(10.0).color(Color32::ORANGE),
                     )
                     .clicked()
                 {
+                    self.target_language.store(target.clone());
                     self.transcribe_task_notify.notify_one();
                 }
                 if ui
                     .radio_value(
-                        &mut *used_model,
-                        UsedModel::English,
+                        &mut target,
+                        TargetLanguage::English,
                         RichText::new("English").size(10.0).color(Color32::ORANGE),
                     )
                     .clicked()
                 {
+                    self.target_language.store(target.clone());
                     self.transcribe_task_notify.notify_one();
                 }
             }
@@ -184,8 +185,7 @@ impl ControlbarUI {
     }
     fn paint_volume_button(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             let volumn_img_btn = egui::Button::new(
                 Image::from(VOLUME_IMG)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
@@ -201,8 +201,7 @@ impl ControlbarUI {
                 self.show_volume_slider_flag = !self.show_volume_slider_flag;
             }
             if self.show_volume_slider_flag {
-                let visible_num =
-                    f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+                let visible_num = self.visible_num.load();
                 let audio_player = &mut self.audio_player;
                 egui::Area::new(egui::Id::new("volume_slider_popup"))
                     .order(egui::Order::Foreground)
@@ -256,8 +255,7 @@ impl ControlbarUI {
     }
     fn paint_fullscreen_button(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             let fullscreen_image_btn = egui::Button::new(
                 Image::from(FULLSCREEN_IMG)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))

@@ -34,6 +34,7 @@ mod playlist_ui;
 mod post_process;
 mod presentation;
 mod resources;
+mod state_reset;
 mod whispercpp_transcriber;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");

@@ -3,10 +3,7 @@
 //! (e.g., button to input a single file, button to open the playlist window)
 
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 
@@ -17,13 +14,14 @@ use tracing::info;
 use typed_builder::TypedBuilder;
 
 use crate::{
-    appui::{AppUI, ResetInputContext},
+    appui::AtomicF32,
     body_ui::BodyUI,
     caption_ui::CaptionUI,
     controlbar_ui::ControlbarUI,
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     resources::{PLAY_LIST_IMG, TV_IMG, VIDEO_FILE_IMG},
+    state_reset::StateResetter,
 };
 
 pub enum WidgetsPane {
@@ -71,9 +69,9 @@ impl Behavior<WidgetsPane> for TreeBehavior {
 }
 #[derive(TypedBuilder)]
 pub struct HeadbarUI {
-    visible_num: Arc<AtomicU32>,
+    visible_num: Arc<AtomicF32>,
     open_file_dialog: FileDialog,
-    reset_input_context: ResetInputContext,
+    state_resetter: Arc<StateResetter>,
     live_mode: Arc<AtomicBool>,
     last_fps_update_instant: Instant,
     fps_text_str: String,
@@ -83,8 +81,7 @@ pub struct HeadbarUI {
 }
 impl HeadbarUI {
     pub fn paint_file_btn(&mut self, ui: &mut Ui) {
-        let visible_num =
-            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+        let visible_num = self.visible_num.load();
         let btn_rect = Vec2::new(
             ui.ctx().content_rect().width() / 20.0,
             ui.ctx().content_rect().width() / 20.0,
@@ -114,9 +111,7 @@ impl HeadbarUI {
         }
 
         if let Some(p) = file_path {
-            let mut ctx = self.reset_input_context.clone();
-            ctx.path = p.clone();
-            AppUI::reset_media_input(ctx);
+            self.state_resetter.reset_media_input(p.clone());
             if let Some(p_str) = p.to_str() {
                 self.live_mode
                     .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -169,8 +164,7 @@ impl HeadbarUI {
         });
     }
     pub fn paint_playlist_button(&mut self, ui: &mut Ui) {
-        let visible_num =
-            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+        let visible_num = self.visible_num.load();
         let open_btn = Button::new(
             Image::from(PLAY_LIST_IMG)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
@@ -215,8 +209,7 @@ impl HeadbarUI {
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.paint_frame_info_text(ui);
-        let visible_num =
-            f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+        let visible_num = self.visible_num.load();
         egui::Frame::new()
             .fill(egui::Color32::from_rgba_unmultiplied(
                 15,

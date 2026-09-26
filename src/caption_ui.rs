@@ -1,12 +1,14 @@
-use std::sync::{Arc, atomic::AtomicU32};
+use std::sync::Arc;
 
 use egui::{AtomExt, Color32, CornerRadius, Layout, RichText, Stroke, Ui, Vec2};
 use egui_tiles::UiResponse;
 use flume::Receiver;
 use typed_builder::TypedBuilder;
+
+use crate::appui::AtomicF32;
 #[derive(Debug, TypedBuilder)]
 pub struct CaptionUI {
-    visible_num: Arc<AtomicU32>,
+    visible_num: Arc<AtomicF32>,
     subtitle_text_receiver: Receiver<String>,
     subtitle_str: Option<String>,
     last_text_time: f64,
@@ -18,8 +20,7 @@ impl CaptionUI {
                 self.subtitle_str = Some(generated_str);
                 self.last_text_time = ui.time();
             }
-            let visible_num =
-                f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+            let visible_num = self.visible_num.load();
             if let Some(subtitle_str) = &self.subtitle_str {
                 let subtitle_text_button = egui::Button::new(
                     RichText::new(subtitle_str)
