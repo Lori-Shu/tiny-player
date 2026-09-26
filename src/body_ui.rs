@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU32},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use egui::{Align2, AtomExt, Button, Color32, Id, Image, Pos2, Stroke, Ui, Vec2, epaint::Hsva};
 
@@ -12,6 +9,7 @@ use tokio::{runtime::Handle, sync::Notify};
 use typed_builder::TypedBuilder;
 
 use crate::{
+    appui::AtomicF32,
     audio_playback::AudioPlayer,
     resources::{PAUSE_IMG, PLAY_IMG},
 };
@@ -21,7 +19,7 @@ pub struct BodyUI {
     async_runtime: Handle,
     media_engine: Arc<MediaEngine>,
     media_source_flag: Arc<AtomicBool>,
-    visible_num: Arc<AtomicU32>,
+    visible_num: Arc<AtomicF32>,
     pause_flag: Arc<AtomicBool>,
     audio_player: Arc<AudioPlayer>,
     play_tasks_notify: Arc<Notify>,
@@ -42,8 +40,7 @@ impl BodyUI {
                 ))
                 .pivot(Align2::CENTER_CENTER)
                 .show(ui.ctx(), |ui| {
-                    let visible_num =
-                        f32::from_bits(self.visible_num.load(std::sync::atomic::Ordering::Relaxed));
+                    let visible_num = self.visible_num.load();
                     let play_or_pause_image_source =
                         if self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
                             PLAY_IMG

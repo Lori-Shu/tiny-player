@@ -14,14 +14,12 @@ use quick_m3u8::config::ParsingOptions;
 use reqwest::Client;
 use tokio::{
     io::{AsyncReadExt, BufReader},
+    runtime::Handle,
     sync::RwLock,
 };
 use typed_builder::TypedBuilder;
 
-use crate::{
-    PlayerResult,
-    appui::{AppUI, ResetInputContext},
-};
+use crate::{PlayerResult, state_reset::StateResetter};
 const ENGLISH_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/eng.m3u";
 const CHINESE_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/zho.m3u";
 #[derive(Debug, Clone)]
@@ -42,14 +40,15 @@ pub struct InternetResourceUI {
 
 impl InternetResourceUI {
     pub fn new(
-        change_input_ctx: ResetInputContext,
+        state_resetter: Arc<StateResetter>,
         internet_list_window_flag: Arc<AtomicBool>,
+        handle: Handle,
+        live_mode: Arc<AtomicBool>,
     ) -> Self {
-        let change_input_ctx = Arc::new(RwLock::new(change_input_ctx));
         let mut tiles = egui_tiles::Tiles::default();
         let resources = Arc::new(RwLock::new(vec![]));
-        let selectable_area = SelectableArea::new();
-        let scrollable_area = ScrollableArea::new(change_input_ctx.clone());
+        let selectable_area = SelectableArea::new(live_mode.clone());
+        let scrollable_area = ScrollableArea::new(state_resetter.clone());
         let selectable_id = tiles.insert_new(egui_tiles::Tile::Pane(
             InternetResourceUIPane::Selectable(Box::new(selectable_area)),
         ));
@@ -64,7 +63,7 @@ impl InternetResourceUI {
         )));
         let tree_behavior = Arc::new(RwLock::new(
             InternetResourceUIPaneBehavior::builder()
-                .change_input_ctx(change_input_ctx)
+                .handle(handle.clone())
                 .internet_list_window_flag(internet_list_window_flag)
                 .resources(resources)
                 .build(),
@@ -104,7 +103,7 @@ enum InternetResourceUIPane {
 }
 #[derive(TypedBuilder)]
 struct InternetResourceUIPaneBehavior {
-    change_input_ctx: Arc<RwLock<ResetInputContext>>,
+    handle: Handle,
     internet_list_window_flag: Arc<AtomicBool>,
     resources: Arc<RwLock<Vec<SingleResourcePane>>>,
 }
@@ -121,7 +120,7 @@ impl Behavior<InternetResourceUIPane> for InternetResourceUIPaneBehavior {
                 ui,
                 self.resources.clone(),
                 self.internet_list_window_flag.clone(),
-                self.change_input_ctx.clone(),
+                self.handle.clone(),
             ),
             InternetResourceUIPane::Scrollable(s) => s.ui(ui, self.resources.clone()),
         }
@@ -137,9 +136,10 @@ struct SelectableArea {
     language_category: LanguageCategory,
     clicked: bool,
     web_client: Client,
+    live_mode: Arc<AtomicBool>,
 }
 impl SelectableArea {
-    fn new() -> Self {
+    fn new(live_mode: Arc<AtomicBool>) -> Self {
         let language_category = LanguageCategory::None;
         let clicked = false;
         let web_client = Client::new();
@@ -147,6 +147,7 @@ impl SelectableArea {
             language_category,
             clicked,
             web_client,
+            live_mode,
         }
     }
     fn ui(
@@ -154,7 +155,7 @@ impl SelectableArea {
         ui: &mut Ui,
         resources: Arc<RwLock<Vec<SingleResourcePane>>>,
         internet_list_window_flag: Arc<AtomicBool>,
-        change_input_ctx: Arc<RwLock<ResetInputContext>>,
+        runtime_handle: Handle,
     ) -> UiResponse {
         ui.ctx().input(|state| {
             if state.viewport().close_requested() {
@@ -195,16 +196,13 @@ impl SelectableArea {
                 self.clicked = true;
             }
         });
-        if self.clicked
-            && let Ok(change_input_ctx) = change_input_ctx.try_read()
-        {
-            change_input_ctx
-                .runtime_handle
-                .spawn(Self::request_playlist(
-                    self.language_category.clone(),
-                    self.web_client.clone(),
-                    resources.clone(),
-                ));
+        if self.clicked {
+            runtime_handle.spawn(Self::request_playlist(
+                self.language_category.clone(),
+                self.web_client.clone(),
+                resources.clone(),
+                self.live_mode.clone(),
+            ));
             self.clicked = false;
         }
         ui.separator();
@@ -214,6 +212,7 @@ impl SelectableArea {
         current_category: LanguageCategory,
         web_client: Client,
         resources: Arc<RwLock<Vec<SingleResourcePane>>>,
+        live_mode: Arc<AtomicBool>,
     ) -> PlayerResult<()> {
         let url = match &current_category {
             LanguageCategory::English => ENGLISH_PLAYLIST_URL,
@@ -237,9 +236,12 @@ impl SelectableArea {
         resources.clear();
         while let Ok(Some(hls_line)) = reader.read_line() {
             if let quick_m3u8::HlsLine::Uri(uri) = hls_line {
-                let single_resource_pane = SingleResourcePane::new(MediaResource {
-                    name: uri.to_string(),
-                });
+                let single_resource_pane = SingleResourcePane::new(
+                    MediaResource {
+                        name: uri.to_string(),
+                    },
+                    live_mode.clone(),
+                );
                 resources.push(single_resource_pane);
             }
         }
@@ -249,17 +251,17 @@ impl SelectableArea {
 }
 
 struct ScrollableArea {
-    change_input_ctx: Arc<RwLock<ResetInputContext>>,
+    state_resetter: Arc<StateResetter>,
 }
 impl ScrollableArea {
-    fn new(change_input_ctx: Arc<RwLock<ResetInputContext>>) -> Self {
-        Self { change_input_ctx }
+    fn new(state_resetter: Arc<StateResetter>) -> Self {
+        Self { state_resetter }
     }
     fn ui(&self, ui: &mut Ui, resources: Arc<RwLock<Vec<SingleResourcePane>>>) -> UiResponse {
         ScrollArea::vertical().show(ui, |ui| {
             if let Ok(resources) = resources.try_read() {
                 for resource_pane in &*resources {
-                    let _ = resource_pane.ui(ui, self.change_input_ctx.clone());
+                    let _ = resource_pane.ui(ui, self.state_resetter.clone());
                 }
             }
         });
@@ -269,23 +271,21 @@ impl ScrollableArea {
 #[derive(Debug)]
 struct SingleResourcePane {
     resource: MediaResource,
+    live_mode: Arc<AtomicBool>,
 }
 impl SingleResourcePane {
-    fn new(resource: MediaResource) -> Self {
-        Self { resource }
+    fn new(resource: MediaResource, live_mode: Arc<AtomicBool>) -> Self {
+        Self {
+            resource,
+            live_mode,
+        }
     }
-    fn ui(&self, ui: &mut Ui, change_input_ctx: Arc<RwLock<ResetInputContext>>) -> UiResponse {
+    fn ui(&self, ui: &mut Ui, state_resetter: Arc<StateResetter>) -> UiResponse {
         ui.set_min_height(100.0);
         let btn_response = ui.add(Button::new(&self.resource.name));
-        if btn_response.clicked()
-            && let Ok(mut context) = change_input_ctx.try_write()
-        {
-            context.path = PathBuf::from(&self.resource.name);
-
-            AppUI::reset_media_input(context.clone());
-
-            context
-                .live_mode
+        if btn_response.clicked() {
+            state_resetter.reset_media_input(PathBuf::from(&self.resource.name));
+            self.live_mode
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         UiResponse::None
