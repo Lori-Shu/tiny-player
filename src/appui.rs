@@ -45,7 +45,7 @@ use crate::{
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     post_process::Transcoder,
-    presentation::{AudioPlayContext, PresentDataManager, VideoPlayContext},
+    presentation::{AudioPlayContext, MediaDataManager, VideoPlayContext},
     resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT},
     state_reset::StateResetter,
     whispercpp_transcriber::{AtomicTargetLanguage, Transcriber, TranscriberArgs},
@@ -114,7 +114,7 @@ impl eframe::App for AppUI {
                 // paint the tile tree
                 self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
 
-                self.detect_file_drag(ui);
+                self.detect_file_drop(ui);
                 self.detect_pointer_moving(ui);
             });
         });
@@ -260,13 +260,13 @@ impl AppUI {
             .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
             .build();
-        let present_data_manager = PresentDataManager::new(
+        let media_data_manager = MediaDataManager::new(
             rt.clone(),
             presentation_cancellation_token,
             audio_play_context,
             video_play_context,
         );
-        let present_data_manager = Arc::new(RwLock::new(present_data_manager));
+        let media_data_manager = Arc::new(RwLock::new(media_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
         let tip_window_flag = Arc::new(AtomicBool::new(false));
@@ -285,7 +285,7 @@ impl AppUI {
                 .media_engine(media_engine.clone())
                 .video_texture(texture.clone())
                 .video_texture_id(id.clone())
-                .present_data_manager(present_data_manager.clone())
+                .media_data_manager(media_data_manager.clone())
                 .tip_window_flag(tip_window_flag.clone())
                 .tip_window_msg(tip_window_msg.clone())
                 .transcoder(transcoder.clone())
@@ -300,7 +300,7 @@ impl AppUI {
         );
         let playlist_flag = Arc::new(AtomicBool::new(false));
         let playlist_ui = PlayListUI::new(state_resetter.clone(), live_mode.clone(), rt.clone());
-        let time_formatter = format_description::parse_owned::<2>("[hour]:[minute]:[second]")?;
+        let time_formatter = format_description::parse_owned::<3>("[hour]:[minute]:[second]")?;
         let keep_awake = None;
         let visible_flag = Arc::new(AtomicBool::new(false));
         let visible_num = Arc::new(AtomicF32::new(1.0));
@@ -490,7 +490,7 @@ impl AppUI {
         }
     }
 
-    fn detect_file_drag(&mut self, ui: &mut Ui) {
+    fn detect_file_drop(&mut self, ui: &mut Ui) {
         let mut detected = None;
         ui.input(|input| {
             let dropped_files = &input.raw.dropped_files;

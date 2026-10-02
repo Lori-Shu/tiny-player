@@ -24,7 +24,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult, audio_playback::AudioPlayer, post_process::Transcoder,
-    presentation::PresentDataManager,
+    presentation::MediaDataManager,
 };
 
 #[derive(Clone, TypedBuilder)]
@@ -41,7 +41,7 @@ pub struct StateResetter {
     garbage_texture_sender: Sender<TextureId>,
     video_texture: Arc<RwLock<Texture>>,
     runtime_handle: Handle,
-    present_data_manager: Arc<RwLock<PresentDataManager>>,
+    media_data_manager: Arc<RwLock<MediaDataManager>>,
     tip_window_flag: Arc<AtomicBool>,
     tip_window_msg: Arc<RwLock<String>>,
     transcoder: Arc<RwLock<Transcoder>>,
@@ -52,7 +52,7 @@ impl StateResetter {
     /// of the decoder and the presentation manager.
     pub fn reset_media_input(self: &Arc<Self>, path: PathBuf) {
         info!("in change format input");
-        let this = Arc::clone(self);
+        let this = self.clone();
         self.runtime_handle.spawn(async move {
             this.pause_flag
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -61,7 +61,7 @@ impl StateResetter {
             this.current_video_timestamp
                 .store(0, std::sync::atomic::Ordering::Relaxed);
             {
-                let mut present_data_manager = this.present_data_manager.write().await;
+                let mut present_data_manager = this.media_data_manager.write().await;
                 if present_data_manager.is_running
                     && let Err(e) = present_data_manager.cancel_present_tasks().await
                 {
