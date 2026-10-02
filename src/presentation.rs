@@ -36,7 +36,7 @@ use crate::{
 };
 use media_engine::MediaEngine;
 pub const PLAY_SAMPLE_RATE: u32 = 48000;
-pub struct PresentDataManager {
+pub struct MediaDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
     cancellation_token: Arc<CancellationToken>,
@@ -45,7 +45,7 @@ pub struct PresentDataManager {
     runtime_handle: Handle,
     pub is_running: bool,
 }
-impl PresentDataManager {
+impl MediaDataManager {
     pub fn new(
         runtime_handle: Handle,
         cancellation_token: Arc<CancellationToken>,
@@ -72,7 +72,7 @@ impl PresentDataManager {
                  */
                 if !audio_play_context
                     .pause_flag
-                    .load(std::sync::atomic::Ordering::Acquire)
+                    .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     if is_play_end(
                         &audio_play_context.live_mode,
@@ -84,7 +84,7 @@ impl PresentDataManager {
                             .pause_flag
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if audio_play_context.audio_player.len() < 16 {
+                    if audio_play_context.audio_player.len() < 8 {
                         let media_source_info = {
                             if let Ok(info) =
                                 audio_play_context.media_engine.media_source_info().await
@@ -95,7 +95,7 @@ impl PresentDataManager {
                             }
                         };
                         if media_source_info.stream_existence_flags.audio {
-                            if audio_play_context.audio_frame_receiver.len() < 5 {
+                            if audio_play_context.audio_frame_receiver.len() < 16 {
                                 audio_play_context.audio_decode_thread_notify.notify_one();
                             }
                             if let Some(Ok(audio_frame)) = audio_play_context
@@ -142,18 +142,19 @@ impl PresentDataManager {
                             }
                         }
 
-                        PresentDataManager::update_current_timestamp(
+                        MediaDataManager::update_current_timestamp(
                             audio_play_context.current_main_stream_timestamp.clone(),
                             audio_cur_ts,
                             media_source_info.stream_existence_flags.audio,
                             audio_play_context.current_video_timestamp.clone(),
                         )
                         .await;
+                    } else {
+                        sleep(Duration::from_millis(10)).await;
                     }
                 } else {
                     audio_play_context.play_tasks_notify.notified().await;
                 }
-                sleep(Duration::from_millis(10)).await;
             }
         }
     }
@@ -185,7 +186,7 @@ impl PresentDataManager {
                         .pause_flag
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                if PresentDataManager::should_video_chase_audio(
+                if MediaDataManager::should_video_chase_audio(
                     audio_existence_flag,
                     audio_time_base,
                     video_time_base,
@@ -195,7 +196,7 @@ impl PresentDataManager {
                 .await
                 {
                     let ins_now = Instant::now();
-                    if video_play_context.video_frame_receiver.len() < 10 {
+                    if video_play_context.video_frame_receiver.len() < 16 {
                         video_play_context.video_decode_thread_notify.notify_one();
                     }
                     let frame_result = if !audio_existence_flag {
@@ -262,22 +263,28 @@ impl PresentDataManager {
                             Err(anyhow::Error::msg("try video frame failed"))
                         }
                     };
-                    if let Ok(frame) = frame_result {
-                        let mut transcoder = video_play_context.transcoder.write().await;
+                    match frame_result {
+                        Ok(frame) => {
+                            let mut transcoder = video_play_context.transcoder.write().await;
 
-                        if let Err(e) = transcoder
-                            .render_video(video_play_context.video_texture.clone(), frame)
-                            .await
-                        {
+                            if let Err(e) = transcoder
+                                .render_video(video_play_context.video_texture.clone(), frame)
+                                .await
+                            {
+                                warn!("{}", e);
+                            }
+                            transcoder.repaint_ui().await;
+                        }
+                        Err(e) => {
                             warn!("{}", e);
                         }
-                        transcoder.repaint_ui().await;
                     }
+                } else {
+                    sleep(Duration::from_millis(8)).await;
                 }
             } else {
                 video_play_context.play_tasks_notify.notified().await;
             }
-            sleep(Duration::from_millis(10)).await;
         }
     }
     async fn update_current_timestamp(
@@ -310,20 +317,22 @@ impl PresentDataManager {
         if !audio_stream_flag {
             return true;
         }
-        let current_video_timestamp =
-            current_video_timestamp.load(std::sync::atomic::Ordering::Acquire);
+        let video_timestamp = current_video_timestamp.load(std::sync::atomic::Ordering::Relaxed);
 
-        let timestamp = main_stream_current_timestamp.load(std::sync::atomic::Ordering::Acquire);
-        // info!("main ts:{},v_ts:{}", timestamp, current_video_timestamp);
-        let v_time = current_video_timestamp * 1000 * video_time_base.numerator() as i64
+        let timestamp = main_stream_current_timestamp.load(std::sync::atomic::Ordering::Relaxed);
+        let v_time = video_timestamp * 1000 * video_time_base.numerator() as i64
             / video_time_base.denominator() as i64;
         let a_time = timestamp * 1000 * audio_time_base.numerator() as i64
             / audio_time_base.denominator() as i64;
-        if a_time > v_time {
-            return true;
+        // auto heal. synchronizing logic
+        {
+            if (a_time - v_time).abs() > 2000 {
+                current_video_timestamp.store(timestamp, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
         }
-
-        false
+        // info!("main time:{},v_time:{}", a_time, v_time);
+        a_time > v_time
     }
     pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
         self.cancellation_token.cancel();
@@ -366,7 +375,7 @@ impl PresentDataManager {
         });
     }
 }
-impl Drop for PresentDataManager {
+impl Drop for MediaDataManager {
     fn drop(&mut self) {
         if self.is_running {
             self.cancellation_token.cancel();

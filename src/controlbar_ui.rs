@@ -7,7 +7,7 @@ use std::sync::{
 
 use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2};
 use egui_tiles::UiResponse;
-use time::{Time, format_description::OwnedFormatItem};
+use time::{Time, format_description::FormatDescriptionV3};
 use tokio::{runtime::Handle, sync::Notify};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
@@ -36,7 +36,7 @@ pub struct ControlbarUI {
     target_language: Arc<AtomicTargetLanguage>,
     transcribe_task_notify: Arc<Notify>,
     play_time: Time,
-    time_formatter: OwnedFormatItem,
+    time_formatter: FormatDescriptionV3<'static>,
 }
 impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
@@ -323,7 +323,7 @@ impl ControlbarUI {
                 .block_on(self.media_engine.media_source_info());
             if let Ok(info) = media_source_info {
                 now_str.push('|');
-                now_str.push_str(&info.end_time_formatted_string);
+                now_str.push_str(&info.end_time_formatted_str);
             }
             self.set_time_text(now_str);
         }

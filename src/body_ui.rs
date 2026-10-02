@@ -39,7 +39,7 @@ impl BodyUI {
                     ui.content_rect().height() / 2.0,
                 ))
                 .pivot(Align2::CENTER_CENTER)
-                .show(ui.ctx(), |ui| {
+                .show(ui, |ui| {
                     let visible_num = self.visible_num.load();
                     let play_or_pause_image_source =
                         if self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -60,23 +60,40 @@ impl BodyUI {
                             1.0,
                             Color32::from_white_alpha((10.0 * visible_num) as u8),
                         ));
-
-                    let btn_response = ui.add(play_or_pause_btn);
-                    if btn_response.clicked()
-                        || ui.ctx().input(|s| s.key_released(egui::Key::Space))
-                    {
-                        let pause_flag = &self.pause_flag;
-                        let previous_v = pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                        pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
-                        let audio_player = &self.audio_player;
-                        if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                            audio_player.pause();
-                        } else {
-                            audio_player.play();
-                            self.play_tasks_notify.notify_waiters();
-                            self.transcribe_task_notify.notify_one();
-                        }
-                    }
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgba_unmultiplied(
+                            15,
+                            23,
+                            42,
+                            (220.0 * visible_num) as u8,
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .shadow(egui::Shadow {
+                            offset: [0, -4],
+                            blur: 16,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
+                        })
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            let btn_response = ui.add(play_or_pause_btn);
+                            if btn_response.clicked()
+                                || ui.ctx().input(|s| s.key_released(egui::Key::Space))
+                            {
+                                let pause_flag = &self.pause_flag;
+                                let previous_v =
+                                    pause_flag.load(std::sync::atomic::Ordering::Relaxed);
+                                pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
+                                let audio_player = &self.audio_player;
+                                if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                    audio_player.pause();
+                                } else {
+                                    audio_player.play();
+                                    self.play_tasks_notify.notify_waiters();
+                                    self.transcribe_task_notify.notify_one();
+                                }
+                            }
+                        });
                 });
         }
     }
