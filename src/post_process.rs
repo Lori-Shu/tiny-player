@@ -464,7 +464,7 @@ impl Transcoder {
 
         if self
             .hardware_config_flag
-            .load(std::sync::atomic::Ordering::Acquire)
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
             if pixel_format != Pixel::P010LE
                 && pixel_format != Pixel::YUV420P10

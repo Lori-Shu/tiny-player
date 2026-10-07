@@ -23,10 +23,10 @@ use tracing::{Level, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod appui;
-mod async_clean;
 mod audio_playback;
 mod body_ui;
 mod caption_ui;
+mod clean;
 mod controlbar_ui;
 mod headbar_ui;
 mod internet_resource_ui;

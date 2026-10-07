@@ -42,7 +42,7 @@ impl ControlbarUI {
     pub fn paint_controlbar(&mut self, ui: &mut Ui) {
         if self
             .media_source_flag
-            .load(std::sync::atomic::Ordering::Acquire)
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
             let visible_num = self.visible_num.load();
             egui::Frame::new()
@@ -285,7 +285,7 @@ impl ControlbarUI {
         if let Ok(media_source_info) = &media_source_info
             && self
                 .media_source_flag
-                .load(std::sync::atomic::Ordering::Acquire)
+                .load(std::sync::atomic::Ordering::Relaxed)
             && !self.live_mode.load(std::sync::atomic::Ordering::Relaxed)
         {
             let play_ts = self
