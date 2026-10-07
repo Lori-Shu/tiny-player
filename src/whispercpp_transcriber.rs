@@ -3,6 +3,7 @@
 use std::{
     collections::VecDeque,
     io::Cursor,
+    process::{Child, Command},
     ptr::null_mut,
     str::FromStr,
     sync::{
@@ -25,19 +26,12 @@ use ffmpeg_the_third::{
 use flume::Sender;
 use hound::{WavSpec, WavWriter};
 use reqwest::Client;
-use tokio::{
-    process::{Child, Command},
-    runtime::Handle,
-    sync::{Notify, RwLock},
-    time::sleep,
-};
+use tokio::{runtime::Handle, sync::Notify, time::sleep};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
-use crate::{
-    CURRENT_EXE_PATH, PlayerResult, async_clean::AsyncCleaner, presentation::PLAY_SAMPLE_RATE,
-};
+use crate::{CURRENT_EXE_PATH, PlayerResult, presentation::PLAY_SAMPLE_RATE};
 /// this wrapper type should be protected manually to
 /// keep memory safe in multi threads
 /// means need to wrap an Arc and a Lock to use it in multi threads
@@ -54,7 +48,7 @@ pub struct Transcriber {
     audio_frame_bytes_sender: Sender<Vec<u8>>,
 }
 impl Transcriber {
-    pub fn new(args: TranscriberArgs) -> PlayerResult<Self> {
+    pub fn new(args: TranscriberArgs) -> PlayerResult<(Self, Child)> {
         let exe_path = CURRENT_EXE_PATH.as_ref().map_err(anyhow::Error::msg)?;
         let exe_dir = exe_path.parent().context("get parent_dir err")?;
         let models_dir_path = exe_dir.join("models");
@@ -101,6 +95,8 @@ impl Transcriber {
                 .arg(&random_port_str);
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
+
                 const CREATE_NO_WINDOW: u32 = 0x08000000;
                 whisper_command.creation_flags(CREATE_NO_WINDOW);
             }
@@ -118,11 +114,6 @@ impl Transcriber {
         let target_language = args.target_language.clone();
         let pause_flag = args.pause_flag.clone();
         let subtitle_sender = args.subtitle_sender.clone();
-        let mut async_cleaner = args.async_cleaner.blocking_write();
-        async_cleaner.add_transcriber_resources(
-            transcribe_task_cancel_token,
-            args.transcribe_task_notify.clone(),
-        );
         let _transcribe_task_handle = args.async_runtime.spawn(async move {
             let mut buffer_queue = VecDeque::new();
             let network_client = Client::new();
@@ -177,12 +168,14 @@ impl Transcriber {
                     info!("transcribe task waked");
                 }
             }
-            Self::clean_resources(child_process).await;
         });
-        Ok(Self {
-            audio_resampler: resampler_ctx,
-            audio_frame_bytes_sender,
-        })
+        Ok((
+            Self {
+                audio_resampler: resampler_ctx,
+                audio_frame_bytes_sender,
+            },
+            child_process,
+        ))
     }
     async fn transcribe(
         network_client: &Client,
@@ -291,17 +284,10 @@ impl Transcriber {
             .to_string();
         Ok(audio_scripts)
     }
-    async fn clean_resources(mut whisper_command: Child) {
-        if let Err(e) = whisper_command.kill().await {
-            warn!("exit whisper-server err:{:?}", e);
-        } else {
-            info!("exit whisper-server success");
-        }
-    }
 }
 impl Drop for Transcriber {
     fn drop(&mut self) {
-        warn!("start dropping Transcriber resources");
+        info!("start dropping Transcriber resources");
         // SAFETY:
         // This unsafe block is promised to be safe because
         // the inner operations do not alloc extra memory
@@ -360,5 +346,4 @@ pub struct TranscriberArgs {
     pause_flag: Arc<AtomicBool>,
     transcribe_task_notify: Arc<Notify>,
     target_language: Arc<AtomicTargetLanguage>,
-    async_cleaner: Arc<RwLock<AsyncCleaner>>,
 }

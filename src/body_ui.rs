@@ -31,7 +31,7 @@ impl BodyUI {
     fn paint_playpause_btn(&mut self, ui: &mut Ui) {
         if self
             .media_source_flag
-            .load(std::sync::atomic::Ordering::Acquire)
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
             egui::Area::new(Id::new("playpause button area"))
                 .fixed_pos(Pos2::new(

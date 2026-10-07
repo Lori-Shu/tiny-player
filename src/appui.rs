@@ -37,9 +37,10 @@ use tracing::{info, warn};
 
 use crate::{
     PlayerResult,
-    async_clean::AsyncCleaner,
+    audio_playback::AudioPlayer,
     body_ui::BodyUI,
     caption_ui::CaptionUI,
+    clean::ProcessCleaner,
     controlbar_ui::ControlbarUI,
     headbar_ui::{HeadbarUI, TreeBehavior, WidgetsPane},
     internet_resource_ui::InternetResourceUI,
@@ -64,7 +65,7 @@ struct UIFlags {
 pub struct AppUI {
     #[allow(unused)]
     async_runtime: Runtime,
-    async_cleaner: Arc<RwLock<AsyncCleaner>>,
+    process_cleaner: ProcessCleaner,
     video_texture_id: Arc<RwLock<TextureId>>,
     garbage_video_texture_receiver: Receiver<TextureId>,
     ui_flags: UIFlags,
@@ -120,8 +121,7 @@ impl eframe::App for AppUI {
         });
     }
     fn on_exit(&mut self) {
-        let mut async_cleaner = self.async_cleaner.blocking_write();
-        async_cleaner.start_clean();
+        self.process_cleaner.start_clean()
     }
 }
 struct PresentationTexture {
@@ -167,7 +167,6 @@ impl AppUI {
             .enable_all()
             .build()?;
         let rt = async_runtime.handle().clone();
-        let async_cleaner = Arc::new(RwLock::new(AsyncCleaner::new()));
         let (color_image, dyn_img) = if let ImageSource::Bytes { bytes, .. } = DEFAULT_BG_IMG {
             let dynimg = image::load_from_memory(&bytes)?;
             Ok((
@@ -196,7 +195,7 @@ impl AppUI {
         )?));
         let atomic_target_language = Arc::new(AtomicTargetLanguage::new());
         let subtitle_channel = flume::bounded(10);
-        let audio_player = Arc::new(crate::audio_playback::AudioPlayer::new()?);
+        let audio_player = Arc::new(AudioPlayer::new()?);
 
         let pause_flag = Arc::new(AtomicBool::new(false));
         let live_mode = Arc::new(AtomicBool::new(false));
@@ -211,9 +210,11 @@ impl AppUI {
             .pause_flag(pause_flag.clone())
             .target_language(atomic_target_language.clone())
             .transcribe_task_notify(transcribe_task_notify.clone())
-            .async_cleaner(async_cleaner.clone())
             .build();
-        let transcriber = Arc::new(RwLock::new(Transcriber::new(transcriber_args)?));
+        let (transcriber, child) = Transcriber::new(transcriber_args)?;
+
+        let process_cleaner = ProcessCleaner::new(child);
+        let transcriber = Arc::new(RwLock::new(transcriber));
         let bars_channel = flume::bounded(128);
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
@@ -397,7 +398,7 @@ impl AppUI {
             keep_awake,
             tile_tree,
             tile_tree_behavior,
-            async_cleaner,
+            process_cleaner,
             fade_animation,
             playlist_id: list_part,
         })
