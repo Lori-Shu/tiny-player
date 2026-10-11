@@ -23,7 +23,7 @@ use egui::{
     Button, Color32, ColorImage, ImageSource, Pos2, Rect, RichText, TextureHandle, TextureId, Ui,
 };
 
-use egui_tiles::{TileId, Tiles};
+use egui_tiles::{TileId, Tiles, Tree};
 use flume::{Receiver, bounded};
 
 use keepawake::KeepAwake;
@@ -42,7 +42,7 @@ use crate::{
     caption_ui::CaptionUI,
     clean::ProcessCleaner,
     controlbar_ui::ControlbarUI,
-    headbar_ui::{HeadbarUI, TreeBehavior, WidgetsPane},
+    headbar_ui::{HeadbarUI, MainBehavior, WidgetsPane},
     internet_resource_ui::InternetResourceUI,
     playlist_ui::PlayListUI,
     post_process::Transcoder,
@@ -74,8 +74,8 @@ pub struct AppUI {
     wgpu_render_state: Arc<RenderState>,
     state_resetter: Arc<StateResetter>,
     keep_awake: Option<KeepAwake>,
-    tile_tree: egui_tiles::Tree<WidgetsPane>,
-    tile_tree_behavior: TreeBehavior,
+    tile_tree: Tree<WidgetsPane>,
+    tile_tree_behavior: MainBehavior,
     fade_animation: FadeAnimation,
     playlist_id: TileId,
 }
@@ -121,7 +121,7 @@ impl eframe::App for AppUI {
         });
     }
     fn on_exit(&mut self) {
-        self.process_cleaner.start_clean()
+        self.process_cleaner.clean()
     }
 }
 struct PresentationTexture {
@@ -377,7 +377,7 @@ impl AppUI {
         let list_part = tiles.insert_pane(WidgetsPane::PlayList(Box::new(playlist_ui)));
         let root = tiles.insert_horizontal_tile(vec![view_part, list_part]);
         let tile_tree = egui_tiles::Tree::new("player_tile_tree", root, tiles);
-        let tile_tree_behavior = TreeBehavior::new();
+        let tile_tree_behavior = MainBehavior::new();
         let fade_animation = FadeAnimation::new();
         Ok(Self {
             async_runtime,

@@ -31,13 +31,13 @@ pub enum WidgetsPane {
     Controlbar(Box<ControlbarUI>),
     PlayList(Box<PlayListUI>),
 }
-pub struct TreeBehavior {}
-impl TreeBehavior {
+pub struct MainBehavior {}
+impl MainBehavior {
     pub fn new() -> Self {
         Self {}
     }
 }
-impl Behavior<WidgetsPane> for TreeBehavior {
+impl Behavior<WidgetsPane> for MainBehavior {
     fn is_container_resizable(
         &self,
         _tiles: &egui_tiles::Tiles<WidgetsPane>,

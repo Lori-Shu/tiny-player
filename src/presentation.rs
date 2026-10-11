@@ -325,14 +325,23 @@ impl MediaDataManager {
         let a_time = timestamp * 1000 * audio_time_base.numerator() as i64
             / audio_time_base.denominator() as i64;
 
-        // info!("main time:{},v_time:{}", a_time, v_time);
         // auto heal. synchronizing logic
         {
-            if (a_time - v_time).abs() > 2000 {
-                current_video_timestamp.store(timestamp, std::sync::atomic::Ordering::Relaxed);
-                return true;
+            if v_time - a_time > 1000 {
+                let heal_timestamp = (a_time + 500) * video_time_base.denominator() as i64
+                    / video_time_base.numerator() as i64
+                    / 1000;
+                // info!("main time:{},v_time:{}", a_time, v_time);
+                // info!(
+                //     "main timestamp:{},v_timestamp:{}",
+                //     timestamp, video_time_base
+                // );
+                // info!("heal_timestamp:{}", heal_timestamp);
+                current_video_timestamp.store(heal_timestamp, std::sync::atomic::Ordering::Relaxed);
+                return false;
             }
         }
+
         a_time > v_time
     }
     pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
