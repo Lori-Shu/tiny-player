@@ -83,7 +83,7 @@ impl BodyUI {
                                 let pause_flag = &self.pause_flag;
                                 let previous_v =
                                     pause_flag.load(std::sync::atomic::Ordering::Relaxed);
-                                pause_flag.store(!previous_v, std::sync::atomic::Ordering::Release);
+                                pause_flag.store(!previous_v, std::sync::atomic::Ordering::Relaxed);
                                 let audio_player = &self.audio_player;
                                 if pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
                                     audio_player.pause();

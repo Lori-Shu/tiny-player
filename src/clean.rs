@@ -10,7 +10,7 @@ impl ProcessCleaner {
     pub fn new(whisper_child: Child) -> Self {
         Self { whisper_child }
     }
-    pub fn start_clean(&mut self) {
+    pub fn clean(&mut self) {
         if let Err(e) = self.whisper_child.kill() {
             warn!("kill child process err:{}", e);
         }

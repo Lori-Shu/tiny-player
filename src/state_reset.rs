@@ -55,7 +55,7 @@ impl StateResetter {
         let this = self.clone();
         self.runtime_handle.spawn(async move {
             this.pause_flag
-                .store(true, std::sync::atomic::Ordering::Release);
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             this.current_main_stream_timestamp
                 .store(0, std::sync::atomic::Ordering::Relaxed);
             this.current_video_timestamp
