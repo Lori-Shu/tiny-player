@@ -82,30 +82,33 @@ impl StateResetter {
                     return;
                 }
                 this.audio_player.clear_source_queue();
-                let media_source_info =
-                    if let Ok(info) = this.media_engine.media_source_info().await {
-                        info
-                    } else {
-                        return;
-                    };
                 {
-                    let mut transcoder = this.transcoder.write().await;
-                    if let Some(args) = &media_source_info.transcoder_args {
-                        transcoder.set_params_for_space(
-                            args.colorspace,
-                            args.pixel_format,
-                            args.transfer_characteristic,
-                            [args.width, args.height],
-                        );
+                    let media_source_info =
+                        if let Ok(info) = this.media_engine.media_source_info().await {
+                            info
+                        } else {
+                            return;
+                        };
+                    if let Some(media_source_info) = &*media_source_info {
+                        {
+                            let mut transcoder = this.transcoder.write().await;
+                            if let Some(args) = &media_source_info.transcoder_args {
+                                transcoder.set_params_for_space(
+                                    args.colorspace,
+                                    args.pixel_format,
+                                    args.transfer_characteristic,
+                                    [args.width, args.height],
+                                );
+                            }
+                        }
+                        Self::reset_main_colorimg_to_bg(
+                            this.bg_dyn_img.clone(),
+                            &media_source_info.resolution_rect,
+                            this.main_color_image.clone(),
+                        )
+                        .await;
                     }
                 }
-                let video_rect = media_source_info.resolution_rect;
-                Self::reset_main_colorimg_to_bg(
-                    this.bg_dyn_img.clone(),
-                    &video_rect,
-                    this.main_color_image.clone(),
-                )
-                .await;
                 Self::reset_main_colorimg_to_cover(
                     &this.media_engine,
                     this.main_color_image.clone(),
@@ -121,9 +124,9 @@ impl StateResetter {
                 )
                 .await
                 {
-                    let update_video_texture_err_msg = format!("update_video_texture error:{}", e);
+                    let update_err_msg = format!("update_video_texture error:{}", e);
                     warn!("update_video_texture error:{:?}", e);
-                    *this.tip_window_msg.write().await = update_video_texture_err_msg;
+                    *this.tip_window_msg.write().await = update_err_msg;
                     this.tip_window_flag
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
@@ -133,6 +136,7 @@ impl StateResetter {
             }
         });
     }
+
     async fn reset_main_colorimg_to_bg(
         bg_dyn_img: Arc<DynamicImage>,
         video_rect: &[u32; 2],
@@ -167,14 +171,14 @@ impl StateResetter {
     ) {
         info!("start reset_main_colorimg_to_cover");
         if let Ok(media_source_info) = media_engine.media_source_info().await
+            && let Some(media_source_info) = &*media_source_info
             && let Some(cover_img_bytes) = &media_source_info.cover_pic_data
             && let Ok(img) = image::load_from_memory(cover_img_bytes)
         {
-            let video_frame_rect = media_source_info.resolution_rect;
-            let rgba8_img = if video_frame_rect[0] != 0 {
+            let rgba8_img = if media_source_info.resolution_rect[0] != 0 {
                 img.resize(
-                    video_frame_rect[0],
-                    video_frame_rect[1],
+                    media_source_info.resolution_rect[0],
+                    media_source_info.resolution_rect[1],
                     image::imageops::FilterType::Triangle,
                 )
                 .to_rgba8()

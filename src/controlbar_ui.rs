@@ -84,7 +84,9 @@ impl ControlbarUI {
                 let end_ts = self
                     .async_rt
                     .block_on(async {
-                        if let Ok(media_source_info) = self.media_engine.media_source_info().await {
+                        if let Ok(media_source_info) = self.media_engine.media_source_info().await
+                            && let Some(media_source_info) = &*media_source_info
+                        {
                             Some(media_source_info.end_timestamp)
                         } else {
                             None
@@ -278,52 +280,62 @@ impl ControlbarUI {
         self.time_text = s;
     }
     fn update_time(&mut self) {
-        let media_source_info = self
-            .async_rt
-            .block_on(self.media_engine.media_source_info());
+        let sec_num = {
+            let media_source_info = self
+                .async_rt
+                .block_on(self.media_engine.media_source_info());
 
-        if let Ok(media_source_info) = &media_source_info
-            && self
-                .media_source_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            && !self.live_mode.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let play_ts = self
-                .current_main_stream_timestamp
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let sec_num = {
-                if media_source_info.stream_existence_flags.audio {
-                    let audio_time_base = media_source_info.audio_time_base;
-                    play_ts * audio_time_base.numerator() as i64
-                        / audio_time_base.denominator() as i64
-                } else {
-                    let v_time_base = media_source_info.video_time_base;
+            if let Ok(media_source_info) = media_source_info
+                && let Some(media_source_info) = &*media_source_info
+                && self
+                    .media_source_flag
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                && !self.live_mode.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                let play_ts = self
+                    .current_main_stream_timestamp
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                {
+                    if media_source_info.stream_existence_flags.audio {
+                        let audio_time_base = media_source_info.audio_time_base;
+                        play_ts * audio_time_base.numerator() as i64
+                            / audio_time_base.denominator() as i64
+                    } else {
+                        let v_time_base = media_source_info.video_time_base;
 
-                    play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
-                }
-            };
-            let sec = (sec_num % 60) as u8;
-            let min_num = sec_num / 60;
-            let min = (min_num % 60) as u8;
-            let hour_num = min_num / 60;
-            let hour = hour_num as u8;
-            if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
-                if cur_time != self.play_time {
-                    self.play_time = cur_time;
+                        play_ts * v_time_base.numerator() as i64 / v_time_base.denominator() as i64
+                    }
                 }
             } else {
-                warn!("update time err!");
+                0
             }
+        };
+        let sec = (sec_num % 60) as u8;
+        let min_num = sec_num / 60;
+        let min = (min_num % 60) as u8;
+        let hour_num = min_num / 60;
+        let hour = hour_num as u8;
+        if let Ok(cur_time) = time::Time::from_hms(hour, min, sec) {
+            if cur_time != self.play_time {
+                self.play_time = cur_time;
+            }
+        } else {
+            warn!("update time err!");
         }
     }
     fn update_time_text(&mut self) {
         if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
-            let media_source_info = self
-                .async_rt
-                .block_on(self.media_engine.media_source_info());
-            if let Ok(info) = media_source_info {
-                now_str.push('|');
-                now_str.push_str(&info.end_time_formatted_str);
+            {
+                let media_source_info = self
+                    .async_rt
+                    .block_on(self.media_engine.media_source_info());
+
+                if let Ok(info) = media_source_info
+                    && let Some(info) = &*info
+                {
+                    now_str.push('|');
+                    now_str.push_str(&info.end_time_formatted_str);
+                }
             }
             self.set_time_text(now_str);
         }
