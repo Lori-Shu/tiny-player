@@ -229,7 +229,6 @@ impl AppUI {
             .audio_player(audio_player.clone())
             .cancellation_token(presentation_cancellation_token.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
-            .current_video_timestamp(current_video_timestamp.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
             .media_engine(media_engine.clone())

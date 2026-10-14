@@ -112,25 +112,34 @@ impl BodyUI {
             .async_runtime
             .block_on(self.media_engine.media_source_info());
         if let Ok(media_source_info) = media_source_info
+            && let Some(media_source_info) = &*media_source_info
             && media_source_info.stream_existence_flags.audio
             && !media_source_info.stream_existence_flags.video
         {
             let available_size = ui.available_size();
             ui.horizontal(|ui| {
                 let mut max = 0.0;
-                self.bars_buffer.iter().for_each(|i| {
-                    if i.abs() > max {
-                        max = i.abs();
-                    }
-                });
-                for (idx, j) in self.bars_buffer.iter().enumerate() {
-                    let portion = j.abs() / max;
+                let display_nums = self
+                    .bars_buffer
+                    .iter()
+                    .filter_map(|i| {
+                        if i.abs() == 80.0 {
+                            return None;
+                        }
+                        if i.abs() > max {
+                            max = i.abs();
+                        }
+                        Some(i.abs())
+                    })
+                    .collect::<Vec<f32>>();
+                for (idx, j) in display_nums.iter().enumerate() {
+                    let portion = j / max;
                     let bar = Button::new("".atom_size(Vec2::new(
                         available_size[0] / 64.0,
                         portion * available_size[1],
                     )))
                     .fill(Hsva::new(
-                        idx as f32 / self.bars_buffer.len() as f32,
+                        idx as f32 / display_nums.len() as f32,
                         0.75,
                         0.75,
                         0.75,

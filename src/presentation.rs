@@ -64,7 +64,6 @@ impl MediaDataManager {
         }
     }
     async fn execute_audio_task(audio_play_context: AudioPlayContext) {
-        let mut audio_cur_ts = None;
         if let Ok(mut frequency_analyzer) = FrequencyAnalyzer::new() {
             while !audio_play_context.cancellation_token.is_cancelled() {
                 /*
@@ -84,7 +83,7 @@ impl MediaDataManager {
                             .pause_flag
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if audio_play_context.audio_player.len() < 8 {
+                    let video_flag = {
                         let media_source_info = {
                             if let Ok(info) =
                                 audio_play_context.media_engine.media_source_info().await
@@ -94,61 +93,60 @@ impl MediaDataManager {
                                 return;
                             }
                         };
-                        if media_source_info.stream_existence_flags.audio {
-                            if audio_play_context.audio_frame_receiver.len() < 16 {
-                                audio_play_context.audio_decode_thread_notify.notify_one();
-                            }
-                            if let Some(Ok(audio_frame)) = audio_play_context
-                                .audio_frame_receiver
-                                .recv_async()
-                                .with_cancellation_token(&audio_play_context.cancellation_token)
+                        if let Some(media_source_info) = &*media_source_info {
+                            media_source_info.stream_existence_flags.video
+                        } else {
+                            false
+                        }
+                    };
+                    if audio_play_context.audio_player.len() < 8 {
+                        if audio_play_context.audio_frame_receiver.len() < 16 {
+                            audio_play_context.audio_decode_thread_notify.notify_one();
+                        }
+                        if let Some(Ok(audio_frame)) = audio_play_context
+                            .audio_frame_receiver
+                            .recv_async()
+                            .with_cancellation_token(&audio_play_context.cancellation_token)
+                            .await
+                            && let Some(pts) = audio_frame.pts()
+                        {
+                            if let Err(e) = audio_play_context
+                                .audio_player
+                                .append_source_data(audio_frame.clone())
                                 .await
-                                && let Some(pts) = audio_frame.pts()
                             {
-                                audio_cur_ts = Some(pts);
-                                if let Err(e) = audio_play_context
-                                    .audio_player
-                                    .append_source_data(audio_frame.clone())
+                                warn!("{}", e);
+                            }
+                            if !video_flag {
+                                let transcoder = audio_play_context.transcoder.read().await;
+                                transcoder.repaint_ui().await;
+                            }
+                            if TargetLanguage::None != audio_play_context.target_language.load()
+                                && let Err(e) = audio_play_context
+                                    .transcriber
+                                    .write()
                                     .await
-                                {
-                                    warn!("{}", e);
-                                }
-                                if !media_source_info.stream_existence_flags.video {
-                                    let transcoder = audio_play_context.transcoder.read().await;
-                                    transcoder.repaint_ui().await;
-                                }
-                                if TargetLanguage::None != audio_play_context.target_language.load()
-                                    && let Err(e) = audio_play_context
-                                        .transcriber
-                                        .write()
-                                        .await
-                                        .push_audio_frame(audio_frame.clone())
-                                        .await
-                                {
-                                    warn!("transcribe err:{:?}", e);
-                                }
-                                if !media_source_info.stream_existence_flags.video
-                                    && let Ok(items) =
-                                        frequency_analyzer.process_frame(audio_frame).await
-                                {
-                                    for i in items {
-                                        if let Err(e) =
-                                            audio_play_context.mel_bars_sender.send_async(i).await
-                                        {
-                                            warn!("send bars err:{:?}", e);
-                                        }
+                                    .push_audio_frame(audio_frame.clone())
+                                    .await
+                            {
+                                warn!("transcribe err:{:?}", e);
+                            }
+                            if !video_flag
+                                && let Ok(items) =
+                                    frequency_analyzer.process_frame(audio_frame).await
+                            {
+                                for i in items {
+                                    if let Err(e) =
+                                        audio_play_context.mel_bars_sender.send_async(i).await
+                                    {
+                                        warn!("send bars err:{:?}", e);
                                     }
                                 }
                             }
+                            audio_play_context
+                                .current_main_stream_timestamp
+                                .store(pts, std::sync::atomic::Ordering::Relaxed);
                         }
-
-                        MediaDataManager::update_current_timestamp(
-                            audio_play_context.current_main_stream_timestamp.clone(),
-                            audio_cur_ts,
-                            media_source_info.stream_existence_flags.audio,
-                            audio_play_context.current_video_timestamp.clone(),
-                        )
-                        .await;
                     } else {
                         sleep(Duration::from_millis(10)).await;
                     }
@@ -166,7 +164,9 @@ impl MediaDataManager {
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 let (audio_existence_flag, audio_time_base, video_time_base) = {
-                    if let Ok(info) = video_play_context.media_engine.media_source_info().await {
+                    if let Ok(info) = video_play_context.media_engine.media_source_info().await
+                        && let Some(info) = &*info
+                    {
                         (
                             info.stream_existence_flags.audio,
                             info.audio_time_base,
@@ -236,6 +236,9 @@ impl MediaDataManager {
                                     video_play_context
                                         .current_video_timestamp
                                         .store(f_pts, std::sync::atomic::Ordering::Relaxed);
+                                    video_play_context
+                                        .current_main_stream_timestamp
+                                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
                                     Ok(frame)
                                 } else {
                                     Err(anyhow::Error::msg("video frame pts is none"))
@@ -287,25 +290,7 @@ impl MediaDataManager {
             }
         }
     }
-    async fn update_current_timestamp(
-        main_stream_current_timestamp: Arc<AtomicI64>,
-        audio_pts: Option<i64>,
-        audio_existence_flag: bool,
-        current_video_timestamp: Arc<AtomicI64>,
-    ) {
-        /*
-        add audio frame data to the audio player
-         */
-        if audio_existence_flag {
-            if let Some(pts) = audio_pts {
-                // info!("store main  timestamp:{}",pts);
-                main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
-            }
-        } else {
-            let pts = current_video_timestamp.load(std::sync::atomic::Ordering::Relaxed);
-            main_stream_current_timestamp.store(pts, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
+
     /// if video time-audio time is too high(more than 1 second),default return true
     async fn should_video_chase_audio(
         audio_stream_flag: bool,
@@ -410,7 +395,6 @@ pub struct AudioPlayContext {
     transcriber: Arc<RwLock<Transcriber>>,
     audio_player: Arc<AudioPlayer>,
     current_main_stream_timestamp: Arc<AtomicI64>,
-    current_video_timestamp: Arc<AtomicI64>,
     pause_flag: Arc<AtomicBool>,
 
     audio_frame_receiver: Receiver<Audio>,
@@ -443,11 +427,12 @@ pub struct VideoPlayContext {
     live_mode: Arc<AtomicBool>,
 }
 const FFT_SIZE: usize = 1024;
+const FILTERBANK_SIZE: u32 = 32;
 struct FrequencyAnalyzer {
     fft: Arc<dyn Fft<f32>>,
     buffer: VecDeque<f32>,
-    mel_filterbank: Vec<Vec<f32>>,
-    hann_window: Vec<f32>,
+    mel_filterbank: [[f32; FFT_SIZE / 2 + 1]; FILTERBANK_SIZE as usize + 1],
+    hann_window: [f32; FFT_SIZE],
 }
 impl FrequencyAnalyzer {
     fn new() -> PlayerResult<Self> {
@@ -472,19 +457,19 @@ impl FrequencyAnalyzer {
         self.buffer
             .extend(bytemuck::cast_slice::<_, f32>(frame_bytes));
         let mut fft_res = vec![];
-        let mut buffer = vec![Complex { re: 0.0, im: 0.0 }; FFT_SIZE];
+        let mut complex_buffer = [Complex { re: 0.0, im: 0.0 }; FFT_SIZE];
         while self.buffer.len() >= FFT_SIZE {
-            for c in &mut buffer {
+            for c in &mut complex_buffer {
                 *c = Complex {
                     re: self.buffer.pop_front().context("pop floating-point err")?,
                     im: 0.0,
                 };
             }
-            for (idx, sample) in buffer.iter_mut().enumerate() {
+            for (idx, sample) in complex_buffer.iter_mut().enumerate() {
                 sample.re *= self.hann_window[idx];
             }
-            self.fft.process(&mut buffer);
-            let real_powers = buffer
+            self.fft.process(&mut complex_buffer);
+            let real_powers = complex_buffer
                 .iter()
                 .take(FFT_SIZE / 2 + 1)
                 .map(|i| i.norm_sqr())
@@ -492,13 +477,13 @@ impl FrequencyAnalyzer {
             fft_res.push(real_powers);
         }
         let mut res = vec![];
-        for i in &fft_res {
+        for fft_coe in &fft_res {
             let mut bar_nums = vec![];
-            for j in &self.mel_filterbank {
-                let reduce_res = j
+            for filterbank in &self.mel_filterbank {
+                let reduce_res = filterbank
                     .iter()
                     .enumerate()
-                    .map(|(idx, mel)| *mel * i[idx])
+                    .map(|(idx, mel)| *mel * fft_coe[idx])
                     .reduce(|i, j| i + j)
                     .context("reduce mel result err")?;
                 bar_nums.push(reduce_res);
@@ -506,42 +491,45 @@ impl FrequencyAnalyzer {
             bar_nums
                 .iter_mut()
                 .for_each(|i| *i = 10.0 * (*i + 1e-8).log10());
+            // info!("barnums:{:?}",bar_nums);
             res.push(bar_nums);
         }
         Ok(res)
     }
-    fn construct_hann_window() -> Vec<f32> {
-        (0..FFT_SIZE)
-            .map(|n| 0.5 * (1.0 - (2.0 * PI * n as f32 / (FFT_SIZE - 1) as f32).cos()))
-            .collect()
+    fn construct_hann_window() -> [f32; FFT_SIZE] {
+        let mut window = [0.0; FFT_SIZE];
+        for idx in 0..FFT_SIZE {
+            window[idx] = 0.5 * (1.0 - (2.0 * PI * idx as f32 / (FFT_SIZE - 1) as f32).cos());
+        }
+        window
     }
-    fn construct_mel_filterbank() -> PlayerResult<Vec<Vec<f32>>> {
-        let filterbank_size = 32;
-        let f_min = 20_u32;
-        let f_max = PLAY_SAMPLE_RATE / 2;
-        let mel_min = 2595.0 * ((1.0 + f_min as f32) / 700.0).log10();
-        let mel_max = 2595.0 * ((1.0 + f_max as f32) / 700.0).log10();
-        let step = (mel_max - mel_min) / (filterbank_size as f32 + 1.0);
-        let mut mel_points = vec![mel_min];
+    fn construct_mel_filterbank()
+    -> PlayerResult<[[f32; FFT_SIZE / 2 + 1]; FILTERBANK_SIZE as usize + 1]> {
+        const F_MIN: u32 = 20;
+        const F_MAX: u32 = PLAY_SAMPLE_RATE / 2;
+        let mel_min = 2595.0 * ((1.0 + F_MIN as f32) / 700.0).log10();
+        let mel_max = 2595.0 * ((1.0 + F_MAX as f32) / 700.0).log10();
+        let step = (mel_max - mel_min) / FILTERBANK_SIZE as f32;
+        let mut mel_points = [0.0; FILTERBANK_SIZE as usize + 1];
         let mut tmp = mel_min;
-        for _ in 0..(filterbank_size + 1) {
+        for idx in 0..(FILTERBANK_SIZE as usize + 1) {
+            mel_points[idx] = tmp;
             tmp += step;
-            mel_points.push(tmp);
         }
         mel_points
             .iter_mut()
             .for_each(|point| *point = 700.0 * (10.0_f32.powf(*point / 2595.0) - 1.0));
         let bins = mel_points
             .iter()
-            .map(|f| ((FFT_SIZE as f32 + 1.0) * (*f) / PLAY_SAMPLE_RATE as f32) as usize)
+            .map(|f| ((FFT_SIZE as f32) * (*f) / PLAY_SAMPLE_RATE as f32) as usize)
             .collect::<Vec<usize>>();
-        let mut mel_filterbank = vec![];
-        for i in 0..filterbank_size as usize {
+        let mut mel_filterbank = [[0.0; FFT_SIZE / 2 + 1]; FILTERBANK_SIZE as usize + 1];
+        for i in 0..(FILTERBANK_SIZE as usize + 1 - 2) {
             let l = bins[i];
             let c = bins[i + 1];
             let r = bins[i + 2];
 
-            let mut hs = vec![0.0; FFT_SIZE / 2 + 1];
+            let mut hs = [0.0; FFT_SIZE / 2 + 1];
             if c == l || r == c {
                 continue;
             }
@@ -552,7 +540,7 @@ impl FrequencyAnalyzer {
                     *j = ((r - idx) as f32) / (r - c) as f32;
                 }
             }
-            mel_filterbank.push(hs);
+            mel_filterbank[i] = hs;
         }
         Ok(mel_filterbank)
     }
