@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use egui::{AtomExt, Color32, CornerRadius, Layout, RichText, Stroke, Ui, Vec2};
-use egui_tiles::UiResponse;
+use egui::{AtomExt, Color32, CornerRadius, Layout, Response, RichText, Stroke, Ui, Vec2, Widget};
 use flume::Receiver;
 use typed_builder::TypedBuilder;
 
@@ -41,8 +40,10 @@ impl CaptionUI {
             }
         });
     }
-    pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+}
+impl Widget for &mut CaptionUI {
+    fn ui(self, ui: &mut Ui) -> Response {
         self.paint_subtitle(ui);
-        UiResponse::None
+        ui.response()
     }
 }

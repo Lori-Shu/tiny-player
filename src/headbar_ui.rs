@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use egui::{AtomExt, Button, Color32, CornerRadius, Image, Stroke, Ui, Vec2};
+use egui::{AtomExt, Button, Color32, CornerRadius, Image, Response, Ui, Vec2, Widget};
 use egui_file_dialog::FileDialog;
 use egui_tiles::{Behavior, UiResponse};
 use tracing::info;
@@ -19,17 +19,17 @@ use crate::{
     caption_ui::CaptionUI,
     controlbar_ui::ControlbarUI,
     internet_resource_ui::InternetResourceUI,
-    playlist_ui::PlayListUI,
+    playlist_ui::PlaylistUI,
     resources::{PLAY_LIST_IMG, TV_IMG, VIDEO_FILE_IMG},
     state_reset::StateResetter,
 };
 
-pub enum WidgetsPane {
+pub enum TilesTree {
     Headbar(Box<HeadbarUI>),
     Body(Box<BodyUI>),
     Caption(Box<CaptionUI>),
     Controlbar(Box<ControlbarUI>),
-    PlayList(Box<PlayListUI>),
+    Playlist(Box<PlaylistUI>),
 }
 pub struct MainBehavior {}
 impl MainBehavior {
@@ -37,10 +37,10 @@ impl MainBehavior {
         Self {}
     }
 }
-impl Behavior<WidgetsPane> for MainBehavior {
+impl Behavior<TilesTree> for MainBehavior {
     fn is_container_resizable(
         &self,
-        _tiles: &egui_tiles::Tiles<WidgetsPane>,
+        _tiles: &egui_tiles::Tiles<TilesTree>,
         _tile_id: egui_tiles::TileId,
     ) -> bool {
         true
@@ -52,18 +52,29 @@ impl Behavior<WidgetsPane> for MainBehavior {
         &mut self,
         ui: &mut Ui,
         _tile_id: egui_tiles::TileId,
-        pane: &mut WidgetsPane,
+        pane: &mut TilesTree,
     ) -> UiResponse {
         match pane {
-            WidgetsPane::Headbar(headbar) => headbar.ui(ui),
-            WidgetsPane::Body(body) => body.ui(ui),
-            WidgetsPane::Caption(caption) => caption.ui(ui),
-            WidgetsPane::Controlbar(controlbar) => controlbar.ui(ui),
-            WidgetsPane::PlayList(playlist) => playlist.ui(ui),
+            TilesTree::Headbar(headbar) => {
+                ui.add(headbar.as_mut());
+            }
+            TilesTree::Body(body) => {
+                ui.add(body.as_mut());
+            }
+            TilesTree::Caption(caption) => {
+                ui.add(caption.as_mut());
+            }
+            TilesTree::Controlbar(controlbar) => {
+                ui.add(controlbar.as_mut());
+            }
+            TilesTree::Playlist(playlist) => {
+                ui.add(playlist.as_mut());
+            }
         }
+        UiResponse::None
     }
 
-    fn tab_title_for_pane(&mut self, _pane: &WidgetsPane) -> egui::WidgetText {
+    fn tab_title_for_pane(&mut self, _pane: &TilesTree) -> egui::WidgetText {
         egui::WidgetText::Text(String::new())
     }
 }
@@ -82,36 +93,34 @@ pub struct HeadbarUI {
 impl HeadbarUI {
     pub fn paint_file_btn(&mut self, ui: &mut Ui) {
         let visible_num = self.visible_num.load();
-        let btn_rect = Vec2::new(
-            ui.ctx().content_rect().width() / 20.0,
-            ui.ctx().content_rect().width() / 20.0,
-        );
+        let btn_rect = Vec2::new(50.0, 50.0);
         let file_image_button = egui::Button::new(
             Image::from(VIDEO_FILE_IMG)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(btn_rect),
         )
-        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_white_alpha((10.0 * visible_num) as u8),
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            51,
+            65,
+            85,
+            (220.0 * visible_num) as u8,
         ))
         .corner_radius(CornerRadius::from(30));
-
         let file_img_btn_response = ui.add(file_image_button);
         if file_img_btn_response.clicked() {
             self.open_file_dialog.pick_file();
         }
+        file_img_btn_response.on_hover_text("open a media file");
         let mut file_path = None;
 
-        self.open_file_dialog.update(ui.ctx());
+        self.open_file_dialog.update(ui);
         if let Some(p) = self.open_file_dialog.take_picked() {
             info!("path selected{:#?}", p);
             file_path = Some(p.to_path_buf())
         }
 
         if let Some(p) = file_path {
-            self.state_resetter.reset_media_input(p.clone());
+            self.state_resetter.reset_media_input(&p);
             if let Some(p_str) = p.to_str() {
                 self.live_mode
                     .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -170,10 +179,11 @@ impl HeadbarUI {
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
-        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_white_alpha((10.0 * visible_num) as u8),
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            51,
+            65,
+            85,
+            (220.0 * visible_num) as u8,
         ))
         .corner_radius(CornerRadius::from(30));
 
@@ -182,15 +192,17 @@ impl HeadbarUI {
             self.playlist_flag
                 .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
+        btn_response.on_hover_text("open the playlist tile");
         let open_btn = Button::new(
             Image::from(TV_IMG)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
-        .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_white_alpha((10.0 * visible_num) as u8),
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            51,
+            65,
+            85,
+            (220.0 * visible_num) as u8,
         ))
         .corner_radius(CornerRadius::from(30));
 
@@ -199,15 +211,17 @@ impl HeadbarUI {
             self.internet_list_window_flag
                 .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         }
+        btn_response.on_hover_text("open the remote sources window");
         if self
             .internet_list_window_flag
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.internet_resource_ui.show(ui);
+            ui.add(&mut self.internet_resource_ui);
         }
     }
-
-    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+}
+impl Widget for &mut HeadbarUI {
+    fn ui(self, ui: &mut Ui) -> Response {
         self.paint_frame_info_text(ui);
         let visible_num = self.visible_num.load();
         egui::Frame::new()
@@ -233,6 +247,6 @@ impl HeadbarUI {
                     });
                 });
             });
-        UiResponse::None
+        ui.response()
     }
 }

@@ -5,8 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI64},
 };
 
-use egui::{AtomExt, Button, Color32, Image, Layout, RichText, Stroke, Ui, Vec2};
-use egui_tiles::UiResponse;
+use egui::{AtomExt, Button, Color32, Image, Layout, Response, RichText, Ui, Vec2, Widget};
 use time::{Time, format_description::FormatDescriptionV3};
 use tokio::{runtime::Handle, sync::Notify};
 use tracing::{info, warn};
@@ -71,52 +70,49 @@ impl ControlbarUI {
         }
     }
     fn paint_progress_slider(&mut self, ui: &mut Ui) {
-        let mut slider_color = Color32::ORANGE.to_srgba_unmultiplied();
-        slider_color[3] = 255;
         ui.scope(|ui| {
             let visible_num = self.visible_num.load();
-            ui.set_opacity(visible_num);
-
+            let slider_color =
+                Color32::from_rgba_unmultiplied(6, 182, 212, (220.0 * visible_num) as u8);
             let (mut ts, end_ts) = if !self.live_mode.load(std::sync::atomic::Ordering::Relaxed) {
                 let ts = self
                     .current_main_stream_timestamp
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let end_ts = self
-                    .async_rt
-                    .block_on(async {
-                        if let Ok(media_source_info) = self.media_engine.media_source_info().await
-                            && let Some(media_source_info) = &*media_source_info
-                        {
-                            Some(media_source_info.end_timestamp)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
+                let end_ts = {
+                    if let Ok(media_source_info) = self.media_engine.try_borrow_media_source_info()
+                    {
+                        media_source_info
+                            .as_ref()
+                            .map(|media_source_info| media_source_info.end_timestamp)
+                    } else {
+                        None
+                    }
+                    .unwrap_or_default()
+                };
                 (ts, end_ts)
             } else {
                 (0, 0)
             };
+            // this is merely for the slider thumb to become transparent
+            // ui.set_opacity(visible_num);
             let progress_slider = egui::Slider::new(&mut ts, 0..=end_ts)
                 .show_value(false)
                 .handle_shape(egui::style::HandleShape::Circle);
-            let mut slider_width_style = egui::style::Style::default();
-            slider_width_style.spacing.slider_width = ui.available_width() / 2.0;
-            slider_width_style.spacing.slider_rail_height = 4.0;
-            slider_width_style.visuals.widgets.inactive.bg_fill =
-                Color32::from_rgba_unmultiplied(255, 165, 0, 200);
-            ui.set_style(slider_width_style);
+            {
+                let available_width = ui.available_width();
+                let slider_style = ui.style_mut();
+                slider_style.spacing.slider_width = available_width / 2.0;
+                slider_style.spacing.slider_rail_height = 4.0;
+                slider_style.visuals.widgets.inactive.bg_fill = slider_color;
+            }
             let slider_response = ui.add(progress_slider);
             let _ = ui.add(
-                Button::new(RichText::new(self.time_text.clone()).size(20.0).color(
-                    Color32::from_rgba_unmultiplied(
-                        slider_color[0],
-                        slider_color[1],
-                        slider_color[2],
-                        slider_color[3],
-                    ),
-                ))
-                .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8)),
+                Button::new(
+                    RichText::new(&self.time_text)
+                        .size(20.0)
+                        .color(slider_color),
+                )
+                .fill(Color32::from_white_alpha((32.0 * visible_num) as u8)),
             );
             if slider_response.drag_stopped() {
                 info!("slider dragged!");
@@ -138,11 +134,13 @@ impl ControlbarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_white_alpha((10.0 * visible_num) as u8),
-            ));
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                51,
+                65,
+                85,
+                (220.0 * visible_num) as u8,
+            ))
+            .corner_radius(30);
             let btn_response = ui.add(subtitle_btn);
             if btn_response.clicked() {
                 self.show_subtitle_options_flag = !self.show_subtitle_options_flag;
@@ -193,11 +191,13 @@ impl ControlbarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_white_alpha((10.0 * visible_num) as u8),
-            ));
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                51,
+                65,
+                85,
+                (220.0 * visible_num) as u8,
+            ))
+            .corner_radius(30);
             let btn_response = ui.add(volumn_img_btn);
             if btn_response.clicked() {
                 self.show_volume_slider_flag = !self.show_volume_slider_flag;
@@ -205,7 +205,7 @@ impl ControlbarUI {
             if self.show_volume_slider_flag {
                 let visible_num = self.visible_num.load();
                 let audio_player = &mut self.audio_player;
-                egui::Area::new(egui::Id::new("volume_slider_popup"))
+                egui::Area::new(egui::Id::unique("volume_slider_popup"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(btn_response.rect.left_top() - egui::vec2(-32.0, 180.0))
                     .show(ui.ctx(), |ui| {
@@ -223,26 +223,27 @@ impl ControlbarUI {
                                 spread: 0,
                                 color: egui::Color32::from_black_alpha((80.0 * visible_num) as u8),
                             })
-                            .inner_margin(egui::Margin::same(12))
+                            .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
-                                ui.set_opacity(visible_num);
+                                let slider_color = Color32::from_rgba_unmultiplied(
+                                    6,
+                                    182,
+                                    212,
+                                    (220.0 * visible_num) as u8,
+                                );
+                                // this is merely for the slider thumb to become transparent
+                                // ui.set_opacity(visible_num);
                                 let volume_slider =
                                     egui::Slider::new(&mut self.audio_volume, 0.0..=2.0)
                                         .vertical()
-                                        .show_value(false);
-                                let mut slider_style = egui::style::Style::default();
-                                slider_style.spacing.slider_width = 150.0;
-                                slider_style.spacing.slider_rail_height = 10.0;
-                                slider_style.spacing.interact_size = Vec2::new(20.0, 20.0);
-                                slider_style.visuals.extreme_bg_color =
-                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                                slider_style.visuals.selection.bg_fill =
-                                    Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-                                slider_style.visuals.widgets.active.bg_fill =
-                                    Color32::from_rgba_unmultiplied(0, 0, 100, 100);
-                                slider_style.visuals.widgets.inactive.bg_fill =
-                                    Color32::from_rgba_unmultiplied(255, 165, 0, 100);
-                                ui.set_style(slider_style);
+                                        .show_value(false)
+                                        .handle_shape(egui::style::HandleShape::Circle);
+                                {
+                                    let slider_style = ui.style_mut();
+                                    slider_style.spacing.slider_width = 150.0;
+                                    slider_style.spacing.slider_rail_height = 4.0;
+                                    slider_style.visuals.widgets.inactive.bg_fill = slider_color;
+                                }
                                 let mut slider_response = ui.add(volume_slider);
                                 slider_response = slider_response
                                     .on_hover_text((self.audio_volume * 100.0).to_string());
@@ -263,11 +264,13 @@ impl ControlbarUI {
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
-            .fill(egui::Color32::from_white_alpha((10.0 * visible_num) as u8))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_white_alpha((10.0 * visible_num) as u8),
-            ));
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                51,
+                65,
+                85,
+                (220.0 * visible_num) as u8,
+            ))
+            .corner_radius(30);
             let btn_response = ui.add(fullscreen_image_btn);
             if btn_response.clicked() {
                 self.fullscreen_flag = !self.fullscreen_flag;
@@ -281,11 +284,7 @@ impl ControlbarUI {
     }
     fn update_time(&mut self) {
         let sec_num = {
-            let media_source_info = self
-                .async_rt
-                .block_on(self.media_engine.media_source_info());
-
-            if let Ok(media_source_info) = media_source_info
+            if let Ok(media_source_info) = self.media_engine.try_borrow_media_source_info()
                 && let Some(media_source_info) = &*media_source_info
                 && self
                     .media_source_flag
@@ -310,6 +309,7 @@ impl ControlbarUI {
                 0
             }
         };
+
         let sec = (sec_num % 60) as u8;
         let min_num = sec_num / 60;
         let min = (min_num % 60) as u8;
@@ -326,12 +326,8 @@ impl ControlbarUI {
     fn update_time_text(&mut self) {
         if let Ok(mut now_str) = self.play_time.format(&self.time_formatter) {
             {
-                let media_source_info = self
-                    .async_rt
-                    .block_on(self.media_engine.media_source_info());
-
-                if let Ok(info) = media_source_info
-                    && let Some(info) = &*info
+                if let Ok(media_source_info) = self.media_engine.try_borrow_media_source_info()
+                    && let Some(info) = &*media_source_info
                 {
                     now_str.push('|');
                     now_str.push_str(&info.end_time_formatted_str);
@@ -340,13 +336,15 @@ impl ControlbarUI {
             self.set_time_text(now_str);
         }
     }
-    pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+}
+impl Widget for &mut ControlbarUI {
+    fn ui(self, ui: &mut Ui) -> Response {
         self.update_time();
         self.update_time_text();
         ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
             ui.add_space(10.0);
             self.paint_controlbar(ui);
         });
-        UiResponse::None
+        ui.response()
     }
 }

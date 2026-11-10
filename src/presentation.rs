@@ -10,7 +10,6 @@ use std::{
 };
 
 use anyhow::Context;
-use eframe::wgpu::Texture;
 use ffmpeg_the_third::{
     Rational,
     frame::{Audio, Video},
@@ -40,6 +39,7 @@ pub struct MediaDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
     cancellation_token: Arc<CancellationToken>,
+    tasks_notify: Arc<Notify>,
     audio_play_context: AudioPlayContext,
     video_play_context: VideoPlayContext,
     runtime_handle: Handle,
@@ -53,6 +53,7 @@ impl MediaDataManager {
         video_play_context: VideoPlayContext,
     ) -> Self {
         let is_running = false;
+        let tasks_notify = audio_play_context.play_tasks_notify.clone();
         Self {
             audio_thread_handle: None,
             video_thread_handle: None,
@@ -61,6 +62,7 @@ impl MediaDataManager {
             audio_play_context,
             video_play_context,
             cancellation_token,
+            tasks_notify,
         }
     }
     async fn execute_audio_task(audio_play_context: AudioPlayContext) {
@@ -84,15 +86,8 @@ impl MediaDataManager {
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     let video_flag = {
-                        let media_source_info = {
-                            if let Ok(info) =
-                                audio_play_context.media_engine.media_source_info().await
-                            {
-                                info
-                            } else {
-                                return;
-                            }
-                        };
+                        let media_source_info =
+                            audio_play_context.media_engine.media_source_info().await;
                         if let Some(media_source_info) = &*media_source_info {
                             media_source_info.stream_existence_flags.video
                         } else {
@@ -112,7 +107,7 @@ impl MediaDataManager {
                         {
                             if let Err(e) = audio_play_context
                                 .audio_player
-                                .append_source_data(audio_frame.clone())
+                                .append_source_data(&audio_frame)
                                 .await
                             {
                                 warn!("{}", e);
@@ -126,7 +121,7 @@ impl MediaDataManager {
                                     .transcriber
                                     .write()
                                     .await
-                                    .push_audio_frame(audio_frame.clone())
+                                    .push_audio_frame(&audio_frame)
                                     .await
                             {
                                 warn!("transcribe err:{:?}", e);
@@ -163,127 +158,79 @@ impl MediaDataManager {
                 .pause_flag
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
-                let (audio_existence_flag, audio_time_base, video_time_base) = {
-                    if let Ok(info) = video_play_context.media_engine.media_source_info().await
-                        && let Some(info) = &*info
-                    {
+                if let Some((audio_existence_flag, audio_time_base, video_time_base)) = {
+                    let media_source_info =
+                        video_play_context.media_engine.media_source_info().await;
+                    media_source_info.as_ref().map(|info| {
                         (
                             info.stream_existence_flags.audio,
                             info.audio_time_base,
                             info.video_time_base,
                         )
-                    } else {
-                        return;
+                    })
+                } {
+                    if is_play_end(
+                        &video_play_context.live_mode,
+                        &video_play_context.audio_frame_receiver,
+                        &video_play_context.video_frame_receiver,
+                        &video_play_context.demux_eof_flag,
+                    ) {
+                        video_play_context
+                            .pause_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                };
-                if is_play_end(
-                    &video_play_context.live_mode,
-                    &video_play_context.audio_frame_receiver,
-                    &video_play_context.video_frame_receiver,
-                    &video_play_context.demux_eof_flag,
-                ) {
-                    video_play_context
-                        .pause_flag
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                if MediaDataManager::should_video_chase_audio(
-                    audio_existence_flag,
-                    audio_time_base,
-                    video_time_base,
-                    video_play_context.current_main_stream_timestamp.clone(),
-                    video_play_context.current_video_timestamp.clone(),
-                )
-                .await
-                {
-                    let ins_now = Instant::now();
-                    if video_play_context.video_frame_receiver.len() < 16 {
-                        video_play_context.video_decode_thread_notify.notify_one();
-                    }
-                    let frame_result = if !audio_existence_flag {
-                        if ins_now.checked_duration_since(change_instant).is_some() {
+                    if MediaDataManager::should_video_chase_audio(
+                        &audio_existence_flag,
+                        &audio_time_base,
+                        &video_time_base,
+                        &video_play_context.current_main_stream_timestamp,
+                        &video_play_context.current_video_timestamp,
+                    )
+                    .await
+                    {
+                        if video_play_context.video_frame_receiver.len() < 16 {
+                            video_play_context.video_decode_thread_notify.notify_one();
+                        }
+                        let frame_result = if !audio_existence_flag {
+                            Self::sync_single_video_stream(
+                                &mut change_instant,
+                                &video_play_context,
+                                &video_time_base,
+                            )
+                            .await
+                        } else {
                             if let Some(Ok(frame)) = video_play_context
                                 .video_frame_receiver
                                 .recv_async()
                                 .with_cancellation_token(&video_play_context.cancellation_token)
                                 .await
                             {
-                                if let Some(f_pts) = frame.pts() {
-                                    let cur_pts = video_play_context
-                                        .current_video_timestamp
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-
-                                    if f_pts > 0
-                                        && ((f_pts - cur_pts)
-                                            * 1000
-                                            * video_time_base.numerator() as i64
-                                            / video_time_base.denominator() as i64)
-                                            < 1000
-                                    {
-                                        if let Some(ins) =
-                                            change_instant.checked_add(Duration::from_millis(
-                                                ((f_pts - cur_pts)
-                                                    * 1000
-                                                    * video_time_base.numerator() as i64
-                                                    / video_time_base.denominator() as i64)
-                                                    as u64,
-                                            ))
-                                        {
-                                            change_instant = ins;
-                                        }
-                                    } else {
-                                        change_instant = ins_now;
-                                    }
+                                if let Some(pts) = frame.pts() {
                                     video_play_context
                                         .current_video_timestamp
-                                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
-                                    video_play_context
-                                        .current_main_stream_timestamp
-                                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
-                                    Ok(frame)
-                                } else {
-                                    Err(anyhow::Error::msg("video frame pts is none"))
+                                        .store(pts, std::sync::atomic::Ordering::Relaxed);
                                 }
+                                Ok(frame)
                             } else {
                                 Err(anyhow::Error::msg("try video frame failed"))
                             }
-                        } else {
-                            Err(anyhow::Error::msg("video wait for its present time"))
-                        }
-                    } else {
-                        if let Some(Ok(frame)) = video_play_context
-                            .video_frame_receiver
-                            .recv_async()
-                            .with_cancellation_token(&video_play_context.cancellation_token)
-                            .await
-                        {
-                            if let Some(pts) = frame.pts() {
-                                video_play_context
-                                    .current_video_timestamp
-                                    .store(pts, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            Ok(frame)
-                        } else {
-                            Err(anyhow::Error::msg("try video frame failed"))
-                        }
-                    };
-                    match frame_result {
-                        Ok(frame) => {
-                            let mut transcoder = video_play_context.transcoder.write().await;
+                        };
+                        match frame_result {
+                            Ok(frame) => {
+                                let mut transcoder = video_play_context.transcoder.write().await;
 
-                            if let Err(e) = transcoder
-                                .render_video(video_play_context.video_texture.clone(), frame)
-                                .await
-                            {
+                                if let Err(e) = transcoder.render_video(frame).await {
+                                    warn!("{}", e);
+                                }
+                                transcoder.repaint_ui().await;
+                            }
+                            Err(e) => {
                                 warn!("{}", e);
                             }
-                            transcoder.repaint_ui().await;
                         }
-                        Err(e) => {
-                            warn!("{}", e);
-                        }
+                    } else {
+                        sleep(Duration::from_millis(8)).await;
                     }
-                } else {
-                    sleep(Duration::from_millis(8)).await;
                 }
             } else {
                 video_play_context.play_tasks_notify.notified().await;
@@ -293,11 +240,11 @@ impl MediaDataManager {
 
     /// if video time-audio time is too high(more than 1 second),default return true
     async fn should_video_chase_audio(
-        audio_stream_flag: bool,
-        audio_time_base: Rational,
-        video_time_base: Rational,
-        main_stream_current_timestamp: Arc<AtomicI64>,
-        current_video_timestamp: Arc<AtomicI64>,
+        audio_stream_flag: &bool,
+        audio_time_base: &Rational,
+        video_time_base: &Rational,
+        main_stream_current_timestamp: &AtomicI64,
+        current_video_timestamp: &AtomicI64,
     ) -> bool {
         if !audio_stream_flag {
             return true;
@@ -331,43 +278,107 @@ impl MediaDataManager {
     }
     pub async fn cancel_present_tasks(&mut self) -> PlayerResult<()> {
         self.cancellation_token.cancel();
-        Self::join_tasks(
-            self.runtime_handle.clone(),
-            self.audio_thread_handle
-                .take()
-                .context("get audio_thread_handle err")?,
-            self.video_thread_handle
-                .take()
-                .context("get audio_thread_handle err")?,
-        );
+        self.tasks_notify.notify_one();
+        let audio_thread_handle = self.audio_thread_handle.take();
+        let video_thread_handle = self.video_thread_handle.take();
+        self.join_tasks(audio_thread_handle, video_thread_handle)
+            .await?;
         self.is_running = false;
         Ok(())
     }
-    pub fn spawn_present_tasks(&mut self) {
+    pub async fn spawn_present_tasks(&mut self) {
         self.cancellation_token = Arc::new(CancellationToken::new());
-        self.audio_play_context.cancellation_token = self.cancellation_token.clone();
-        self.audio_thread_handle = Some(
-            self.runtime_handle
-                .spawn(Self::execute_audio_task(self.audio_play_context.clone())),
-        );
-        self.video_play_context.cancellation_token = self.cancellation_token.clone();
-        self.video_thread_handle = Some(
-            self.runtime_handle
-                .spawn(Self::execute_video_task(self.video_play_context.clone())),
-        );
-        self.is_running = true;
+        {
+            let media_source_info = self
+                .audio_play_context
+                .media_engine
+                .media_source_info()
+                .await;
+            if let Some(media_source_info) = &*media_source_info {
+                if media_source_info.stream_existence_flags.audio {
+                    self.audio_play_context.cancellation_token = self.cancellation_token.clone();
+                    let audio_play_context = self.audio_play_context.clone();
+                    self.audio_thread_handle = Some(
+                        self.runtime_handle
+                            .spawn(Self::execute_audio_task(audio_play_context)),
+                    );
+                }
+                if media_source_info.stream_existence_flags.video {
+                    self.video_play_context.cancellation_token = self.cancellation_token.clone();
+                    let video_play_context = self.video_play_context.clone();
+                    self.video_thread_handle = Some(
+                        self.runtime_handle
+                            .spawn(Self::execute_video_task(video_play_context)),
+                    );
+                }
+            }
+            self.is_running = true;
+        }
     }
-    fn join_tasks(
-        runtime: Handle,
-        audio_task_join_handle: JoinHandle<()>,
-        video_task_join_handle: JoinHandle<()>,
-    ) {
-        runtime.spawn(async move {
+    async fn join_tasks(
+        &self,
+        audio_task_join_handle: Option<JoinHandle<()>>,
+        video_task_join_handle: Option<JoinHandle<()>>,
+    ) -> PlayerResult<()> {
+        if let Some(audio_task_join_handle) = audio_task_join_handle {
+            info!("joining audio task!");
             audio_task_join_handle.await?;
+        }
+        if let Some(video_task_join_handle) = video_task_join_handle {
+            info!("joining video task!");
             video_task_join_handle.await?;
-            info!("audio task and video task exit gracefully!");
-            PlayerResult::Ok(())
-        });
+        }
+        Ok(())
+    }
+    async fn sync_single_video_stream(
+        change_instant: &mut Instant,
+        video_play_context: &VideoPlayContext,
+        video_time_base: &Rational,
+    ) -> PlayerResult<Video> {
+        let ins_now = Instant::now();
+        if ins_now.checked_duration_since(*change_instant).is_some() {
+            if let Some(Ok(frame)) = video_play_context
+                .video_frame_receiver
+                .recv_async()
+                .with_cancellation_token(&video_play_context.cancellation_token)
+                .await
+            {
+                if let Some(f_pts) = frame.pts() {
+                    let cur_pts = video_play_context
+                        .current_video_timestamp
+                        .load(std::sync::atomic::Ordering::Relaxed);
+
+                    if f_pts > 0
+                        && ((f_pts - cur_pts) * 1000 * video_time_base.numerator() as i64
+                            / video_time_base.denominator() as i64)
+                            < 1000
+                    {
+                        if let Some(ins) = change_instant.checked_add(Duration::from_millis(
+                            ((f_pts - cur_pts) * 1000 * video_time_base.numerator() as i64
+                                / video_time_base.denominator() as i64)
+                                as u64,
+                        )) {
+                            *change_instant = ins;
+                        }
+                    } else {
+                        *change_instant = ins_now;
+                    }
+                    video_play_context
+                        .current_video_timestamp
+                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
+                    video_play_context
+                        .current_main_stream_timestamp
+                        .store(f_pts, std::sync::atomic::Ordering::Relaxed);
+                    Ok(frame)
+                } else {
+                    Err(anyhow::Error::msg("video frame pts is none"))
+                }
+            } else {
+                Err(anyhow::Error::msg("try video frame failed"))
+            }
+        } else {
+            Err(anyhow::Error::msg("video wait for its present time"))
+        }
     }
 }
 impl Drop for MediaDataManager {
@@ -413,8 +424,6 @@ pub struct VideoPlayContext {
     media_engine: Arc<MediaEngine>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
-
-    video_texture: Arc<RwLock<Texture>>,
     pause_flag: Arc<AtomicBool>,
     transcoder: Arc<RwLock<Transcoder>>,
     audio_frame_receiver: Receiver<Audio>,
@@ -498,8 +507,8 @@ impl FrequencyAnalyzer {
     }
     fn construct_hann_window() -> [f32; FFT_SIZE] {
         let mut window = [0.0; FFT_SIZE];
-        for idx in 0..FFT_SIZE {
-            window[idx] = 0.5 * (1.0 - (2.0 * PI * idx as f32 / (FFT_SIZE - 1) as f32).cos());
+        for (idx, item) in window.iter_mut().enumerate().take(FFT_SIZE) {
+            *item = 0.5 * (1.0 - (2.0 * PI * idx as f32 / (FFT_SIZE - 1) as f32).cos());
         }
         window
     }
@@ -507,13 +516,13 @@ impl FrequencyAnalyzer {
     -> PlayerResult<[[f32; FFT_SIZE / 2 + 1]; FILTERBANK_SIZE as usize + 1]> {
         const F_MIN: u32 = 20;
         const F_MAX: u32 = PLAY_SAMPLE_RATE / 2;
-        let mel_min = 2595.0 * ((1.0 + F_MIN as f32) / 700.0).log10();
-        let mel_max = 2595.0 * ((1.0 + F_MAX as f32) / 700.0).log10();
+        let mel_min = 2595.0 * (1.0 + F_MIN as f32 / 700.0).log10();
+        let mel_max = 2595.0 * (1.0 + F_MAX as f32 / 700.0).log10();
         let step = (mel_max - mel_min) / FILTERBANK_SIZE as f32;
         let mut mel_points = [0.0; FILTERBANK_SIZE as usize + 1];
         let mut tmp = mel_min;
-        for idx in 0..(FILTERBANK_SIZE as usize + 1) {
-            mel_points[idx] = tmp;
+        for item in mel_points.iter_mut().take(FILTERBANK_SIZE as usize + 1) {
+            *item = tmp;
             tmp += step;
         }
         mel_points

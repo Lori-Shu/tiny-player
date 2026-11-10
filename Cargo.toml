@@ -1,31 +1,32 @@
 [package]
 name = "tiny-player"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "a tiny media player"
 authors = ["Lori-Shu"]
 
 [dependencies]
-media_engine = { path = "../media_engine" }
+media_engine = "0.1.5"
 ffmpeg-the-third = "6.0.0"
 flume = "0.12.0"
-rodio = "0.22.2"
+rodio = "0.23.0"
 bytemuck = "1.25.2"
-image = { version = "0.25.10", features = ["jpeg", "png"] }
+image = { version = "0.25.10",default-features = false,features = ["default-formats"] }
 #egui dep list
-eframe = { version = "0.36.2", features = ["wgpu"] }
-egui = "0.36.2"
-egui_extras = { version = "0.36.2", features = ["image"] }
-egui_tiles = "0.17.1"
-#
-egui-file-dialog = "0.15.0"
+eframe = { version = "0.37.0", features = ["wgpu"] }
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["image","svg"] }
+egui_tiles = "0.18.0"
+egui_plot = "0.38.0"
+egui-file-dialog = "0.16.0"
+####
 glam = "0.33.7"
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.23",features = ["local-time"]}
 time = { version = "0.3.55", features = ["formatting","local-offset"] }
 keepawake = "0.6.1"
-tokio = { version = "1.53.1", features = ["full"] }
-reqwest = {version="0.13.5",features=["form","stream","multipart","json"]}
+tokio = { version = "1.54.1", features = ["full"] }
+reqwest = {version="0.13.5",default-features = false,features=["form","stream","multipart","json","system-proxy","charset","rustls"]}
 # reqwest-websocket = "0.5.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -33,12 +34,13 @@ typed-builder = "0.23.2"
 anyhow = "1.0.104"
 quick-m3u8 = "0.8.0"
 futures-util = "0.3.34"
-tokio-util = "0.7.19"
+tokio-util = "0.7.20"
 hound = "3.5.1"
 rustfft = "6.4.1"
 rand = "0.10.3"
 [dev-dependencies]
 num-complex = "0.4.6"
-
+num-primes = "0.3.0"
+num-bigint = "0.5.1"
 [build-dependencies]
 winresource = "0.1.31"

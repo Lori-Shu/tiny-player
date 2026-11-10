@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64},
@@ -10,7 +10,7 @@ use eframe::{
     egui_wgpu::RenderState,
     wgpu::{
         Extent3d, Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
-        TextureDimension, TextureFormat, TextureUsages,
+        TextureDimension, TextureFormat, TextureUsages, TextureView,
         wgt::{TextureDescriptor, TextureViewDescriptor},
     },
 };
@@ -24,7 +24,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     PlayerResult, audio_playback::AudioPlayer, post_process::Transcoder,
-    presentation::MediaDataManager,
+    presentation::MediaDataManager, tip_message_ui::TipMessageType,
 };
 
 #[derive(Clone, TypedBuilder)]
@@ -42,17 +42,18 @@ pub struct StateResetter {
     video_texture: Arc<RwLock<Texture>>,
     runtime_handle: Handle,
     media_data_manager: Arc<RwLock<MediaDataManager>>,
-    tip_window_flag: Arc<AtomicBool>,
-    tip_window_msg: Arc<RwLock<String>>,
+    tip_modal_flag: Arc<AtomicBool>,
+    tip_modal_msg: Arc<RwLock<TipMessageType>>,
     transcoder: Arc<RwLock<Transcoder>>,
 }
 impl StateResetter {
     /// `reset_media_input` is called when user decides to play another
     /// media. It resets the states
     /// of the decoder and the presentation manager.
-    pub fn reset_media_input(self: &Arc<Self>, path: PathBuf) {
-        info!("in change format input");
+    pub fn reset_media_input(self: &Arc<Self>, path: &Path) {
+        info!("starting resetting input");
         let this = self.clone();
+        let path = path.to_path_buf();
         self.runtime_handle.spawn(async move {
             this.pause_flag
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -67,80 +68,86 @@ impl StateResetter {
                 {
                     let stop_err_msg = format!("stop_present_tasks error:{}", e);
                     warn!("stop_present_tasks error:{:?}", e);
-                    *this.tip_window_msg.write().await = stop_err_msg;
-                    this.tip_window_flag
+                    *this.tip_modal_msg.write().await = TipMessageType::Warn(stop_err_msg);
+                    this.tip_modal_flag
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
-
+                info!("starting to reset engine");
                 if let Err(e) = this.media_engine.reset_input(&path).await {
                     let reset_input_err_msg = format!("reset_input error:{}", e);
                     warn!("reset_input error:{:?}", e);
-                    *this.tip_window_msg.write().await = reset_input_err_msg;
-                    this.tip_window_flag
+                    *this.tip_modal_msg.write().await = TipMessageType::Warn(reset_input_err_msg);
+                    this.tip_modal_flag
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
                 this.audio_player.clear_source_queue();
+
                 {
-                    let media_source_info =
-                        if let Ok(info) = this.media_engine.media_source_info().await {
-                            info
-                        } else {
-                            return;
-                        };
-                    if let Some(media_source_info) = &*media_source_info {
-                        {
-                            let mut transcoder = this.transcoder.write().await;
-                            if let Some(args) = &media_source_info.transcoder_args {
-                                transcoder.set_params_for_space(
-                                    args.colorspace,
-                                    args.pixel_format,
-                                    args.transfer_characteristic,
-                                    [args.width, args.height],
-                                );
-                            }
-                        }
+                    let media_source_info = this.media_engine.media_source_info().await;
+                    let mut transcoder = this.transcoder.write().await;
+                    if let Some(media_source_info) = &*media_source_info
+                        && let Some(args) = &media_source_info.transcoder_args
+                    {
+                        transcoder.set_params_for_space(
+                            args.colorspace,
+                            args.pixel_format,
+                            args.transfer_characteristic,
+                            [args.width, args.height],
+                        );
                         Self::reset_main_colorimg_to_bg(
-                            this.bg_dyn_img.clone(),
+                            &this.bg_dyn_img,
                             &media_source_info.resolution_rect,
-                            this.main_color_image.clone(),
+                            &this.main_color_image,
+                        )
+                        .await;
+                        Self::reset_main_colorimg_to_cover(
+                            &this.main_color_image,
+                            &media_source_info.resolution_rect,
+                            &media_source_info.cover_pic_data,
                         )
                         .await;
                     }
                 }
-                Self::reset_main_colorimg_to_cover(
-                    &this.media_engine,
-                    this.main_color_image.clone(),
-                )
-                .await;
-
-                if let Err(e) = Self::update_video_texture(
-                    this.main_color_image.clone(),
-                    this.video_texture_id.clone(),
-                    this.video_texture.clone(),
-                    this.garbage_texture_sender.clone(),
-                    this.render_state.clone(),
+                match Self::update_video_texture(
+                    &this.main_color_image,
+                    &this.video_texture_id,
+                    &this.video_texture,
+                    &this.garbage_texture_sender,
+                    &this.render_state,
                 )
                 .await
                 {
-                    let update_err_msg = format!("update_video_texture error:{}", e);
-                    warn!("update_video_texture error:{:?}", e);
-                    *this.tip_window_msg.write().await = update_err_msg;
-                    this.tip_window_flag
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    return;
+                    Ok(texture_view) => {
+                        let mut transcoder = this.transcoder.write().await;
+                        transcoder.update_texture_view(texture_view).await;
+                    }
+                    Err(e) => {
+                        let update_err_msg = format!("update_video_texture error:{}", e);
+                        warn!("update_video_texture error:{:?}", e);
+                        *this.tip_modal_msg.write().await = TipMessageType::Warn(update_err_msg);
+                        this.tip_modal_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
                 }
                 info!("reset video texture success");
-                present_data_manager.spawn_present_tasks();
+                present_data_manager.spawn_present_tasks().await;
+                const SUCCESS_INFO: &str =
+                    "media is successfully loaded! Click the play button to start playing!";
+                info!(SUCCESS_INFO);
+                *this.tip_modal_msg.write().await = TipMessageType::Info(SUCCESS_INFO.to_string());
+                this.tip_modal_flag
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         });
     }
 
     async fn reset_main_colorimg_to_bg(
-        bg_dyn_img: Arc<DynamicImage>,
-        video_rect: &[u32; 2],
-        main_color_image: Arc<RwLock<ColorImage>>,
+        bg_dyn_img: &DynamicImage,
+        video_rect: &[u32],
+        main_color_image: &RwLock<ColorImage>,
     ) {
         let bg_color_img = if video_rect[0] != 0 {
             info!(
@@ -166,25 +173,30 @@ impl StateResetter {
         *main_color_image = bg_color_img;
     }
     async fn reset_main_colorimg_to_cover(
-        media_engine: &MediaEngine,
-        main_color_image: Arc<RwLock<ColorImage>>,
+        main_color_image: &RwLock<ColorImage>,
+        video_rect: &[u32],
+        cover_pic_data: &Option<Box<[u8]>>,
     ) {
         info!("start reset_main_colorimg_to_cover");
-        if let Ok(media_source_info) = media_engine.media_source_info().await
-            && let Some(media_source_info) = &*media_source_info
-            && let Some(cover_img_bytes) = &media_source_info.cover_pic_data
+        let rgba8_img = if let Some(cover_img_bytes) = &cover_pic_data
             && let Ok(img) = image::load_from_memory(cover_img_bytes)
         {
-            let rgba8_img = if media_source_info.resolution_rect[0] != 0 {
-                img.resize(
-                    media_source_info.resolution_rect[0],
-                    media_source_info.resolution_rect[1],
-                    image::imageops::FilterType::Triangle,
+            if video_rect[0] != 0 {
+                Some(
+                    img.resize(
+                        video_rect[0],
+                        video_rect[1],
+                        image::imageops::FilterType::Triangle,
+                    )
+                    .to_rgba8(),
                 )
-                .to_rgba8()
             } else {
-                img.to_rgba8()
-            };
+                Some(img.to_rgba8())
+            }
+        } else {
+            None
+        };
+        if let Some(rgba8_img) = rgba8_img {
             let cover_color_img = ColorImage::from_rgba_unmultiplied(
                 [rgba8_img.width() as usize, rgba8_img.height() as usize],
                 &rgba8_img,
@@ -198,12 +210,12 @@ impl StateResetter {
     /// `update_video_texture` creates a new texture and updates the cached texture.
     /// The new texture matches the new input video size.
     async fn update_video_texture(
-        main_color_image: Arc<RwLock<ColorImage>>,
-        texture_id: Arc<RwLock<TextureId>>,
-        video_texture: Arc<RwLock<Texture>>,
-        garbage_texture_sender: Sender<TextureId>,
-        render_state: Arc<RenderState>,
-    ) -> PlayerResult<()> {
+        main_color_image: &RwLock<ColorImage>,
+        texture_id: &RwLock<TextureId>,
+        video_texture: &RwLock<Texture>,
+        garbage_texture_sender: &Sender<TextureId>,
+        render_state: &RenderState,
+    ) -> PlayerResult<TextureView> {
         let main_color_image = main_color_image.read().await;
         info!(
             "color img wid{} hei{}",
@@ -226,19 +238,20 @@ impl StateResetter {
                 | TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        let texture_view = new_video_texture.create_view(&TextureViewDescriptor {
+            label: Some("Video_View"),
+            format: Some(TextureFormat::Rgba8Unorm),
+            aspect: TextureAspect::All,
+            usage: Some(
+                TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::TEXTURE_BINDING
+                    | TextureUsages::COPY_DST,
+            ),
+            ..Default::default()
+        });
         let new_texture_id = render_state.renderer.write().register_native_texture(
             &render_state.device,
-            &new_video_texture.create_view(&TextureViewDescriptor {
-                label: Some("Video_View"),
-                format: Some(TextureFormat::Rgba8Unorm),
-                aspect: TextureAspect::All,
-                usage: Some(
-                    TextureUsages::RENDER_ATTACHMENT
-                        | TextureUsages::TEXTURE_BINDING
-                        | TextureUsages::COPY_DST,
-                ),
-                ..Default::default()
-            }),
+            &texture_view,
             eframe::wgpu::FilterMode::Linear,
         );
         render_state.queue.write_texture(
@@ -270,6 +283,6 @@ impl StateResetter {
             let mut video_texture = video_texture.write().await;
             *video_texture = new_video_texture;
         }
-        Ok(())
+        Ok(texture_view)
     }
 }

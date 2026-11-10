@@ -4,7 +4,6 @@
 )]
 #![deny(unused)]
 #![deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
-
 use std::{
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -35,6 +34,7 @@ mod post_process;
 mod presentation;
 mod resources;
 mod state_reset;
+mod tip_message_ui;
 mod whispercpp_transcriber;
 
 const WINDOW_ICON: ImageSource = include_image!("../resources/play.ico");

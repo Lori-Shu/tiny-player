@@ -40,7 +40,7 @@ impl AudioPlayer {
 
     pub async fn append_source_data(
         &self,
-        audio_frame: ffmpeg_the_third::frame::Audio,
+        audio_frame: &ffmpeg_the_third::frame::Audio,
     ) -> PlayerResult<()> {
         let audio_data = bytemuck::cast_slice::<u8, f32>(
             &audio_frame.data(0)[0..(size_of::<f32>()
