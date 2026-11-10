@@ -20,10 +20,11 @@ use eframe::{
     },
 };
 use egui::{
-    Button, Color32, ColorImage, ImageSource, Pos2, Rect, RichText, TextureHandle, TextureId, Ui,
+    Color32, ColorImage, FontFamily, FontInsert, FontPriority, ImageSource, InsertFontFamily, Pos2,
+    Rect, TextureHandle, TextureId, Ui, Visuals,
 };
 
-use egui_tiles::{TileId, Tiles, Tree};
+use egui_tiles::{Tiles, Tree};
 use flume::{Receiver, bounded};
 
 use keepawake::KeepAwake;
@@ -42,23 +43,22 @@ use crate::{
     caption_ui::CaptionUI,
     clean::ProcessCleaner,
     controlbar_ui::ControlbarUI,
-    headbar_ui::{HeadbarUI, MainBehavior, WidgetsPane},
+    headbar_ui::{HeadbarUI, MainBehavior, TilesTree},
     internet_resource_ui::InternetResourceUI,
-    playlist_ui::PlayListUI,
+    playlist_ui::PlaylistUI,
     post_process::Transcoder,
     presentation::{AudioPlayContext, MediaDataManager, VideoPlayContext},
     resources::{DEFAULT_BG_IMG, EMOJI_FONT, MAPLE_FONT},
     state_reset::StateResetter,
+    tip_message_ui::{TipMessageModal, TipMessageType},
     whispercpp_transcriber::{AtomicTargetLanguage, Transcriber, TranscriberArgs},
 };
 use media_engine::MediaEngine;
 /// `UIFlags` stores all bool flags corresponding to ui
 struct UIFlags {
     pause_flag: Arc<AtomicBool>,
-    tip_window_flag: Arc<AtomicBool>,
     visible_flag: Arc<AtomicBool>,
     live_mode: Arc<AtomicBool>,
-    style_flag: bool,
     playlist_flag: Arc<AtomicBool>,
 }
 /// `AppUI` stores all the vars that are related to ui.
@@ -69,30 +69,23 @@ pub struct AppUI {
     video_texture_id: Arc<RwLock<TextureId>>,
     garbage_video_texture_receiver: Receiver<TextureId>,
     ui_flags: UIFlags,
-    tip_window_msg: Arc<RwLock<String>>,
     visible_num: Arc<AtomicF32>,
     wgpu_render_state: Arc<RenderState>,
     state_resetter: Arc<StateResetter>,
     keep_awake: Option<KeepAwake>,
-    tile_tree: Tree<WidgetsPane>,
+    tile_tree: Tree<TilesTree>,
     tile_tree_behavior: MainBehavior,
     fade_animation: FadeAnimation,
-    playlist_id: TileId,
+    tip_message_modal: TipMessageModal,
+    playlist_id: egui_tiles::TileId,
 }
 impl eframe::App for AppUI {
     /// this function will automatically be called every ui repaint.
-    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
-        if !self.ui_flags.style_flag {
-            apply_player_visual(ui);
-            replace_fonts(ui);
-            apply_player_style(ui, frame);
-            self.ui_flags.style_flag = true;
-            info!("set style success");
-        }
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical(|ui| {
-                if self.manage_keepawake().is_err() {
-                    warn!("manage keepawake err!");
+                if let Err(e) = self.manage_keepawake() {
+                    warn!("manage keepawake err!{}", e);
                 }
 
                 self.release_garbage_texture();
@@ -101,17 +94,10 @@ impl eframe::App for AppUI {
                     .visible_flag
                     .store(false, std::sync::atomic::Ordering::Relaxed);
 
-                self.paint_tip_window(ui);
+                ui.add(&self.tip_message_modal);
                 self.paint_video_image(ui);
-                if self
-                    .ui_flags
-                    .playlist_flag
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    self.tile_tree.tiles.set_visible(self.playlist_id, true);
-                } else {
-                    self.tile_tree.tiles.set_visible(self.playlist_id, false);
-                }
+                let flag = self.ui_flags.playlist_flag.load(Ordering::Relaxed);
+                self.tile_tree.set_visible(self.playlist_id, flag);
                 // paint the tile tree
                 self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
 
@@ -187,7 +173,10 @@ impl AppUI {
                 .context("get render state err")?
                 .clone(),
         );
-
+        Self::apply_player_visual(&cc.egui_ctx);
+        Self::replace_fonts(&cc.egui_ctx);
+        Self::apply_player_style(&cc.egui_ctx);
+        info!("set style success");
         let transcoder = Arc::new(RwLock::new(Transcoder::new(
             wgpu_render_state.clone(),
             cc.egui_ctx.clone(),
@@ -200,7 +189,7 @@ impl AppUI {
         let pause_flag = Arc::new(AtomicBool::new(false));
         let live_mode = Arc::new(AtomicBool::new(false));
         let PresentationTexture { id, texture } =
-            Self::alloc_texture(main_color_image.clone(), wgpu_render_state.clone());
+            Self::alloc_texture(&main_color_image, &wgpu_render_state);
         let presentation_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
         let transcribe_task_notify = Arc::new(Notify::new());
@@ -255,7 +244,6 @@ impl AppUI {
                     .clone(),
             )
             .video_frame_receiver(media_engine.realtime_status.video_frame_recv.clone())
-            .video_texture(texture.clone())
             .audio_frame_receiver(media_engine.realtime_status.audio_frame_recv.clone())
             .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
@@ -269,8 +257,8 @@ impl AppUI {
         let media_data_manager = Arc::new(RwLock::new(media_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = bounded(8);
-        let tip_window_flag = Arc::new(AtomicBool::new(false));
-        let tip_window_msg = Arc::new(RwLock::new("empty msg".to_string()));
+        let tip_modal_flag = Arc::new(AtomicBool::new(false));
+        let tip_modal_msg = Arc::new(RwLock::new(TipMessageType::Info("empty msg".to_string())));
         let state_resetter = Arc::new(
             StateResetter::builder()
                 .audio_player(audio_player.clone())
@@ -286,8 +274,8 @@ impl AppUI {
                 .video_texture(texture.clone())
                 .video_texture_id(id.clone())
                 .media_data_manager(media_data_manager.clone())
-                .tip_window_flag(tip_window_flag.clone())
-                .tip_window_msg(tip_window_msg.clone())
+                .tip_modal_flag(tip_modal_flag.clone())
+                .tip_modal_msg(tip_modal_msg.clone())
                 .transcoder(transcoder.clone())
                 .build(),
         );
@@ -299,7 +287,7 @@ impl AppUI {
             live_mode.clone(),
         );
         let playlist_flag = Arc::new(AtomicBool::new(false));
-        let playlist_ui = PlayListUI::new(state_resetter.clone(), live_mode.clone(), rt.clone());
+        let playlist_ui = PlaylistUI::new(state_resetter.clone(), live_mode.clone(), rt.clone());
         let time_formatter = format_description::parse_owned::<3>("[hour]:[minute]:[second]")?;
         let keep_awake = None;
         let visible_flag = Arc::new(AtomicBool::new(false));
@@ -342,7 +330,6 @@ impl AppUI {
             .state_resetter(state_resetter.clone())
             .visible_num(visible_num.clone())
             .build();
-        let style_flag = false;
         let body_ui = BodyUI::builder()
             .audio_player(audio_player.clone())
             .media_source_flag(media_engine.realtime_status.media_source_flag.clone())
@@ -352,7 +339,6 @@ impl AppUI {
             .visible_num(visible_num.clone())
             .mel_bars_recv(bars_channel.1)
             .bars_buffer(Vec::new())
-            .async_runtime(rt.clone())
             .media_engine(media_engine.clone())
             .build();
         let caption_ui = CaptionUI::builder()
@@ -363,34 +349,32 @@ impl AppUI {
             .build();
         let mut tiles = Tiles::default();
         let vertical_panes = vec![
-            WidgetsPane::Headbar(Box::new(headbar_ui)),
-            WidgetsPane::Body(Box::new(body_ui)),
-            WidgetsPane::Caption(Box::new(caption_ui)),
-            WidgetsPane::Controlbar(Box::new(controlbar_ui)),
+            TilesTree::Headbar(Box::new(headbar_ui)),
+            TilesTree::Body(Box::new(body_ui)),
+            TilesTree::Caption(Box::new(caption_ui)),
+            TilesTree::Controlbar(Box::new(controlbar_ui)),
         ];
         let vertical_view = vertical_panes
             .into_iter()
             .map(|p| tiles.insert_pane(p))
             .collect();
         let view_part = tiles.insert_vertical_tile(vertical_view);
-        let list_part = tiles.insert_pane(WidgetsPane::PlayList(Box::new(playlist_ui)));
+        let list_part = tiles.insert_pane(TilesTree::Playlist(Box::new(playlist_ui)));
         let root = tiles.insert_horizontal_tile(vec![view_part, list_part]);
-        let tile_tree = egui_tiles::Tree::new("player_tile_tree", root, tiles);
+        let tile_tree = egui_tiles::Tree::new(egui::Id::unique("player_tile_tree"), root, tiles);
         let tile_tree_behavior = MainBehavior::new();
         let fade_animation = FadeAnimation::new();
+        let tip_message_modal = TipMessageModal::new(tip_modal_flag.clone(), tip_modal_msg.clone());
         Ok(Self {
             async_runtime,
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
             video_texture_id: id,
             ui_flags: UIFlags {
                 pause_flag,
-                tip_window_flag,
                 visible_flag,
                 live_mode,
-                style_flag,
                 playlist_flag,
             },
-            tip_window_msg,
             visible_num,
             wgpu_render_state,
             state_resetter,
@@ -399,13 +383,14 @@ impl AppUI {
             tile_tree_behavior,
             process_cleaner,
             fade_animation,
+            tip_message_modal,
             playlist_id: list_part,
         })
     }
     /// alloc wgpu texture and register it to the egui RenderState.
     fn alloc_texture(
-        main_color_image: Arc<RwLock<ColorImage>>,
-        render_state: Arc<RenderState>,
+        main_color_image: &RwLock<ColorImage>,
+        render_state: &RenderState,
     ) -> PresentationTexture {
         let main_color_image = main_color_image.blocking_read();
 
@@ -500,7 +485,7 @@ impl AppUI {
             }
         });
         if let Some(path_buf) = detected {
-            self.state_resetter.reset_media_input(path_buf.clone());
+            self.state_resetter.reset_media_input(&path_buf);
             if let Some(p_str) = path_buf.to_str() {
                 warn!("filepath{}", p_str);
             }
@@ -519,28 +504,6 @@ impl AppUI {
         }
     }
 
-    fn paint_tip_window(&mut self, ui: &mut Ui) {
-        if self
-            .ui_flags
-            .tip_window_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let tip_window = egui::Window::new("tip window");
-            tip_window.show(ui, |ui| {
-                let tip_text = if let Ok(tip_window_msg) = self.tip_window_msg.try_read() {
-                    RichText::new(&*tip_window_msg).size(20.0)
-                } else {
-                    RichText::new("try read err msg failed")
-                };
-                ui.add(Button::new(tip_text));
-                if ui.button("close").clicked() {
-                    self.ui_flags
-                        .tip_window_flag
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-            });
-        }
-    }
     fn apply_visiable_animation(&mut self, ui: &mut Ui) {
         if !self
             .ui_flags
@@ -594,70 +557,69 @@ impl Drop for AppUI {
         self.free_texture();
     }
 }
+impl AppUI {
+    fn apply_player_visual(ctx: &egui::Context) {
+        ctx.options_mut(|options| {
+            options.theme_preference = egui::ThemePreference::Dark;
+        });
+        let mut visuals = Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgb(15, 23, 42);
 
-fn apply_player_visual(ctx: &Ui) {
-    let mut visuals = egui::Visuals::dark();
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(30, 41, 59);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(51, 65, 85);
 
-    visuals.panel_fill = egui::Color32::from_rgb(15, 23, 42);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(6, 182, 212);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(6, 182, 212).linear_multiply(0.3);
+        visuals.window_fill = Color32::from_rgb(2, 6, 23);
 
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(30, 41, 59);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(51, 65, 85);
+        visuals.panel_fill = Color32::from_rgb(15, 23, 42);
+        ctx.set_visuals_of(egui::Theme::Dark, visuals);
+    }
+    fn apply_player_style(ctx: &egui::Context) {
+        ctx.global_style_mut(|style| {
+            style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+            style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
 
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(6, 182, 212);
-    visuals.selection.bg_fill = egui::Color32::from_rgb(6, 182, 212).linear_multiply(0.3);
-    visuals.window_fill = Color32::from_rgb(2, 6, 23);
+            style.spacing.button_padding = egui::vec2(12.0, 6.0);
+            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+        });
+    }
+    fn replace_fonts(ctx: &egui::Context) {
+        ctx.add_font(FontInsert::new(
+            "maple_font",
+            egui::FontData::from_static(MAPLE_FONT),
+            vec![
+                InsertFontFamily {
+                    // Font family
+                    family: FontFamily::Proportional,
 
-    visuals.panel_fill = Color32::from_rgb(15, 23, 42);
-    ctx.set_visuals(visuals);
-}
-fn apply_player_style(ctx: &Ui, _frame: &mut eframe::Frame) {
-    let mut style = (*ctx.global_style()).clone();
+                    // Fallback or Primary font
+                    priority: FontPriority::Highest,
+                },
+                InsertFontFamily {
+                    // Font family
+                    family: FontFamily::Monospace,
 
-    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+                    // Fallback or Primary font
+                    priority: FontPriority::Highest,
+                },
+            ],
+        ));
+        ctx.add_font(FontInsert::new(
+            "seguiemj_font",
+            egui::FontData::from_static(EMOJI_FONT),
+            vec![InsertFontFamily {
+                // Font family
+                family: FontFamily::Proportional,
 
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-    ctx.set_global_style(style);
-}
-fn replace_fonts(ctx: &Ui) {
-    // Start with the default fonts (we will be adding to them rather than replacing them).
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Install my own font (maybe supporting non-latin characters).
-    // .ttf and .otf files supported.
-    fonts.font_data.insert(
-        "app_default_font".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(MAPLE_FONT)),
-    );
-    fonts.font_data.insert(
-        "noto_emoji".to_owned(),
-        Arc::new(egui::FontData::from_static(EMOJI_FONT)),
-    );
-    // Put my font first (highest priority) for proportional text:
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, "app_default_font".to_owned());
-
-    // Put my font as last fallback for monospace:
-    fonts
-        .families
-        .entry(egui::FontFamily::Monospace)
-        .or_default()
-        .insert(0, "app_default_font".to_owned());
-
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(1, "noto_emoji".to_owned());
-    // Tell egui to use these fonts:
-    ctx.set_fonts(fonts);
+                // Fallback or Primary font
+                priority: FontPriority::Lowest,
+            }],
+        ));
+    }
 }
 #[derive(Clone)]
-pub struct VideoDes {
+pub struct MediaDes {
     pub name: String,
     pub path: PathBuf,
     pub texture_handle: TextureHandle,

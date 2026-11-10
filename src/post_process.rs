@@ -26,7 +26,6 @@ use ffmpeg_the_third::{
     frame::Video,
 };
 use glam::{Mat4, Vec4};
-use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::PlayerResult;
@@ -692,219 +691,198 @@ impl Transcoder {
         self.playback_texture_view = None;
         info!("reset playback_texture_view success");
     }
-    pub async fn render_video(
-        &mut self,
-        texture: Arc<RwLock<Texture>>,
-        frame: Video,
-    ) -> PlayerResult<()> {
-        let playback_texture_view = if let Some(view) = &self.playback_texture_view {
-            view.clone()
-        } else {
-            let updated_texture = texture.read().await;
-            let new_texture_view = updated_texture.create_view(&TextureViewDescriptor {
-                label: Some("Video_Playback_View"),
-                format: Some(TextureFormat::Rgba8Unorm),
-                dimension: Some(TextureViewDimension::D2),
-                aspect: TextureAspect::All,
-                base_mip_level: 0,
-                mip_level_count: None,
-                base_array_layer: 0,
-                array_layer_count: None,
-                usage: Some(
-                    TextureUsages::RENDER_ATTACHMENT
-                        | TextureUsages::TEXTURE_BINDING
-                        | TextureUsages::COPY_DST,
-                ),
-            });
-            self.playback_texture_view = Some(new_texture_view.clone());
-            new_texture_view
-        };
-        if self
-            .hardware_config_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            if let Some(texture) = &self.texture_y {
-                self.render_state.queue.write_texture(
-                    TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: Origin3d::ZERO,
-                        aspect: TextureAspect::All,
-                    },
-                    frame.data(0),
-                    TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(frame.stride(0) as u32),
-                        rows_per_image: None,
-                    },
-                    Extent3d {
-                        width: frame.plane_width(0),
-                        height: frame.plane_height(0),
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            if let Some(texture) = &self.texture_uv {
-                self.render_state.queue.write_texture(
-                    TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: Origin3d::ZERO,
-                        aspect: TextureAspect::All,
-                    },
-                    frame.data(1),
-                    TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(frame.stride(1) as u32),
-                        rows_per_image: None,
-                    },
-                    Extent3d {
-                        width: frame.plane_width(1),
-                        height: frame.plane_height(1),
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            let mut encoder =
-                self.render_state
-                    .device
-                    .create_command_encoder(&CommandEncoderDescriptor {
-                        label: Some("Offscreen_Render_Encoder"),
+    pub async fn render_video(&mut self, frame: Video) -> PlayerResult<()> {
+        if let Some(playback_texture_view) = &self.playback_texture_view {
+            if self
+                .hardware_config_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Some(texture) = &self.texture_y {
+                    self.render_state.queue.write_texture(
+                        TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: Origin3d::ZERO,
+                            aspect: TextureAspect::All,
+                        },
+                        frame.data(0),
+                        TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.stride(0) as u32),
+                            rows_per_image: None,
+                        },
+                        Extent3d {
+                            width: frame.plane_width(0),
+                            height: frame.plane_height(0),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                if let Some(texture) = &self.texture_uv {
+                    self.render_state.queue.write_texture(
+                        TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: Origin3d::ZERO,
+                            aspect: TextureAspect::All,
+                        },
+                        frame.data(1),
+                        TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.stride(1) as u32),
+                            rows_per_image: None,
+                        },
+                        Extent3d {
+                            width: frame.plane_width(1),
+                            height: frame.plane_height(1),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                let mut encoder =
+                    self.render_state
+                        .device
+                        .create_command_encoder(&CommandEncoderDescriptor {
+                            label: Some("Offscreen_Render_Encoder"),
+                        });
+
+                {
+                    let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                        label: Some("Video_To_Texture_Pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: playback_texture_view,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Clear(Color::BLACK),
+                                store: StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
                     });
 
-            {
-                let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("Video_To_Texture_Pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &playback_texture_view,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::BLACK),
-                            store: StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                    render_pass.set_pipeline(&self.render_pipeline);
+                    render_pass.set_bind_group(0, &self.bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
 
-                render_pass.set_pipeline(&self.render_pipeline);
-                render_pass.set_bind_group(0, &self.bind_group, &[]);
-                render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+                    render_pass.draw(0..6, 0..1);
+                }
 
-                render_pass.draw(0..6, 0..1);
-            }
-
-            self.render_state
-                .queue
-                .submit(std::iter::once(encoder.finish()));
-            // warn!("after write texture and render");
-        } else {
-            if let Some(texture) = &self.texture_y {
-                self.render_state.queue.write_texture(
-                    TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: Origin3d::ZERO,
-                        aspect: TextureAspect::All,
-                    },
-                    frame.data(0),
-                    TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(frame.stride(0) as u32),
-                        rows_per_image: None,
-                    },
-                    Extent3d {
-                        width: frame.plane_width(0),
-                        height: frame.plane_height(0),
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            if let Some(texture) = &self.texture_u {
-                self.render_state.queue.write_texture(
-                    TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: Origin3d::ZERO,
-                        aspect: TextureAspect::All,
-                    },
-                    frame.data(1),
-                    TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(frame.stride(1) as u32),
-                        rows_per_image: None,
-                    },
-                    Extent3d {
-                        width: frame.plane_width(1),
-                        height: frame.plane_height(1),
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            if let Some(texture) = &self.texture_v {
-                self.render_state.queue.write_texture(
-                    TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: Origin3d::ZERO,
-                        aspect: TextureAspect::All,
-                    },
-                    frame.data(2),
-                    TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(frame.stride(2) as u32),
-                        rows_per_image: None,
-                    },
-                    Extent3d {
-                        width: frame.plane_width(2),
-                        height: frame.plane_height(2),
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            let mut encoder =
                 self.render_state
-                    .device
-                    .create_command_encoder(&CommandEncoderDescriptor {
-                        label: Some("Offscreen_Render_Encoder"),
+                    .queue
+                    .submit(std::iter::once(encoder.finish()));
+                // warn!("after write texture and render");
+            } else {
+                if let Some(texture) = &self.texture_y {
+                    self.render_state.queue.write_texture(
+                        TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: Origin3d::ZERO,
+                            aspect: TextureAspect::All,
+                        },
+                        frame.data(0),
+                        TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.stride(0) as u32),
+                            rows_per_image: None,
+                        },
+                        Extent3d {
+                            width: frame.plane_width(0),
+                            height: frame.plane_height(0),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                if let Some(texture) = &self.texture_u {
+                    self.render_state.queue.write_texture(
+                        TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: Origin3d::ZERO,
+                            aspect: TextureAspect::All,
+                        },
+                        frame.data(1),
+                        TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.stride(1) as u32),
+                            rows_per_image: None,
+                        },
+                        Extent3d {
+                            width: frame.plane_width(1),
+                            height: frame.plane_height(1),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                if let Some(texture) = &self.texture_v {
+                    self.render_state.queue.write_texture(
+                        TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: Origin3d::ZERO,
+                            aspect: TextureAspect::All,
+                        },
+                        frame.data(2),
+                        TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.stride(2) as u32),
+                            rows_per_image: None,
+                        },
+                        Extent3d {
+                            width: frame.plane_width(2),
+                            height: frame.plane_height(2),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                let mut encoder =
+                    self.render_state
+                        .device
+                        .create_command_encoder(&CommandEncoderDescriptor {
+                            label: Some("Offscreen_Render_Encoder"),
+                        });
+
+                {
+                    let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                        label: Some("Video_To_Texture_Pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: playback_texture_view,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Clear(Color::BLACK),
+                                store: StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
                     });
 
-            {
-                let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("Video_To_Texture_Pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &playback_texture_view,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::BLACK),
-                            store: StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                    render_pass.set_pipeline(&self.fallback_render_pipeline);
+                    render_pass.set_bind_group(0, &self.fallback_bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
 
-                render_pass.set_pipeline(&self.fallback_render_pipeline);
-                render_pass.set_bind_group(0, &self.fallback_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+                    render_pass.draw(0..6, 0..1);
+                }
 
-                render_pass.draw(0..6, 0..1);
+                self.render_state
+                    .queue
+                    .submit(std::iter::once(encoder.finish()));
             }
-
-            self.render_state
-                .queue
-                .submit(std::iter::once(encoder.finish()));
         }
         Ok(())
     }
     pub async fn repaint_ui(&self) {
         self.egui_ctx.request_repaint();
+    }
+    pub async fn update_texture_view(&mut self, new_texture_view: TextureView) {
+        self.playback_texture_view = Some(new_texture_view);
     }
 }
 #[repr(C)]
