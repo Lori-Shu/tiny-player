@@ -62,6 +62,11 @@ If you are using a laptop and experience low frame rates:
 
 ---
 
+## Real-Time Caption
+Real-time caption function is based on project [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
+The behavior in dialog scenario is impressive yet the accuracy would decrease in hybrid and musical scenarios.
+---
+
 ## 📄 License
 
 This project is licensed under the GPLv2 License. See the [LICENSE](./LICENSE) file for more details. This license is chosen for balance and justice.
