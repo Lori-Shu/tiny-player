@@ -18,7 +18,7 @@ use crate::{
     whispercpp_transcriber::{AtomicTargetLanguage, TargetLanguage},
 };
 use media_engine::MediaEngine;
-#[derive(TypedBuilder, Clone)]
+#[derive(TypedBuilder)]
 pub struct ControlbarUI {
     current_main_stream_timestamp: Arc<AtomicI64>,
     media_source_flag: Arc<AtomicBool>,
@@ -80,14 +80,12 @@ impl ControlbarUI {
                     .load(std::sync::atomic::Ordering::Relaxed);
                 let end_ts = {
                     if let Ok(media_source_info) = self.media_engine.try_borrow_media_source_info()
+                        && let Some(media_source_info) = &*media_source_info
                     {
-                        media_source_info
-                            .as_ref()
-                            .map(|media_source_info| media_source_info.end_timestamp)
+                        media_source_info.end_timestamp
                     } else {
-                        None
+                        return;
                     }
-                    .unwrap_or_default()
                 };
                 (ts, end_ts)
             } else {
@@ -119,10 +117,12 @@ impl ControlbarUI {
                 let audio_player = self.audio_player.clone();
                 let media_engine = self.media_engine.clone();
                 self.async_rt.spawn(async move {
+                    audio_player.pause();
                     media_engine.seek_timestamp(ts).await;
-                    audio_player.clear_source_queue();
                     audio_player.play();
                 });
+                self.current_main_stream_timestamp
+                    .store(ts, std::sync::atomic::Ordering::Relaxed);
             }
         });
     }
@@ -130,7 +130,7 @@ impl ControlbarUI {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
             let subtitle_btn = Button::new(
-                Image::from(SUBTITLE_IMG)
+                Image::from_bytes(SUBTITLE_IMG.0.clone(), SUBTITLE_IMG.1)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
@@ -186,8 +186,8 @@ impl ControlbarUI {
     fn paint_volume_button(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
-            let volumn_img_btn = egui::Button::new(
-                Image::from(VOLUME_IMG)
+            let volume_img_btn = egui::Button::new(
+                Image::from_bytes(VOLUME_IMG.0.clone(), VOLUME_IMG.1)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
@@ -198,7 +198,7 @@ impl ControlbarUI {
                 (220.0 * visible_num) as u8,
             ))
             .corner_radius(30);
-            let btn_response = ui.add(volumn_img_btn);
+            let btn_response = ui.add(volume_img_btn);
             if btn_response.clicked() {
                 self.show_volume_slider_flag = !self.show_volume_slider_flag;
             }
@@ -248,7 +248,7 @@ impl ControlbarUI {
                                 slider_response = slider_response
                                     .on_hover_text((self.audio_volume * 100.0).to_string());
                                 if slider_response.drag_stopped() {
-                                    info!("volumn slider dragged!");
+                                    info!("volume slider dragged!");
                                     audio_player.adjust_volume(self.audio_volume);
                                 }
                             });
@@ -260,7 +260,7 @@ impl ControlbarUI {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
             let fullscreen_image_btn = egui::Button::new(
-                Image::from(FULLSCREEN_IMG)
+                Image::from_bytes(FULLSCREEN_IMG.0.clone(), FULLSCREEN_IMG.1)
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )

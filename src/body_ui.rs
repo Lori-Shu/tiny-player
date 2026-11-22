@@ -1,9 +1,9 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
+use crossfire::{AsyncRx, mpsc::Array};
 use egui::{Align2, AtomExt, Color32, Id, Image, Pos2, Response, Ui, Vec2, Widget, epaint::Hsva};
 
 use egui_plot::{Bar, BarChart, Plot};
-use flume::Receiver;
 use media_engine::MediaEngine;
 use tokio::sync::Notify;
 use typed_builder::TypedBuilder;
@@ -23,7 +23,7 @@ pub struct BodyUI {
     audio_player: Arc<AudioPlayer>,
     play_tasks_notify: Arc<Notify>,
     transcribe_task_notify: Arc<Notify>,
-    mel_bars_recv: Receiver<Vec<f32>>,
+    mel_bars_recv: AsyncRx<Array<Vec<f32>>>,
     bars_buffer: Vec<f32>,
 }
 impl BodyUI {
@@ -40,19 +40,20 @@ impl BodyUI {
                 .pivot(Align2::CENTER_CENTER)
                 .show(ui, |ui| {
                     let visible_num = self.visible_num.load();
-                    let play_or_pause_image_source =
-                        if self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                            PLAY_IMG
-                        } else {
-                            PAUSE_IMG
-                        };
+
                     let btn_rect = Vec2::new(
                         ui.ctx().content_rect().width() / 10.0,
                         ui.ctx().content_rect().width() / 10.0,
                     );
-                    let btn_img = Image::from(play_or_pause_image_source)
-                        .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
-                        .atom_size(btn_rect);
+                    let btn_img = if self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        Image::from_bytes(PLAY_IMG.0.clone(), PLAY_IMG.1)
+                            .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
+                            .atom_size(btn_rect)
+                    } else {
+                        Image::from_bytes(PAUSE_IMG.0.clone(), PAUSE_IMG.1)
+                            .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
+                            .atom_size(btn_rect)
+                    };
                     let play_or_pause_btn = egui::Button::new(btn_img)
                         .fill(Color32::from_rgba_unmultiplied(
                             51,

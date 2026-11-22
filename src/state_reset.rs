@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use crossfire::{MAsyncTx, mpsc::Array};
 use eframe::{
     egui_wgpu::RenderState,
     wgpu::{
@@ -14,31 +15,28 @@ use eframe::{
         wgt::{TextureDescriptor, TextureViewDescriptor},
     },
 };
-use egui::{ColorImage, TextureId};
-use flume::Sender;
-use image::DynamicImage;
+use egui::TextureId;
+use image::{DynamicImage, EncodableLayout, RgbaImage};
 use media_engine::MediaEngine;
 use tokio::{runtime::Handle, sync::RwLock};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    PlayerResult, audio_playback::AudioPlayer, post_process::Transcoder,
-    presentation::MediaDataManager, tip_message_ui::TipMessageType,
+    PlayerResult, post_process::Transcoder, presentation::MediaDataManager,
+    tip_message_ui::TipMessageType,
 };
 
-#[derive(Clone, TypedBuilder)]
+#[derive(TypedBuilder)]
 pub struct StateResetter {
     pause_flag: Arc<AtomicBool>,
     current_main_stream_timestamp: Arc<AtomicI64>,
     current_video_timestamp: Arc<AtomicI64>,
     media_engine: Arc<MediaEngine>,
-    audio_player: Arc<AudioPlayer>,
-    main_color_image: Arc<RwLock<ColorImage>>,
     bg_dyn_img: Arc<DynamicImage>,
     video_texture_id: Arc<RwLock<TextureId>>,
     render_state: Arc<RenderState>,
-    garbage_texture_sender: Sender<TextureId>,
+    garbage_texture_sender: MAsyncTx<Array<TextureId>>,
     video_texture: Arc<RwLock<Texture>>,
     runtime_handle: Handle,
     media_data_manager: Arc<RwLock<MediaDataManager>>,
@@ -74,51 +72,41 @@ impl StateResetter {
                     return;
                 }
                 info!("starting to reset engine");
-                if let Err(e) = this.media_engine.reset_input(&path).await {
-                    let reset_input_err_msg = format!("reset_input error:{}", e);
-                    warn!("reset_input error:{:?}", e);
-                    *this.tip_modal_msg.write().await = TipMessageType::Warn(reset_input_err_msg);
-                    this.tip_modal_flag
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
-                this.audio_player.clear_source_queue();
+                let frame_receivers = match this.media_engine.reset_input(&path).await {
+                    Err(e) => {
+                        let reset_input_err_msg = format!("reset_input error:{}", e);
+                        warn!("reset_input error:{:?}", e);
+                        *this.tip_modal_msg.write().await =
+                            TipMessageType::Warn(reset_input_err_msg);
+                        this.tip_modal_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    Ok(frame_receivers) => frame_receivers,
+                };
 
-                {
+                let rgba_cover = {
                     let media_source_info = this.media_engine.media_source_info().await;
                     let mut transcoder = this.transcoder.write().await;
-                    if let Some(media_source_info) = &*media_source_info
-                        && let Some(args) = &media_source_info.transcoder_args
-                    {
-                        transcoder.set_params_for_space(
-                            args.colorspace,
-                            args.pixel_format,
-                            args.transfer_characteristic,
-                            [args.width, args.height],
-                        );
-                        Self::reset_main_colorimg_to_bg(
-                            &this.bg_dyn_img,
-                            &media_source_info.resolution_rect,
-                            &this.main_color_image,
-                        )
-                        .await;
-                        Self::reset_main_colorimg_to_cover(
-                            &this.main_color_image,
+                    if let Some(media_source_info) = &*media_source_info {
+                        if let Some(args) = &media_source_info.transcoder_args {
+                            transcoder.set_params_for_space(
+                                args.colorspace,
+                                args.pixel_format,
+                                args.transfer_characteristic,
+                                [args.width, args.height],
+                            );
+                        }
+                        this.rgba_cover_or_background(
                             &media_source_info.resolution_rect,
                             &media_source_info.cover_pic_data,
                         )
-                        .await;
+                        .await
+                    } else {
+                        return;
                     }
-                }
-                match Self::update_video_texture(
-                    &this.main_color_image,
-                    &this.video_texture_id,
-                    &this.video_texture,
-                    &this.garbage_texture_sender,
-                    &this.render_state,
-                )
-                .await
-                {
+                };
+                match this.update_video_texture(rgba_cover).await {
                     Ok(texture_view) => {
                         let mut transcoder = this.transcoder.write().await;
                         transcoder.update_texture_view(texture_view).await;
@@ -133,7 +121,9 @@ impl StateResetter {
                     }
                 }
                 info!("reset video texture success");
-                present_data_manager.spawn_present_tasks().await;
+                present_data_manager
+                    .spawn_present_tasks(frame_receivers)
+                    .await;
                 const SUCCESS_INFO: &str =
                     "media is successfully loaded! Click the play button to start playing!";
                 info!(SUCCESS_INFO);
@@ -144,89 +134,48 @@ impl StateResetter {
         });
     }
 
-    async fn reset_main_colorimg_to_bg(
-        bg_dyn_img: &DynamicImage,
-        video_rect: &[u32],
-        main_color_image: &RwLock<ColorImage>,
-    ) {
-        let bg_color_img = if video_rect[0] != 0 {
-            info!(
-                "before resize img width{},height{}",
-                video_rect[0], video_rect[1]
-            );
-            let img = bg_dyn_img.resize(
-                video_rect[0],
-                video_rect[1],
-                image::imageops::FilterType::Triangle,
-            );
-            ColorImage::from_rgba_unmultiplied(
-                [img.width() as usize, img.height() as usize],
-                img.as_bytes(),
-            )
-        } else {
-            ColorImage::from_rgba_unmultiplied(
-                [bg_dyn_img.width() as usize, bg_dyn_img.height() as usize],
-                bg_dyn_img.as_bytes(),
-            )
-        };
-        let mut main_color_image = main_color_image.write().await;
-        *main_color_image = bg_color_img;
-    }
-    async fn reset_main_colorimg_to_cover(
-        main_color_image: &RwLock<ColorImage>,
+    async fn rgba_cover_or_background(
+        &self,
         video_rect: &[u32],
         cover_pic_data: &Option<Box<[u8]>>,
-    ) {
-        info!("start reset_main_colorimg_to_cover");
-        let rgba8_img = if let Some(cover_img_bytes) = &cover_pic_data
+    ) -> RgbaImage {
+        const DEFAULT_SCALE: [u32; 2] = [1920, 1080];
+        let resolution = if video_rect[0] == 0 || video_rect[1] == 0 {
+            &DEFAULT_SCALE
+        } else {
+            video_rect
+        };
+        if let Some(cover_img_bytes) = &cover_pic_data
             && let Ok(img) = image::load_from_memory(cover_img_bytes)
         {
-            if video_rect[0] != 0 {
-                Some(
-                    img.resize(
-                        video_rect[0],
-                        video_rect[1],
-                        image::imageops::FilterType::Triangle,
-                    )
-                    .to_rgba8(),
-                )
-            } else {
-                Some(img.to_rgba8())
-            }
+            info!("image resetting to cover");
+            img.resize(
+                resolution[0],
+                resolution[1],
+                image::imageops::FilterType::Triangle,
+            )
+            .to_rgba8()
         } else {
-            None
-        };
-        if let Some(rgba8_img) = rgba8_img {
-            let cover_color_img = ColorImage::from_rgba_unmultiplied(
-                [rgba8_img.width() as usize, rgba8_img.height() as usize],
-                &rgba8_img,
-            );
-            info!("set cover img!");
-            let mut main_color_image = main_color_image.write().await;
-            *main_color_image = cover_color_img;
+            info!("image resetting to background");
+            self.bg_dyn_img
+                .resize(
+                    resolution[0],
+                    resolution[1],
+                    image::imageops::FilterType::Triangle,
+                )
+                .to_rgba8()
         }
     }
     /// When `reset_media_input` is called,
     /// `update_video_texture` creates a new texture and updates the cached texture.
     /// The new texture matches the new input video size.
-    async fn update_video_texture(
-        main_color_image: &RwLock<ColorImage>,
-        texture_id: &RwLock<TextureId>,
-        video_texture: &RwLock<Texture>,
-        garbage_texture_sender: &Sender<TextureId>,
-        render_state: &RenderState,
-    ) -> PlayerResult<TextureView> {
-        let main_color_image = main_color_image.read().await;
-        info!(
-            "color img wid{} hei{}",
-            main_color_image.width(),
-            main_color_image.height()
-        );
-        let new_video_texture = render_state.device.create_texture(&TextureDescriptor {
+    async fn update_video_texture(&self, rgba_img: RgbaImage) -> PlayerResult<TextureView> {
+        info!("rgba_img wid{} hei{}", rgba_img.width(), rgba_img.height());
+        let new_video_texture = self.render_state.device.create_texture(&TextureDescriptor {
             label: Some("Video"),
             size: Extent3d {
-                width: main_color_image.width() as u32,
-                height: main_color_image.height() as u32,
+                width: rgba_img.width(),
+                height: rgba_img.height(),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -249,38 +198,38 @@ impl StateResetter {
             ),
             ..Default::default()
         });
-        let new_texture_id = render_state.renderer.write().register_native_texture(
-            &render_state.device,
+        let new_texture_id = self.render_state.renderer.write().register_native_texture(
+            &self.render_state.device,
             &texture_view,
             eframe::wgpu::FilterMode::Linear,
         );
-        render_state.queue.write_texture(
+        self.render_state.queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &new_video_texture,
                 mip_level: 0,
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            main_color_image.as_raw(),
+            rgba_img.as_bytes(),
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((main_color_image.width() * 4) as u32),
+                bytes_per_row: Some(rgba_img.width() * 4),
                 rows_per_image: None,
             },
             Extent3d {
-                width: main_color_image.width() as u32,
-                height: main_color_image.height() as u32,
+                width: rgba_img.width(),
+                height: rgba_img.height(),
                 depth_or_array_layers: 1,
             },
         );
         {
-            let mut texture_id = texture_id.write().await;
-            garbage_texture_sender.send_async(*texture_id).await?;
+            let mut texture_id = self.video_texture_id.write().await;
+            self.garbage_texture_sender.send(*texture_id).await?;
             *texture_id = new_texture_id;
         }
 
         {
-            let mut video_texture = video_texture.write().await;
+            let mut video_texture = self.video_texture.write().await;
             *video_texture = new_video_texture;
         }
         Ok(texture_view)

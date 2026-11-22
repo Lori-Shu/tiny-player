@@ -6,7 +6,7 @@ use std::{
 };
 
 use egui::{
-    AtomExt, Button, ColorImage, Image, ImageData, ImageSource, Response, RichText, ScrollArea,
+    AtomExt, Button, ColorImage, Context, Image, ImageData, Response, RichText, ScrollArea,
     TextureHandle, TextureOptions, Ui, Vec2, Widget, WidgetText,
 };
 use egui_file_dialog::FileDialog;
@@ -29,10 +29,8 @@ impl PlaylistUI {
         runtime_handle: Handle,
     ) -> Self {
         let media_des_panes = Arc::new(RwLock::new(vec![]));
-        let scan_folder_dialog = Arc::new(RwLock::new(FileDialog::new()));
         let mut tiles = egui_tiles::Tiles::default();
         let controlbar = PlaylistControlbar::new(
-            scan_folder_dialog.clone(),
             runtime_handle,
             media_des_panes.clone(),
             state_resetter.clone(),
@@ -86,7 +84,7 @@ enum PlaylistUIPane {
 }
 
 struct PlaylistControlbar {
-    scan_folder_dialog: Arc<RwLock<FileDialog>>,
+    scan_folder_dialog: FileDialog,
     runtime_handle: Handle,
     video_des: Arc<RwLock<Vec<MediaDesPane>>>,
     state_resetter: Arc<StateResetter>,
@@ -94,12 +92,12 @@ struct PlaylistControlbar {
 }
 impl PlaylistControlbar {
     pub fn new(
-        scan_folder_dialog: Arc<RwLock<FileDialog>>,
         runtime_handle: Handle,
         video_des: Arc<RwLock<Vec<MediaDesPane>>>,
         state_resetter: Arc<StateResetter>,
         live_mode: Arc<AtomicBool>,
     ) -> Self {
+        let scan_folder_dialog = FileDialog::new();
         Self {
             scan_folder_dialog,
             runtime_handle,
@@ -111,7 +109,7 @@ impl PlaylistControlbar {
 }
 impl PlaylistControlbar {
     async fn scan_video_folder(
-        ctx: egui::Context,
+        ctx: Context,
         path: PathBuf,
         media_des_panes: Arc<RwLock<Vec<MediaDesPane>>>,
         state_resetter: Arc<StateResetter>,
@@ -127,13 +125,12 @@ impl PlaylistControlbar {
                         && t.is_file()
                         && let Ok(cover) = Self::load_file_cover(&en.path()).await
                     {
-                        let texture_handle =
-                            Self::load_cover_texture(&ctx, &cover, file_name).await;
+                        let tex_handle = Self::load_texture(&ctx, file_name, &cover).await;
                         video_targets.push(MediaDesPane::new(
                             MediaDes {
-                                name: file_name.to_string(),
+                                name: file_name.to_string().into_boxed_str(),
                                 path: en.path(),
-                                texture_handle,
+                                texture_handle: tex_handle,
                             },
                             state_resetter.clone(),
                             live_mode.clone(),
@@ -172,59 +169,49 @@ impl PlaylistControlbar {
         } else {
             return Err(anyhow::Error::msg("not a valid media file"));
         }
-        if let ImageSource::Bytes { bytes, .. } = DEFAULT_COVER
-            && let Ok(dyn_img) = image::load_from_memory(bytes.as_bytes())
-        {
+        if let Ok(dyn_img) = image::load_from_memory(DEFAULT_COVER.1) {
             Ok(dyn_img.to_rgba8())
         } else {
             warn!("load DEFAULT_COVER failed");
             Err(anyhow::Error::msg("load DEFAULT_COVER failed"))
         }
     }
-    async fn load_cover_texture(
-        ctx: &egui::Context,
-        cover: &RgbaImage,
-        name: &str,
-    ) -> TextureHandle {
-        let color_image = ColorImage::from_rgba_unmultiplied(
-            [cover.width() as usize, cover.height() as usize],
-            cover.as_bytes(),
-        );
-        ctx.load_texture(
-            name,
-            ImageData::Color(Arc::new(color_image)),
-            TextureOptions::LINEAR,
-        )
+    async fn load_texture(ctx: &Context, name: &str, rgba_image: &RgbaImage) -> TextureHandle {
+        let image_data = ImageData::Color(Arc::new(ColorImage::from_rgba_unmultiplied(
+            [rgba_image.width() as usize, rgba_image.height() as usize],
+            rgba_image.as_bytes(),
+        )));
+        ctx.load_texture(name, image_data, TextureOptions::LINEAR)
     }
 }
 impl Widget for &mut PlaylistControlbar {
     fn ui(self, ui: &mut Ui) -> Response {
-        if let Ok(mut dialog) = self.scan_folder_dialog.try_write() {
-            dialog.update(ui);
-            let folder_button = Button::new(RichText::new("📂").size(32.0));
-            let btn_response = ui.add(folder_button);
-            if btn_response.clicked() {
-                dialog.pick_directory();
-            }
-            btn_response.on_hover_text("scan media folder");
-
-            if let Some(path) = dialog.take_picked() {
-                if let Ok(mut videos) = self.video_des.try_write() {
-                    videos.clear();
-                }
-                let video_des = self.video_des.clone();
-                let path = path.to_path_buf();
-
-                self.runtime_handle
-                    .spawn(PlaylistControlbar::scan_video_folder(
-                        ui.ctx().clone(),
-                        path,
-                        video_des,
-                        self.state_resetter.clone(),
-                        self.live_mode.clone(),
-                    ));
-            }
+        let dialog = &mut self.scan_folder_dialog;
+        dialog.update(ui);
+        let folder_button = Button::new(RichText::new("📂").size(32.0));
+        let btn_response = ui.add(folder_button);
+        if btn_response.clicked() {
+            dialog.pick_directory();
         }
+        btn_response.on_hover_text("scan media folder");
+
+        if let Some(path) = dialog.take_picked() {
+            if let Ok(mut videos) = self.video_des.try_write() {
+                videos.clear();
+            }
+            let video_des = self.video_des.clone();
+            let path = path.to_path_buf();
+
+            self.runtime_handle
+                .spawn(PlaylistControlbar::scan_video_folder(
+                    ui.ctx().clone(),
+                    path,
+                    video_des,
+                    self.state_resetter.clone(),
+                    self.live_mode.clone(),
+                ));
+        }
+
         ui.response()
     }
 }
@@ -277,10 +264,10 @@ impl MediaDesPane {
 impl Widget for &MediaDesPane {
     fn ui(self, ui: &mut Ui) -> Response {
         let available_width = ui.available_width();
-        let image_btn = Button::new(
-            Image::new(&self.media_des.texture_handle)
-                .atom_size(Vec2::new(available_width / 1.25, 1080.0 / 6.0)),
-        );
+        let image = Image::from_texture(&self.media_des.texture_handle)
+            .atom_size(Vec2::new(available_width / 1.25, 1080.0 / 6.0));
+
+        let image_btn = Button::new(image);
 
         let player_text_button = Button::new(&self.media_des.name);
         ui.add(image_btn);
