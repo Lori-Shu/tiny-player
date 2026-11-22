@@ -1,20 +1,17 @@
 //! The internet_resource_ui module manages the ui of a separate window
 //! The ui is with respect to the content of online resources
 use std::{
+    io::{BufReader, Read},
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
 
 use egui::{Button, CentralPanel, RadioButton, Response, RichText, ScrollArea, Ui, Widget};
 use egui_tiles::{Behavior, TileId, Tree, UiResponse};
-use futures_util::StreamExt;
+
 use quick_m3u8::config::ParsingOptions;
 use reqwest::Client;
-use tokio::{
-    io::{AsyncReadExt, BufReader},
-    runtime::Handle,
-    sync::RwLock,
-};
+use tokio::{runtime::Handle, sync::RwLock};
 use tracing::{info, warn};
 
 use crate::state_reset::StateResetter;
@@ -22,7 +19,7 @@ const ENGLISH_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/en
 const CHINESE_PLAYLIST_URL: &str = "https://iptv-org.github.io/iptv/languages/zho.m3u";
 #[derive(Debug, Clone)]
 pub struct MediaResource {
-    pub name: String,
+    pub name: Box<str>,
 }
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum LanguageCategory {
@@ -167,36 +164,33 @@ impl SelectableArea {
         match web_client.get(url).send().await {
             Ok(response) => {
                 info!("get response success");
-                let bytes_stream = response
-                    .bytes_stream()
-                    .map(|item| item.map_err(std::io::Error::other));
-
-                let mut buf_reader =
-                    BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
-                let mut buf = vec![0; 1024 * 32];
-                match buf_reader.read(&mut buf).await {
-                    Ok(read_size) => {
-                        let mut reader = quick_m3u8::Reader::from_bytes(
-                            &buf[0..read_size],
-                            ParsingOptions::default(),
-                        );
-                        let mut resources = resources.write().await;
-                        resources.clear();
-                        while let Ok(Some(hls_line)) = reader.read_line() {
-                            if let quick_m3u8::HlsLine::Uri(uri) = hls_line {
-                                let single_resource_pane = SingleResourcePane::new(
-                                    state_resetter.clone(),
-                                    MediaResource {
-                                        name: uri.to_string(),
-                                    },
-                                    live_mode.clone(),
-                                );
-                                resources.push(single_resource_pane);
+                if let Ok(response_bytes) = response.bytes().await {
+                    let mut buf_reader = BufReader::new(&*response_bytes);
+                    let mut buf = vec![0; 1024 * 32];
+                    match buf_reader.read(&mut buf) {
+                        Ok(read_size) => {
+                            let mut reader = quick_m3u8::Reader::from_bytes(
+                                &buf[0..read_size],
+                                ParsingOptions::default(),
+                            );
+                            let mut resources = resources.write().await;
+                            resources.clear();
+                            while let Ok(Some(hls_line)) = reader.read_line() {
+                                if let quick_m3u8::HlsLine::Uri(uri) = hls_line {
+                                    let single_resource_pane = SingleResourcePane::new(
+                                        state_resetter.clone(),
+                                        MediaResource {
+                                            name: uri.to_string().into_boxed_str(),
+                                        },
+                                        live_mode.clone(),
+                                    );
+                                    resources.push(single_resource_pane);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        warn!("read buffer error!{:?}", e);
+                        Err(e) => {
+                            warn!("read buffer error!{:?}", e);
+                        }
                     }
                 }
             }
@@ -308,7 +302,7 @@ impl Widget for &SingleResourcePane {
         let btn_response = ui.add(Button::new(&self.resource.name));
         if btn_response.clicked() {
             self.state_resetter
-                .reset_media_input(Path::new(&self.resource.name));
+                .reset_media_input(Path::new(self.resource.name.as_ref()));
             self.live_mode
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }

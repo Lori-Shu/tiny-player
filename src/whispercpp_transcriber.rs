@@ -1,19 +1,21 @@
 //! The whispercpp_transcriber adds
 //! audio transcribing support for tiny-player
 use std::{
-    collections::VecDeque,
     io::Cursor,
     process::{Child, Command},
     ptr::null_mut,
-    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8},
     },
-    time::Duration,
+    time::Instant,
 };
 
 use anyhow::Context;
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{Array, bounded_async},
+};
 use ffmpeg_the_third::{
     ChannelLayout,
     ffi::{
@@ -23,10 +25,9 @@ use ffmpeg_the_third::{
     format::Sample,
     frame::Audio,
 };
-use flume::{Receiver, Sender};
 use hound::{WavSpec, WavWriter};
 use reqwest::Client;
-use tokio::{runtime::Handle, sync::Notify, time::sleep};
+use tokio::{runtime::Handle, sync::Notify, task::JoinHandle};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
@@ -45,7 +46,8 @@ const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_
 /// communication with whisper server
 pub struct Transcriber {
     audio_resampler: ManualProtectedResampler,
-    audio_frame_bytes_sender: Sender<Vec<u8>>,
+    audio_frame_bytes_sender: MAsyncTx<Array<Audio>>,
+    _transcribe_task_handle: JoinHandle<()>,
 }
 impl Transcriber {
     pub fn new(args: TranscriberArgs) -> PlayerResult<(Self, Child)> {
@@ -116,70 +118,31 @@ impl Transcriber {
         let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
         let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
         let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
-        let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = flume::bounded(256);
+        let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = bounded_async(64);
         let target_language = args.target_language.clone();
         let pause_flag = args.pause_flag.clone();
-        let subtitle_sender = args.subtitle_sender.clone();
+        let subtitle_sender = args.subtitle_sender;
         let transcribe_task = TranscribeTask::new(
             server_url,
             transcribe_task_cancel_token_cloned,
             transcribe_task_notify_cloned,
-            audio_frame_bytes_receiver,
             target_language,
             pause_flag,
             subtitle_sender,
         );
-        let _transcribe_task_handle = args.async_runtime.spawn(transcribe_task.into_future());
+        let _transcribe_task_handle = args
+            .async_runtime
+            .spawn(transcribe_task.into_future(audio_frame_bytes_receiver));
         Ok((
             Self {
                 audio_resampler: resampler_ctx,
                 audio_frame_bytes_sender,
+                _transcribe_task_handle,
             },
             child_process,
         ))
     }
-    async fn transcribe(
-        network_client: &Client,
-        contiguous_slice: &[u8],
-        target_language: &TargetLanguage,
-        subtitle_sender: &Sender<String>,
-        server_url: &str,
-    ) {
-        if let Ok(audio_script) = Self::send_request(
-            network_client,
-            contiguous_slice,
-            target_language,
-            server_url,
-        )
-        .await
-        {
-            for line in audio_script.lines() {
-                if let Err(e) = subtitle_sender.send_async(line.to_string()).await {
-                    warn!("subtitle_sender err:{:?}", e);
-                }
-            }
-        }
-    }
-    async fn package_wav_bytes(pcm_data: &[u8]) -> PlayerResult<Vec<u8>> {
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate: TRANSCRIBE_SAMPLE_RATE,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
 
-        let mut cursor = Cursor::new(Vec::with_capacity(44 + pcm_data.len()));
-        {
-            let mut writer = WavWriter::new(&mut cursor, spec)?;
-
-            for chunk in pcm_data.as_chunks::<2>().0 {
-                let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                writer.write_sample(sample)?;
-            }
-        }
-
-        Ok(cursor.into_inner())
-    }
     pub async fn push_audio_frame(&mut self, frame: &Audio) -> PlayerResult<()> {
         let mut transcribe_frame = Audio::empty();
         transcribe_frame.set_format(Sample::I16(ffmpeg_the_third::format::sample::Type::Packed));
@@ -200,50 +163,9 @@ impl Transcriber {
                 return Err(anyhow::Error::msg(err_msg));
             }
         }
-        let frame_bytes =
-            transcribe_frame.data(0)[0..(transcribe_frame.samples() * size_of::<i16>())].to_vec();
-        self.audio_frame_bytes_sender
-            .send_async(frame_bytes)
-            .await?;
+        self.audio_frame_bytes_sender.send(transcribe_frame).await?;
 
         Ok(())
-    }
-    async fn send_request(
-        network_client: &Client,
-        bytes: &[u8],
-        target_language: &TargetLanguage,
-        server_url: &str,
-    ) -> PlayerResult<String> {
-        let model_str = match target_language {
-            TargetLanguage::None => {
-                return Err(anyhow::Error::msg(
-                    "used_model should not be none in send_request",
-                ));
-            }
-            TargetLanguage::English => String::from_str("en")?,
-            TargetLanguage::Chinese => String::from_str("zh")?,
-        };
-        let wav_bytes_with_header = Self::package_wav_bytes(bytes).await?;
-        let form = reqwest::multipart::Form::new()
-            .part(
-                "file",
-                reqwest::multipart::Part::bytes(wav_bytes_with_header)
-                    .file_name("chunk.wav")
-                    .mime_str("audio/wav")?,
-            )
-            .text("language", model_str)
-            .text("response_format", "json");
-        let audio_scripts = network_client
-            .post(server_url)
-            .multipart(form)
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?["text"]
-            .as_str()
-            .context("parse serde_json::Value to str err!")?
-            .to_string();
-        Ok(audio_scripts)
     }
 }
 impl Drop for Transcriber {
@@ -262,86 +184,148 @@ struct TranscribeTask {
     server_url: Box<str>,
     transcribe_task_cancel_token: Arc<CancellationToken>,
     transcribe_task_notify: Arc<Notify>,
-    audio_frame_bytes_receiver: Receiver<Vec<u8>>,
     target_language: Arc<AtomicTargetLanguage>,
     pause_flag: Arc<AtomicBool>,
-    subtitle_sender: Sender<String>,
+    subtitle_sender: MAsyncTx<Array<String>>,
+    buffer: Vec<u8>,
 }
 impl TranscribeTask {
     fn new(
         server_url: String,
         transcribe_task_cancel_token: Arc<CancellationToken>,
         transcribe_task_notify: Arc<Notify>,
-        audio_frame_bytes_receiver: Receiver<Vec<u8>>,
         target_language: Arc<AtomicTargetLanguage>,
         pause_flag: Arc<AtomicBool>,
-        subtitle_sender: Sender<String>,
+        subtitle_sender: MAsyncTx<Array<String>>,
     ) -> Self {
         Self {
             server_url: server_url.into_boxed_str(),
             transcribe_task_cancel_token,
             transcribe_task_notify,
-            audio_frame_bytes_receiver,
             target_language,
             pause_flag,
             subtitle_sender,
+            buffer: vec![],
         }
     }
-    async fn into_future(self) {
-        let mut buffer_queue = VecDeque::new();
+    async fn into_future(mut self, audio_frame_bytes_receiver: AsyncRx<Array<Audio>>) {
         let network_client = Client::new();
+        let mut last_transcrib_instant = Instant::now();
         while !self.transcribe_task_cancel_token.is_cancelled() {
             let used_model = self.target_language.load();
             if !self.pause_flag.load(std::sync::atomic::Ordering::Relaxed)
                 && TargetLanguage::None != used_model
             {
-                let frame_bytes = self
-                    .audio_frame_bytes_receiver
-                    .drain()
-                    .flatten()
-                    .collect::<Vec<u8>>();
-                buffer_queue.extend(frame_bytes);
-
-                if buffer_queue.len() < THREE_SEC_BYTES_LEN && buffer_queue.len() > 32 {
-                    let contiguous_slice = buffer_queue.make_contiguous();
-                    if Transcriber::transcribe(
-                        &network_client,
-                        contiguous_slice,
-                        &used_model,
-                        &self.subtitle_sender,
-                        &self.server_url,
-                    )
+                if let Some(Ok(frame)) = audio_frame_bytes_receiver
+                    .recv()
                     .with_cancellation_token(&self.transcribe_task_cancel_token)
                     .await
-                    .is_none()
-                    {
-                        break;
-                    }
-                } else if buffer_queue.len() >= THREE_SEC_BYTES_LEN {
-                    let data_bytes = buffer_queue
-                        .drain(0..THREE_SEC_BYTES_LEN)
-                        .collect::<Vec<u8>>();
-                    if Transcriber::transcribe(
-                        &network_client,
-                        &data_bytes,
-                        &used_model,
-                        &self.subtitle_sender,
-                        &self.server_url,
-                    )
-                    .with_cancellation_token(&self.transcribe_task_cancel_token)
-                    .await
-                    .is_none()
-                    {
-                        break;
-                    }
+                {
+                    self.buffer
+                        .extend(&frame.data(0)[0..(frame.samples() * size_of::<i16>())]);
                 }
-                // have to be above notified, otherwise the clean step will fail
-                sleep(Duration::from_millis(200)).await;
+
+                if last_transcrib_instant.elapsed().as_millis() > 200
+                    && self.buffer.len() > TRANSCRIBE_SAMPLE_RATE as usize
+                {
+                    self.transcribe(&network_client, &self.buffer, &used_model)
+                        .await;
+                    if self.buffer.len() >= THREE_SEC_BYTES_LEN {
+                        self.buffer.drain(0..THREE_SEC_BYTES_LEN);
+                    }
+                    last_transcrib_instant = Instant::now();
+                }
             } else {
                 self.transcribe_task_notify.notified().await;
                 info!("transcribe task waked");
             }
         }
+    }
+    async fn transcribe(
+        &self,
+        network_client: &Client,
+        contiguous_slice: &[u8],
+        target_language: &TargetLanguage,
+    ) {
+        match self
+            .send_request(network_client, contiguous_slice, target_language)
+            .await
+        {
+            Ok(audio_script) => {
+                for line in audio_script.lines() {
+                    if let Err(e) = self.subtitle_sender.send(line.to_string()).await {
+                        warn!("subtitle_sender err:{:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("{}", e);
+            }
+        }
+    }
+    async fn package_wav_bytes(&self, pcm_data: &[u8]) -> PlayerResult<Vec<u8>> {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: TRANSCRIBE_SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut cursor = Cursor::new(Vec::with_capacity(44 + pcm_data.len()));
+        {
+            let mut writer = WavWriter::new(&mut cursor, spec)?;
+
+            for chunk in pcm_data.as_chunks::<2>().0 {
+                let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                writer.write_sample(sample)?;
+            }
+        }
+
+        Ok(cursor.into_inner())
+    }
+    async fn send_request(
+        &self,
+        network_client: &Client,
+        bytes: &[u8],
+        target_language: &TargetLanguage,
+    ) -> PlayerResult<String> {
+        let model_str = match target_language {
+            TargetLanguage::None => {
+                return Err(anyhow::Error::msg(
+                    "used_model should not be none in send_request",
+                ));
+            }
+            TargetLanguage::English => "en",
+            TargetLanguage::Chinese => "zh",
+        };
+        let wav_bytes_with_header = self.package_wav_bytes(bytes).await?;
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(wav_bytes_with_header)
+                    .file_name("chunk.wav")
+                    .mime_str("audio/wav")?,
+            )
+            .text("language", model_str)
+            .text("response_format", "json");
+        let audio_scripts = network_client
+            .post(self.server_url.as_ref())
+            .multipart(form)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?["text"]
+            .as_str()
+            .context("parse serde_json::Value to str err!")?
+            .to_string();
+        // info!("{}", audio_scripts);
+        Ok(audio_scripts)
+    }
+}
+impl Drop for TranscribeTask {
+    fn drop(&mut self) {
+        self.transcribe_task_cancel_token.cancel();
+        self.transcribe_task_notify.notify_one();
     }
 }
 #[repr(u8)]
@@ -351,7 +335,7 @@ pub enum TargetLanguage {
     Chinese = 1,
     English = 2,
 }
-#[derive(Debug)]
+
 pub struct AtomicTargetLanguage {
     target_num: AtomicU8,
 }
@@ -386,10 +370,10 @@ impl AtomicTargetLanguage {
         }
     }
 }
-#[derive(Debug, Clone, TypedBuilder)]
+#[derive(TypedBuilder)]
 pub struct TranscriberArgs {
     async_runtime: Handle,
-    subtitle_sender: Sender<String>,
+    subtitle_sender: MAsyncTx<Array<String>>,
     pause_flag: Arc<AtomicBool>,
     transcribe_task_notify: Arc<Notify>,
     target_language: Arc<AtomicTargetLanguage>,

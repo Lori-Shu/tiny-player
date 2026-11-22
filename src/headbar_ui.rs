@@ -95,7 +95,7 @@ impl HeadbarUI {
         let visible_num = self.visible_num.load();
         let btn_rect = Vec2::new(50.0, 50.0);
         let file_image_button = egui::Button::new(
-            Image::from(VIDEO_FILE_IMG)
+            Image::from_bytes(VIDEO_FILE_IMG.0.clone(), VIDEO_FILE_IMG.1)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(btn_rect),
         )
@@ -175,7 +175,7 @@ impl HeadbarUI {
     pub fn paint_playlist_button(&mut self, ui: &mut Ui) {
         let visible_num = self.visible_num.load();
         let open_btn = Button::new(
-            Image::from(PLAY_LIST_IMG)
+            Image::from_bytes(PLAY_LIST_IMG.0.clone(), PLAY_LIST_IMG.1)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
@@ -194,7 +194,7 @@ impl HeadbarUI {
         }
         btn_response.on_hover_text("open the playlist tile");
         let open_btn = Button::new(
-            Image::from(TV_IMG)
+            Image::from_bytes(TV_IMG.0.clone(), TV_IMG.1)
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )

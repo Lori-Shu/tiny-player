@@ -11,6 +11,10 @@ use std::{
 
 use anyhow::Context;
 
+use crossfire::{
+    AsyncRx,
+    mpsc::{Array, bounded_async},
+};
 use eframe::{
     CreationContext,
     egui_wgpu::RenderState,
@@ -20,13 +24,13 @@ use eframe::{
     },
 };
 use egui::{
-    Color32, ColorImage, FontFamily, FontInsert, FontPriority, ImageSource, InsertFontFamily, Pos2,
-    Rect, TextureHandle, TextureId, Ui, Visuals,
+    Color32, FontFamily, FontInsert, FontPriority, InsertFontFamily, Pos2, Rect, TextureHandle,
+    TextureId, Ui, Visuals,
 };
 
 use egui_tiles::{Tiles, Tree};
-use flume::{Receiver, bounded};
 
+use image::DynamicImage;
 use keepawake::KeepAwake;
 use time::format_description;
 use tokio::{
@@ -67,7 +71,7 @@ pub struct AppUI {
     async_runtime: Runtime,
     process_cleaner: ProcessCleaner,
     video_texture_id: Arc<RwLock<TextureId>>,
-    garbage_video_texture_receiver: Receiver<TextureId>,
+    garbage_video_texture_receiver: AsyncRx<Array<TextureId>>,
     ui_flags: UIFlags,
     visible_num: Arc<AtomicF32>,
     wgpu_render_state: Arc<RenderState>,
@@ -153,20 +157,8 @@ impl AppUI {
             .enable_all()
             .build()?;
         let rt = async_runtime.handle().clone();
-        let (color_image, dyn_img) = if let ImageSource::Bytes { bytes, .. } = DEFAULT_BG_IMG {
-            let dynimg = image::load_from_memory(&bytes)?;
-            Ok((
-                ColorImage::from_rgba_unmultiplied(
-                    [dynimg.width() as usize, dynimg.height() as usize],
-                    dynimg.as_bytes(),
-                ),
-                dynimg,
-            ))
-        } else {
-            Err(anyhow::Error::msg("background image create err"))
-        }?;
+        let dyn_img = image::load_from_memory(DEFAULT_BG_IMG.1)?;
         let media_engine = MediaEngine::new(rt.clone())?;
-        let main_color_image = Arc::new(RwLock::new(color_image));
         let wgpu_render_state = Arc::new(
             cc.wgpu_render_state
                 .as_ref()
@@ -183,13 +175,14 @@ impl AppUI {
             media_engine.realtime_status.hardware_config_flag.clone(),
         )?));
         let atomic_target_language = Arc::new(AtomicTargetLanguage::new());
-        let subtitle_channel = flume::bounded(10);
-        let audio_player = Arc::new(AudioPlayer::new()?);
+        let subtitle_channel = crossfire::mpsc::bounded_async(64);
+        let audio_playback_channel = bounded_async(8);
+        let volume = Arc::new(AtomicF32::new(1.0));
+        let audio_player = Arc::new(AudioPlayer::new(audio_playback_channel.1, volume.clone())?);
 
         let pause_flag = Arc::new(AtomicBool::new(false));
         let live_mode = Arc::new(AtomicBool::new(false));
-        let PresentationTexture { id, texture } =
-            Self::alloc_texture(&main_color_image, &wgpu_render_state);
+        let presentation_texture = Self::alloc_texture(&dyn_img, &wgpu_render_state)?;
         let presentation_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
         let transcribe_task_notify = Arc::new(Notify::new());
@@ -204,47 +197,29 @@ impl AppUI {
 
         let process_cleaner = ProcessCleaner::new(child);
         let transcriber = Arc::new(RwLock::new(transcriber));
-        let bars_channel = flume::bounded(128);
+        let bars_channel = crossfire::mpsc::bounded_async(64);
         let current_main_stream_timestamp = Arc::new(AtomicI64::new(0));
         let current_video_timestamp = Arc::new(AtomicI64::new(0));
         let audio_play_context = AudioPlayContext::builder()
-            .audio_decode_thread_notify(
-                media_engine
-                    .background_tasks_notifies
-                    .audio_decode_thread_notify
-                    .clone(),
-            )
-            .audio_frame_receiver(media_engine.realtime_status.audio_frame_recv.clone())
-            .audio_player(audio_player.clone())
-            .cancellation_token(presentation_cancellation_token.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
             .media_engine(media_engine.clone())
             .transcriber(transcriber)
             .target_language(atomic_target_language.clone())
-            .video_frame_receiver(media_engine.realtime_status.video_frame_recv.clone())
             .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
             .transcoder(transcoder.clone())
             .mel_bars_sender(bars_channel.0)
+            .audio_playback_sender(audio_playback_channel.0)
             .build();
         let video_play_context = VideoPlayContext::builder()
-            .cancellation_token(presentation_cancellation_token.clone())
             .transcoder(transcoder.clone())
             .current_main_stream_timestamp(current_main_stream_timestamp.clone())
             .current_video_timestamp(current_video_timestamp.clone())
             .pause_flag(pause_flag.clone())
             .play_tasks_notify(play_tasks_notify.clone())
             .media_engine(media_engine.clone())
-            .video_decode_thread_notify(
-                media_engine
-                    .background_tasks_notifies
-                    .video_decode_thread_notify
-                    .clone(),
-            )
-            .video_frame_receiver(media_engine.realtime_status.video_frame_recv.clone())
-            .audio_frame_receiver(media_engine.realtime_status.audio_frame_recv.clone())
             .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
             .build();
@@ -256,23 +231,21 @@ impl AppUI {
         );
         let media_data_manager = Arc::new(RwLock::new(media_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
-        let garbage_video_texture_queue = bounded(8);
+        let garbage_video_texture_queue = crossfire::mpsc::bounded_async(8);
         let tip_modal_flag = Arc::new(AtomicBool::new(false));
         let tip_modal_msg = Arc::new(RwLock::new(TipMessageType::Info("empty msg".to_string())));
         let state_resetter = Arc::new(
             StateResetter::builder()
-                .audio_player(audio_player.clone())
                 .bg_dyn_img(bg_dyn_img.clone())
                 .current_main_stream_timestamp(current_main_stream_timestamp.clone())
                 .current_video_timestamp(current_video_timestamp.clone())
-                .garbage_texture_sender(garbage_video_texture_queue.0.clone())
-                .main_color_image(main_color_image.clone())
+                .garbage_texture_sender(garbage_video_texture_queue.0)
                 .pause_flag(pause_flag.clone())
                 .render_state(wgpu_render_state.clone())
                 .runtime_handle(rt.clone())
                 .media_engine(media_engine.clone())
-                .video_texture(texture.clone())
-                .video_texture_id(id.clone())
+                .video_texture(presentation_texture.texture.clone())
+                .video_texture_id(presentation_texture.id.clone())
                 .media_data_manager(media_data_manager.clone())
                 .tip_modal_flag(tip_modal_flag.clone())
                 .tip_modal_msg(tip_modal_msg.clone())
@@ -344,7 +317,7 @@ impl AppUI {
         let caption_ui = CaptionUI::builder()
             .last_text_time(0.0)
             .subtitle_str(None)
-            .subtitle_text_receiver(subtitle_channel.1.clone())
+            .subtitle_text_receiver(subtitle_channel.1)
             .visible_num(visible_num.clone())
             .build();
         let mut tiles = Tiles::default();
@@ -367,8 +340,9 @@ impl AppUI {
         let tip_message_modal = TipMessageModal::new(tip_modal_flag.clone(), tip_modal_msg.clone());
         Ok(Self {
             async_runtime,
+
             garbage_video_texture_receiver: garbage_video_texture_queue.1,
-            video_texture_id: id,
+            video_texture_id: presentation_texture.id,
             ui_flags: UIFlags {
                 pause_flag,
                 visible_flag,
@@ -389,16 +363,14 @@ impl AppUI {
     }
     /// alloc wgpu texture and register it to the egui RenderState.
     fn alloc_texture(
-        main_color_image: &RwLock<ColorImage>,
+        dynamic_img: &DynamicImage,
         render_state: &RenderState,
-    ) -> PresentationTexture {
-        let main_color_image = main_color_image.blocking_read();
-
+    ) -> PlayerResult<PresentationTexture> {
         let video_texture = render_state.device.create_texture(&TextureDescriptor {
             label: Some("Video"),
             size: Extent3d {
-                width: main_color_image.width() as u32,
-                height: main_color_image.height() as u32,
+                width: dynamic_img.width(),
+                height: dynamic_img.height(),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -433,30 +405,31 @@ impl AppUI {
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            main_color_image.as_raw(),
+            dynamic_img.as_bytes(),
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((main_color_image.width() * 4) as u32),
+                bytes_per_row: Some(dynamic_img.width() * 4),
                 rows_per_image: None,
             },
             Extent3d {
-                width: main_color_image.width() as u32,
-                height: main_color_image.height() as u32,
+                width: dynamic_img.width(),
+                height: dynamic_img.height(),
                 depth_or_array_layers: 1,
             },
         );
-        PresentationTexture {
+        Ok(PresentationTexture {
             id: Arc::new(RwLock::new(texture_id)),
             texture: Arc::new(RwLock::new(video_texture)),
-        }
+        })
     }
     /// free texture, using RenderState.
-    fn free_texture(&self) {
-        let texture_id = self.video_texture_id.blocking_read();
+    fn free_texture(&self) -> PlayerResult<()> {
+        let texture_id = self.video_texture_id.try_read()?;
         self.wgpu_render_state
             .renderer
             .write()
             .free_texture(&texture_id);
+        Ok(())
     }
 
     /// After updating the cached texture,
@@ -554,7 +527,9 @@ impl AppUI {
 }
 impl Drop for AppUI {
     fn drop(&mut self) {
-        self.free_texture();
+        if let Err(e) = self.free_texture() {
+            warn!("{}", e);
+        }
     }
 }
 impl AppUI {
@@ -620,7 +595,7 @@ impl AppUI {
 }
 #[derive(Clone)]
 pub struct MediaDes {
-    pub name: String,
+    pub name: Box<str>,
     pub path: PathBuf,
     pub texture_handle: TextureHandle,
 }

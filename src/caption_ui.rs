@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use crossfire::{AsyncRx, mpsc::Array};
 use egui::{AtomExt, Color32, CornerRadius, Layout, Response, RichText, Stroke, Ui, Vec2, Widget};
-use flume::Receiver;
 use typed_builder::TypedBuilder;
 
 use crate::appui::AtomicF32;
-#[derive(Debug, TypedBuilder)]
+#[derive(TypedBuilder)]
 pub struct CaptionUI {
     visible_num: Arc<AtomicF32>,
-    subtitle_text_receiver: Receiver<String>,
+    subtitle_text_receiver: AsyncRx<Array<String>>,
     subtitle_str: Option<String>,
     last_text_time: f64,
 }
