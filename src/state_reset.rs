@@ -66,7 +66,8 @@ impl StateResetter {
                 {
                     let stop_err_msg = format!("stop_present_tasks error:{}", e);
                     warn!("stop_present_tasks error:{:?}", e);
-                    *this.tip_modal_msg.write().await = TipMessageType::Warn(stop_err_msg);
+                    *this.tip_modal_msg.write().await =
+                        TipMessageType::Warn(stop_err_msg.into_boxed_str());
                     this.tip_modal_flag
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
@@ -77,7 +78,7 @@ impl StateResetter {
                         let reset_input_err_msg = format!("reset_input error:{}", e);
                         warn!("reset_input error:{:?}", e);
                         *this.tip_modal_msg.write().await =
-                            TipMessageType::Warn(reset_input_err_msg);
+                            TipMessageType::Warn(reset_input_err_msg.into_boxed_str());
                         this.tip_modal_flag
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
@@ -114,7 +115,8 @@ impl StateResetter {
                     Err(e) => {
                         let update_err_msg = format!("update_video_texture error:{}", e);
                         warn!("update_video_texture error:{:?}", e);
-                        *this.tip_modal_msg.write().await = TipMessageType::Warn(update_err_msg);
+                        *this.tip_modal_msg.write().await =
+                            TipMessageType::Warn(update_err_msg.into_boxed_str());
                         this.tip_modal_flag
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
@@ -127,7 +129,8 @@ impl StateResetter {
                 const SUCCESS_INFO: &str =
                     "media is successfully loaded! Click the play button to start playing!";
                 info!(SUCCESS_INFO);
-                *this.tip_modal_msg.write().await = TipMessageType::Info(SUCCESS_INFO.to_string());
+                *this.tip_modal_msg.write().await =
+                    TipMessageType::Info(SUCCESS_INFO.to_string().into_boxed_str());
                 this.tip_modal_flag
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }

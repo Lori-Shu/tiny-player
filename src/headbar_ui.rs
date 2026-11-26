@@ -10,10 +10,11 @@ use std::{
 use egui::{AtomExt, Button, Color32, CornerRadius, Image, Response, Ui, Vec2, Widget};
 use egui_file_dialog::FileDialog;
 use egui_tiles::{Behavior, UiResponse};
-use tracing::info;
+use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
+    PlayerResult,
     appui::AtomicF32,
     body_ui::BodyUI,
     caption_ui::CaptionUI,
@@ -91,11 +92,11 @@ pub struct HeadbarUI {
     internet_resource_ui: InternetResourceUI,
 }
 impl HeadbarUI {
-    pub fn paint_file_btn(&mut self, ui: &mut Ui) {
+    pub fn paint_file_btn(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         let visible_num = self.visible_num.load();
         let btn_rect = Vec2::new(50.0, 50.0);
         let file_image_button = egui::Button::new(
-            Image::from_bytes(VIDEO_FILE_IMG.0.clone(), VIDEO_FILE_IMG.1)
+            Image::from(VIDEO_FILE_IMG.clone())
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(btn_rect),
         )
@@ -127,6 +128,7 @@ impl HeadbarUI {
                 info!("accept file path{}", p_str);
             }
         }
+        Ok(())
     }
     pub fn paint_frame_info_text(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
@@ -172,10 +174,10 @@ impl HeadbarUI {
             ui.add(date_time_button);
         });
     }
-    pub fn paint_playlist_button(&mut self, ui: &mut Ui) {
+    pub fn paint_playlist_button(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         let visible_num = self.visible_num.load();
         let open_btn = Button::new(
-            Image::from_bytes(PLAY_LIST_IMG.0.clone(), PLAY_LIST_IMG.1)
+            Image::from(PLAY_LIST_IMG.clone())
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
@@ -194,7 +196,7 @@ impl HeadbarUI {
         }
         btn_response.on_hover_text("open the playlist tile");
         let open_btn = Button::new(
-            Image::from_bytes(TV_IMG.0.clone(), TV_IMG.1)
+            Image::from(TV_IMG.clone())
                 .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                 .atom_size(Vec2::new(50.0, 50.0)),
         )
@@ -218,6 +220,7 @@ impl HeadbarUI {
         {
             ui.add(&mut self.internet_resource_ui);
         }
+        Ok(())
     }
 }
 impl Widget for &mut HeadbarUI {
@@ -241,9 +244,13 @@ impl Widget for &mut HeadbarUI {
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    self.paint_file_btn(ui);
+                    if let Err(e) = self.paint_file_btn(ui) {
+                        warn!("{}", e);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        self.paint_playlist_button(ui);
+                        if let Err(e) = self.paint_playlist_button(ui) {
+                            warn!("{}", e);
+                        }
                     });
                 });
             });

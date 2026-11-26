@@ -106,8 +106,6 @@ impl PlaylistControlbar {
             live_mode,
         }
     }
-}
-impl PlaylistControlbar {
     async fn scan_video_folder(
         ctx: Context,
         path: PathBuf,
@@ -169,7 +167,7 @@ impl PlaylistControlbar {
         } else {
             return Err(anyhow::Error::msg("not a valid media file"));
         }
-        if let Ok(dyn_img) = image::load_from_memory(DEFAULT_COVER.1) {
+        if let Ok(dyn_img) = image::load_from_memory(DEFAULT_COVER) {
             Ok(dyn_img.to_rgba8())
         } else {
             warn!("load DEFAULT_COVER failed");

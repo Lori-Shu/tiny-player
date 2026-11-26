@@ -27,7 +27,7 @@ use ffmpeg_the_third::{
 };
 use hound::{WavSpec, WavWriter};
 use reqwest::Client;
-use tokio::{runtime::Handle, sync::Notify, task::JoinHandle};
+use tokio::{runtime::Handle, sync::Notify};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{info, warn};
 use typed_builder::TypedBuilder;
@@ -47,11 +47,14 @@ const THREE_SEC_BYTES_LEN: usize = (TRANSCRIBE_SAMPLE_RATE as usize) * 3 * size_
 pub struct Transcriber {
     audio_resampler: ManualProtectedResampler,
     audio_frame_bytes_sender: MAsyncTx<Array<Audio>>,
-    _transcribe_task_handle: JoinHandle<()>,
 }
 impl Transcriber {
     pub fn new(args: TranscriberArgs) -> PlayerResult<(Self, Child)> {
-        let exe_path = CURRENT_EXE_PATH.as_ref().map_err(anyhow::Error::msg)?;
+        let exe_path = if let Ok(exe_path) = CURRENT_EXE_PATH.as_ref() {
+            exe_path.as_path()
+        } else {
+            return Err(anyhow::Error::msg("getting CURRENT_EXE_PATH failed"));
+        };
         let exe_dir = exe_path.parent().context("get parent_dir err")?;
         let models_dir_path = exe_dir.join("models");
         let model_path = models_dir_path.join("ggml-base-q8_0.bin");
@@ -115,7 +118,7 @@ impl Transcriber {
             }
             times += 1;
         }?;
-        let transcribe_task_cancel_token = Arc::new(CancellationToken::new());
+        let transcribe_task_cancel_token = CancellationToken::new();
         let transcribe_task_notify_cloned = args.transcribe_task_notify.clone();
         let transcribe_task_cancel_token_cloned = transcribe_task_cancel_token.clone();
         let (audio_frame_bytes_sender, audio_frame_bytes_receiver) = bounded_async(64);
@@ -137,7 +140,6 @@ impl Transcriber {
             Self {
                 audio_resampler: resampler_ctx,
                 audio_frame_bytes_sender,
-                _transcribe_task_handle,
             },
             child_process,
         ))
@@ -182,7 +184,7 @@ impl Drop for Transcriber {
 }
 struct TranscribeTask {
     server_url: Box<str>,
-    transcribe_task_cancel_token: Arc<CancellationToken>,
+    transcribe_task_cancel_token: CancellationToken,
     transcribe_task_notify: Arc<Notify>,
     target_language: Arc<AtomicTargetLanguage>,
     pause_flag: Arc<AtomicBool>,
@@ -192,7 +194,7 @@ struct TranscribeTask {
 impl TranscribeTask {
     fn new(
         server_url: String,
-        transcribe_task_cancel_token: Arc<CancellationToken>,
+        transcribe_task_cancel_token: CancellationToken,
         transcribe_task_notify: Arc<Notify>,
         target_language: Arc<AtomicTargetLanguage>,
         pause_flag: Arc<AtomicBool>,

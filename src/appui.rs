@@ -28,7 +28,7 @@ use egui::{
     TextureId, Ui, Visuals,
 };
 
-use egui_tiles::{Tiles, Tree};
+use egui_tiles::{TileId, Tiles, Tree};
 
 use image::DynamicImage;
 use keepawake::KeepAwake;
@@ -37,7 +37,7 @@ use tokio::{
     runtime::Runtime,
     sync::{Notify, RwLock},
 };
-use tokio_util::sync::CancellationToken;
+
 use tracing::{info, warn};
 
 use crate::{
@@ -81,70 +81,7 @@ pub struct AppUI {
     tile_tree_behavior: MainBehavior,
     fade_animation: FadeAnimation,
     tip_message_modal: TipMessageModal,
-    playlist_id: egui_tiles::TileId,
-}
-impl eframe::App for AppUI {
-    /// this function will automatically be called every ui repaint.
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical(|ui| {
-                if let Err(e) = self.manage_keepawake() {
-                    warn!("manage keepawake err!{}", e);
-                }
-
-                self.release_garbage_texture();
-                self.apply_visiable_animation(ui);
-                self.ui_flags
-                    .visible_flag
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-
-                ui.add(&self.tip_message_modal);
-                self.paint_video_image(ui);
-                let flag = self.ui_flags.playlist_flag.load(Ordering::Relaxed);
-                self.tile_tree.set_visible(self.playlist_id, flag);
-                // paint the tile tree
-                self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
-
-                self.detect_file_drop(ui);
-                self.detect_pointer_moving(ui);
-            });
-        });
-    }
-    fn on_exit(&mut self) {
-        self.process_cleaner.clean()
-    }
-}
-struct PresentationTexture {
-    id: Arc<RwLock<TextureId>>,
-    texture: Arc<RwLock<Texture>>,
-}
-struct FadeAnimation {
-    start_time: Option<f64>,
-    duration: f64,
-}
-impl FadeAnimation {
-    fn new() -> Self {
-        Self {
-            start_time: None,
-            duration: 6.0,
-        }
-    }
-    fn trigger(&mut self, event_time_point: f64) {
-        self.start_time = Some(event_time_point);
-    }
-    fn current_visible_num(&mut self, now: f64) -> f32 {
-        match &self.start_time {
-            Some(start_time) => {
-                if now - (*start_time) < self.duration {
-                    (1.0 - (now - (*start_time)) / self.duration) as f32
-                } else {
-                    self.start_time = None;
-                    0.0
-                }
-            }
-            None => 0.0,
-        }
-    }
+    playlist_id: TileId,
 }
 impl AppUI {
     /// As the entry point for initializing the application,
@@ -157,7 +94,7 @@ impl AppUI {
             .enable_all()
             .build()?;
         let rt = async_runtime.handle().clone();
-        let dyn_img = image::load_from_memory(DEFAULT_BG_IMG.1)?;
+        let dyn_img = image::load_from_memory(DEFAULT_BG_IMG)?;
         let media_engine = MediaEngine::new(rt.clone())?;
         let wgpu_render_state = Arc::new(
             cc.wgpu_render_state
@@ -183,7 +120,6 @@ impl AppUI {
         let pause_flag = Arc::new(AtomicBool::new(false));
         let live_mode = Arc::new(AtomicBool::new(false));
         let presentation_texture = Self::alloc_texture(&dyn_img, &wgpu_render_state)?;
-        let presentation_cancellation_token = Arc::new(CancellationToken::new());
         let play_tasks_notify = Arc::new(Notify::new());
         let transcribe_task_notify = Arc::new(Notify::new());
         let transcriber_args = TranscriberArgs::builder()
@@ -223,17 +159,15 @@ impl AppUI {
             .demux_eof_flag(media_engine.realtime_status.demux_eof_flag.clone())
             .live_mode(live_mode.clone())
             .build();
-        let media_data_manager = MediaDataManager::new(
-            rt.clone(),
-            presentation_cancellation_token,
-            audio_play_context,
-            video_play_context,
-        );
+        let media_data_manager =
+            MediaDataManager::new(rt.clone(), audio_play_context, video_play_context);
         let media_data_manager = Arc::new(RwLock::new(media_data_manager));
         let bg_dyn_img = Arc::new(dyn_img);
         let garbage_video_texture_queue = crossfire::mpsc::bounded_async(8);
         let tip_modal_flag = Arc::new(AtomicBool::new(false));
-        let tip_modal_msg = Arc::new(RwLock::new(TipMessageType::Info("empty msg".to_string())));
+        let tip_modal_msg = Arc::new(RwLock::new(TipMessageType::Info(
+            "empty msg".to_string().into_boxed_str(),
+        )));
         let state_resetter = Arc::new(
             StateResetter::builder()
                 .bg_dyn_img(bg_dyn_img.clone())
@@ -524,15 +458,6 @@ impl AppUI {
             );
         }
     }
-}
-impl Drop for AppUI {
-    fn drop(&mut self) {
-        if let Err(e) = self.free_texture() {
-            warn!("{}", e);
-        }
-    }
-}
-impl AppUI {
     fn apply_player_visual(ctx: &egui::Context) {
         ctx.options_mut(|options| {
             options.theme_preference = egui::ThemePreference::Dark;
@@ -593,6 +518,78 @@ impl AppUI {
         ));
     }
 }
+
+impl eframe::App for AppUI {
+    /// this function will automatically be called every ui repaint.
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.vertical(|ui| {
+                if let Err(e) = self.manage_keepawake() {
+                    warn!("manage keepawake err!{}", e);
+                }
+
+                self.release_garbage_texture();
+                self.apply_visiable_animation(ui);
+                self.ui_flags
+                    .visible_flag
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+
+                ui.add(&self.tip_message_modal);
+                self.paint_video_image(ui);
+                let flag = self.ui_flags.playlist_flag.load(Ordering::Relaxed);
+                self.tile_tree.set_visible(self.playlist_id, flag);
+                // paint the tile tree
+                self.tile_tree.ui(&mut self.tile_tree_behavior, ui);
+
+                self.detect_file_drop(ui);
+                self.detect_pointer_moving(ui);
+            });
+        });
+    }
+    fn on_exit(&mut self) {
+        self.process_cleaner.clean()
+    }
+}
+impl Drop for AppUI {
+    fn drop(&mut self) {
+        if let Err(e) = self.free_texture() {
+            warn!("{}", e);
+        }
+    }
+}
+struct PresentationTexture {
+    id: Arc<RwLock<TextureId>>,
+    texture: Arc<RwLock<Texture>>,
+}
+struct FadeAnimation {
+    start_time: Option<f64>,
+    duration: f64,
+}
+impl FadeAnimation {
+    fn new() -> Self {
+        Self {
+            start_time: None,
+            duration: 6.0,
+        }
+    }
+    fn trigger(&mut self, event_time_point: f64) {
+        self.start_time = Some(event_time_point);
+    }
+    fn current_visible_num(&mut self, now: f64) -> f32 {
+        match &self.start_time {
+            Some(start_time) => {
+                if now - (*start_time) < self.duration {
+                    (1.0 - (now - (*start_time)) / self.duration) as f32
+                } else {
+                    self.start_time = None;
+                    0.0
+                }
+            }
+            None => 0.0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MediaDes {
     pub name: Box<str>,

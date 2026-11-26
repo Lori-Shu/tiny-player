@@ -4,8 +4,8 @@ use egui::{Response, RichText, Ui, Widget};
 use tokio::sync::RwLock;
 use tracing::warn;
 pub enum TipMessageType {
-    Warn(String),
-    Info(String),
+    Warn(Box<str>),
+    Info(Box<str>),
 }
 pub struct TipMessageModal {
     tip_modal_flag: Arc<AtomicBool>,

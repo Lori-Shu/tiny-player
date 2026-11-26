@@ -6,9 +6,11 @@ use egui::{Align2, AtomExt, Color32, Id, Image, Pos2, Response, Ui, Vec2, Widget
 use egui_plot::{Bar, BarChart, Plot};
 use media_engine::MediaEngine;
 use tokio::sync::Notify;
+use tracing::warn;
 use typed_builder::TypedBuilder;
 
 use crate::{
+    PlayerResult,
     appui::AtomicF32,
     audio_playback::AudioPlayer,
     resources::{PAUSE_IMG, PLAY_IMG},
@@ -27,7 +29,7 @@ pub struct BodyUI {
     bars_buffer: Vec<f32>,
 }
 impl BodyUI {
-    fn paint_playpause_btn(&mut self, ui: &mut Ui) {
+    fn paint_playpause_btn(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         if self
             .media_source_flag
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -45,12 +47,13 @@ impl BodyUI {
                         ui.ctx().content_rect().width() / 10.0,
                         ui.ctx().content_rect().width() / 10.0,
                     );
+
                     let btn_img = if self.pause_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        Image::from_bytes(PLAY_IMG.0.clone(), PLAY_IMG.1)
+                        Image::from(PLAY_IMG.clone())
                             .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                             .atom_size(btn_rect)
                     } else {
-                        Image::from_bytes(PAUSE_IMG.0.clone(), PAUSE_IMG.1)
+                        Image::from(PAUSE_IMG.clone())
                             .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                             .atom_size(btn_rect)
                     };
@@ -80,6 +83,7 @@ impl BodyUI {
                     }
                 });
         }
+        Ok(())
     }
 
     fn paint_mel_bars(&mut self, ui: &mut Ui) {
@@ -139,7 +143,9 @@ impl Widget for &mut BodyUI {
     fn ui(self, ui: &mut Ui) -> Response {
         // let test_btn=Button::new("test").fill(Color32::from_white_alpha(10)).min_size(Vec2::new(ui.available_width(), ui.available_height()));
         // let _=ui.add(test_btn);
-        self.paint_playpause_btn(ui);
+        if let Err(e) = self.paint_playpause_btn(ui) {
+            warn!("{}", e);
+        }
         self.paint_mel_bars(ui);
         ui.response()
     }

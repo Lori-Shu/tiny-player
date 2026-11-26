@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use typed_builder::TypedBuilder;
 
 use crate::{
+    PlayerResult,
     appui::AtomicF32,
     audio_playback::AudioPlayer,
     resources::{FULLSCREEN_IMG, SUBTITLE_IMG, VOLUME_IMG},
@@ -62,9 +63,16 @@ impl ControlbarUI {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         self.paint_progress_slider(ui);
-                        self.paint_caption_button(ui);
-                        self.paint_volume_button(ui);
-                        self.paint_fullscreen_button(ui);
+
+                        if let Err(e) = self.paint_caption_button(ui) {
+                            warn!("{}", e);
+                        }
+                        if let Err(e) = self.paint_volume_button(ui) {
+                            warn!("{}", e);
+                        }
+                        if let Err(e) = self.paint_fullscreen_button(ui) {
+                            warn!("{}", e);
+                        }
                     });
                 });
         }
@@ -126,11 +134,11 @@ impl ControlbarUI {
             }
         });
     }
-    fn paint_caption_button(&mut self, ui: &mut Ui) {
+    fn paint_caption_button(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
             let subtitle_btn = Button::new(
-                Image::from_bytes(SUBTITLE_IMG.0.clone(), SUBTITLE_IMG.1)
+                Image::from(SUBTITLE_IMG.clone())
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
@@ -182,12 +190,13 @@ impl ControlbarUI {
                 }
             }
         });
+        Ok(())
     }
-    fn paint_volume_button(&mut self, ui: &mut Ui) {
+    fn paint_volume_button(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
             let volume_img_btn = egui::Button::new(
-                Image::from_bytes(VOLUME_IMG.0.clone(), VOLUME_IMG.1)
+                Image::from(VOLUME_IMG.clone())
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
@@ -255,12 +264,13 @@ impl ControlbarUI {
                     });
             }
         });
+        Ok(())
     }
-    fn paint_fullscreen_button(&mut self, ui: &mut Ui) {
+    fn paint_fullscreen_button(&mut self, ui: &mut Ui) -> PlayerResult<()> {
         ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
             let visible_num = self.visible_num.load();
             let fullscreen_image_btn = egui::Button::new(
-                Image::from_bytes(FULLSCREEN_IMG.0.clone(), FULLSCREEN_IMG.1)
+                Image::from(FULLSCREEN_IMG.clone())
                     .tint(Color32::from_white_alpha((255.0 * visible_num) as u8))
                     .atom_size(Vec2::new(50.0, 50.0)),
             )
@@ -278,6 +288,7 @@ impl ControlbarUI {
                     .send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen_flag));
             }
         });
+        Ok(())
     }
     pub fn set_time_text(&mut self, s: String) {
         self.time_text = s;
