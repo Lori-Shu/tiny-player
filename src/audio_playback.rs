@@ -125,8 +125,9 @@ struct AudioCallback {
 }
 impl AudioCallback {
     pub fn new(volume: Arc<AtomicF32>) -> Self {
+        let unfinished_frame = Audio::empty();
         Self {
-            unfinished_frame: Audio::empty(),
+            unfinished_frame,
             consumed_idx: 0,
             volume,
         }
@@ -136,21 +137,24 @@ impl AudioCallback {
         frame_recv: AsyncRx<Array<Audio>>,
     ) -> impl FnMut(&mut [f32], &OutputCallbackInfo) + Send + 'static {
         move |target_buf, _info| {
-            let unfinished_buf = bytemuck::cast_slice::<_, f32>(
-                &self.unfinished_frame.data(0)[0..AUDIO_CHANNELS as usize
-                    * self.unfinished_frame.samples()
-                    * size_of::<f32>()],
-            );
             let target_len = target_buf.len();
             let mut filled_size = 0;
-            while unfinished_buf.len() > self.consumed_idx && filled_size < target_len {
-                let smaller_size =
-                    (target_len - filled_size).min(unfinished_buf.len() - self.consumed_idx);
-                target_buf[filled_size..(filled_size + smaller_size)].copy_from_slice(
-                    &unfinished_buf[self.consumed_idx..(self.consumed_idx + smaller_size)],
+            if self.unfinished_frame.planes() > 0 {
+                let unfinished_buf = bytemuck::cast_slice::<_, f32>(
+                    &self.unfinished_frame.data(0)[0..AUDIO_CHANNELS as usize
+                        * self.unfinished_frame.samples()
+                        * size_of::<f32>()],
                 );
-                self.consumed_idx += smaller_size;
-                filled_size += smaller_size;
+
+                while unfinished_buf.len() > self.consumed_idx && filled_size < target_len {
+                    let smaller_size =
+                        (target_len - filled_size).min(unfinished_buf.len() - self.consumed_idx);
+                    target_buf[filled_size..(filled_size + smaller_size)].copy_from_slice(
+                        &unfinished_buf[self.consumed_idx..(self.consumed_idx + smaller_size)],
+                    );
+                    self.consumed_idx += smaller_size;
+                    filled_size += smaller_size;
+                }
             }
             let volume = self.volume.load();
             while filled_size < target_len

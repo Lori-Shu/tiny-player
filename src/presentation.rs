@@ -37,7 +37,7 @@ pub const PLAY_SAMPLE_RATE: u32 = 48000;
 pub struct MediaDataManager {
     audio_thread_handle: Option<JoinHandle<()>>,
     video_thread_handle: Option<JoinHandle<()>>,
-    cancellation_token: Arc<CancellationToken>,
+    cancellation_token: CancellationToken,
     tasks_notify: Arc<Notify>,
     audio_play_context: Arc<AudioPlayContext>,
     video_play_context: Arc<VideoPlayContext>,
@@ -47,12 +47,13 @@ pub struct MediaDataManager {
 impl MediaDataManager {
     pub fn new(
         runtime_handle: Handle,
-        cancellation_token: Arc<CancellationToken>,
+
         audio_play_context: AudioPlayContext,
         video_play_context: VideoPlayContext,
     ) -> Self {
         let is_running = false;
         let tasks_notify = audio_play_context.play_tasks_notify.clone();
+        let cancellation_token = CancellationToken::new();
         Self {
             audio_thread_handle: None,
             video_thread_handle: None,
@@ -76,7 +77,7 @@ impl MediaDataManager {
         Ok(())
     }
     pub async fn spawn_present_tasks(&mut self, frame_receivers: FrameReceivers) {
-        self.cancellation_token = Arc::new(CancellationToken::new());
+        self.cancellation_token = CancellationToken::new();
         {
             let media_source_info = self
                 .audio_play_context
@@ -150,7 +151,7 @@ pub struct AudioPlayContext {
 impl AudioPlayContext {
     async fn into_future(
         self: Arc<Self>,
-        cancellation_token: Arc<CancellationToken>,
+        cancellation_token: CancellationToken,
         audio_frame_receiver: AsyncRx<Array<Audio>>,
     ) {
         if let Ok(mut frequency_analyzer) = FrequencyAnalyzer::new() {
@@ -173,7 +174,7 @@ impl AudioPlayContext {
                         if let Some(media_source_info) = &*media_source_info {
                             media_source_info.stream_existence_flags.video
                         } else {
-                            false
+                            continue;
                         }
                     };
                     if let Some(Ok(audio_frame)) = audio_frame_receiver
@@ -208,7 +209,12 @@ impl AudioPlayContext {
                             self.current_main_stream_timestamp
                                 .store(pts, std::sync::atomic::Ordering::Relaxed);
                         }
-                        if let Err(e) = self.audio_playback_sender.send(audio_frame).await {
+                        if let Some(Err(e)) = self
+                            .audio_playback_sender
+                            .send(audio_frame)
+                            .with_cancellation_token(&cancellation_token)
+                            .await
+                        {
                             warn!("{}", e);
                         }
                     }
@@ -233,7 +239,7 @@ pub struct VideoPlayContext {
 impl VideoPlayContext {
     async fn into_future(
         self: Arc<Self>,
-        cancellation_token: Arc<CancellationToken>,
+        cancellation_token: CancellationToken,
         video_frame_receiver: AsyncRx<Array<Video>>,
     ) {
         let mut change_instant = Instant::now();
@@ -263,11 +269,12 @@ impl VideoPlayContext {
                             &audio_existence_flag,
                             &audio_time_base,
                             &video_time_base,
+                            &change_instant,
                         )
                         .await
                     {
+                        let ins_now = Instant::now();
                         let frame_result = if !audio_existence_flag {
-                            let ins_now = Instant::now();
                             if ins_now.checked_duration_since(change_instant).is_some() {
                                 if let Some(Ok(frame)) = video_frame_receiver
                                     .recv()
@@ -298,6 +305,7 @@ impl VideoPlayContext {
                                     self.current_video_timestamp
                                         .store(pts, std::sync::atomic::Ordering::Relaxed);
                                 }
+                                change_instant = ins_now;
                                 Ok(frame)
                             } else {
                                 Err(anyhow::Error::msg("try video frame failed"))
@@ -363,6 +371,7 @@ impl VideoPlayContext {
         audio_stream_flag: &bool,
         audio_time_base: &Rational,
         video_time_base: &Rational,
+        change_instant: &Instant,
     ) -> bool {
         if !audio_stream_flag {
             return true;
@@ -380,23 +389,9 @@ impl VideoPlayContext {
             / audio_time_base.denominator() as i64;
 
         // auto heal. synchronizing logic
-        {
-            if v_time - a_time > 1000 {
-                let heal_timestamp = (a_time + 500) * video_time_base.denominator() as i64
-                    / video_time_base.numerator() as i64
-                    / 1000;
-                // info!("main time:{},v_time:{}", a_time, v_time);
-                // info!(
-                //     "main timestamp:{},v_timestamp:{}",
-                //     timestamp, video_time_base
-                // );
-                // info!("heal_timestamp:{}", heal_timestamp);
-                self.current_video_timestamp
-                    .store(heal_timestamp, std::sync::atomic::Ordering::Relaxed);
-                return false;
-            }
+        if change_instant.elapsed().as_millis() > 100 {
+            return true;
         }
-
         a_time > v_time
     }
 }
@@ -422,10 +417,7 @@ impl FrequencyAnalyzer {
             hann_window,
         })
     }
-    async fn process_frame(
-        &mut self,
-        frame: &ffmpeg_the_third::frame::Audio,
-    ) -> PlayerResult<Vec<Vec<f32>>> {
+    async fn process_frame(&mut self, frame: &Audio) -> PlayerResult<Vec<Vec<f32>>> {
         let frame_bytes = &frame.data(0)
             [0..(size_of::<f32>() * frame.samples() * frame.ch_layout().channels() as usize)];
         self.buffer
